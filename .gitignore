@@ -1,0 +1,105 @@
+# AI agents and local assistant state
+.agents/
+.claude/
+.codex/
+.playwright-cli/
+skills-lock.json
+task.md
+temp.txt
+image_gen_task.txt
+gitpush/
+
+# Dependencies and caches
+node_modules/
+**/node_modules/
+.pytest_cache/
+**/.pytest_cache/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+.tmp/
+
+# Local data, user projects, databases, and backups
+data/
+backend/data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.vnproj
+*.vncart
+*.agentvn
+
+# Build, release, test, and packaging output
+output/
+releases/
+releases_test_contract/
+test_AgentVN/
+scripts/
+dist/
+**/dist/
+target/
+**/target/
+backend/temp/
+backend/tempbuild/
+backend/tempdist/
+editor/output/
+editor/src-tauri/binaries/
+editor/src-tauri/bundle-workspace/
+editor/src-tauri/gen/
+GameCli_framework/src-tauri/gen/
+editor/public/agentvn-qq-qrcode.jpg
+
+# Local launch and packaging helpers
+start-dev.bat
+start-dev.ps1
+package-installers.bat
+AgentVN Dev.exe
+manual-five-character.vnproj
+
+# Internal planning and agent-oriented documents
+FILE_FORMAT_ANALYSIS.md
+docs/task-history/
+docs/architecture-inventory.md
+docs/architecture-refactor-plan.md
+docs/architecture-risk-register.md
+docs/client-experience-enhancements.md
+docs/error-log-inventory.md
+docs/LLM_PROJECT_JSON_IMPORT_BRIEF.zh-CN.md
+docs/novel-processing-multi-session-prompts.md
+docs/LICENSE_ANALYSIS.zh-CN.md
+docs/EDITOR_DESKTOP_EXE.md
+backend/docs/PACKAGING.md
+GameCli_framework/docs/BUILD_ANDROID.md
+GameCli_framework/docs/BUILD_WINDOWS.md
+
+# Generated binaries and archives
+*.exe
+*.msi
+*.apk
+*.aab
+*.zip
+*.7z
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+errorlog/
+error_log/
+
+# Secrets and environment overrides
+.env
+.env.*
+!**/.env.example
+
+# IDE and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Preserve incomplete Git metadata backups locally
+.git-incomplete-backup*/

@@ -1,0 +1,578 @@
+:root,
+:root[data-theme="blue_gray"] {
+  color-scheme: dark;
+  font-family: Inter, "Segoe UI", system-ui, sans-serif;
+  --motion-scale: 1;
+  --motion-fast: calc(150ms * var(--motion-scale));
+  --motion-normal: calc(240ms * var(--motion-scale));
+  --motion-emphasis: calc(420ms * var(--motion-scale));
+  --motion-morph: calc(360ms * var(--motion-scale));
+  --motion-ai-flow: calc(1600ms * var(--motion-scale));
+  --ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-emphasis: cubic-bezier(0.18, 0.9, 0.18, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 0.2, 1);
+  --input-focus-enter-duration: calc(520ms * var(--motion-scale));
+  --input-focus-exit-duration: calc(300ms * var(--motion-scale));
+  --control-focus-enter-duration: var(--input-focus-enter-duration);
+  --control-focus-exit-duration: var(--input-focus-exit-duration);
+  --input-focus-border: color-mix(in srgb, var(--accent) 72%, var(--line));
+  --input-focus-surface: color-mix(in srgb, var(--input-bg) 84%, var(--selection-bg));
+  --input-focus-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--ink-strong) 8%, transparent),
+    0 0 8px color-mix(in srgb, var(--accent) 28%, transparent),
+    0 0 18px color-mix(in srgb, var(--accent) 17%, transparent);
+  --control-focus-shadow:
+    0 0 8px color-mix(in srgb, var(--accent) 26%, transparent),
+    0 0 18px color-mix(in srgb, var(--accent) 16%, transparent);
+  --global-control-focus-shadow:
+    var(--control-focus-shadow),
+    var(--control-shadow);
+  --global-input-focus-shadow: var(--input-focus-shadow);
+  /* Kinetic Graphite Studio */
+  --shell-bg: #050812;
+  --workspace-bg: #091421;
+  --panel-bg: #0d1726;
+  --panel-bg-strong: #152238;
+  --card-bg: #1a2b43;
+  --popover-bg: #12233a;
+  --input-bg: #071220;
+  --section-tint: rgba(110, 168, 255, 0.12);
+  --selection-bg: rgba(110, 168, 255, 0.22);
+  --tint-project: rgba(244, 184, 96, 0.15);
+  --tint-ai: rgba(111, 196, 255, 0.18);
+  --tint-tools: rgba(47, 211, 197, 0.16);
+  --tint-inspector: rgba(126, 146, 255, 0.15);
+  --tint-canvas: rgba(78, 122, 180, 0.12);
+  --bg: var(--shell-bg);
+  --bg-elevated: #0e1a2b;
+  --surface: var(--panel-bg);
+  --surface-2: var(--card-bg);
+  --surface-3: #294463;
+  --field: var(--input-bg);
+  --line: rgba(157, 184, 216, 0.28);
+  --line-strong: #84a8d3;
+  --divider: #9bb8d934;
+  --ink: #e9f2ff;
+  --ink-strong: #ffffff;
+  --muted: #9fb3cb;
+  --muted-2: #7288a5;
+  --accent: #6ea8ff;
+  --accent-strong: #d9e8ff;
+  --accent-2: #2fd3c5;
+  --checkbox-accent: #60cfff;
+  --checkbox-accent-strong: #7ab5ff;
+  --checkbox-border: #6987ad;
+  --checkbox-bg: #0c1727;
+  --checkbox-check: #ffffff;
+  --checkbox-glow: rgba(96, 207, 255, 0.24);
+  --danger: #ff7f95;
+  --success: #4fd2a1;
+  --warning: #f4b860;
+  --scene: #9aa7ff;
+  --choice: #ffd166;
+  --modifier: #ffc36d;
+  --loop: #62d6ff;
+  --loop-exit: #ff9f6e;
+  --condition: #5ee0a0;
+  --animation: #e099ff;
+  --start: #4be3eb;
+  --end: #ff8ea7;
+  --radius: 8px;
+  --radius-button: 7px;
+  --radius-input: 7px;
+  --radius-modal: 10px;
+  --shadow: 0 28px 82px rgba(2, 7, 16, 0.54), 0 10px 28px rgba(0, 0, 0, 0.28);
+  --shadow-card: 0 14px 34px rgba(2, 8, 18, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --shadow-popover: 0 32px 88px rgba(1, 7, 16, 0.58), 0 0 0 1px rgba(255, 255, 255, 0.05);
+  --control-shadow: 0 12px 28px rgba(4, 12, 24, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --panel-shadow: 12px 0 38px rgba(3, 10, 20, 0.24), inset -1px 0 0 rgba(255, 255, 255, 0.03);
+  --canvas-grid: #385879;
+  --canvas-bg:
+    linear-gradient(180deg, rgba(121, 173, 255, 0.1), transparent 240px),
+    radial-gradient(circle at top left, rgba(80, 222, 200, 0.09), transparent 360px),
+    linear-gradient(135deg, rgba(156, 128, 255, 0.07), transparent 56%),
+    var(--workspace-bg);
+  --stage-bg:
+    linear-gradient(135deg, rgba(84, 214, 195, 0.18), transparent),
+    linear-gradient(180deg, rgba(114, 168, 255, 0.1), transparent 55%),
+    #07111e;
+}
+
+:root[data-theme="white_gray"] {
+  color-scheme: light;
+  /* Kinetic Paper Studio */
+  --shell-bg: #f5efe8;
+  --workspace-bg: #fbf1eb;
+  --panel-bg: #fff7f0;
+  --panel-bg-strong: #fffdf9;
+  --card-bg: #ffffff;
+  --popover-bg: #fff8f1;
+  --input-bg: #fff4ed;
+  --section-tint: rgba(201, 79, 101, 0.1);
+  --selection-bg: rgba(201, 79, 101, 0.16);
+  --tint-project: rgba(244, 184, 96, 0.16);
+  --tint-ai: rgba(36, 143, 134, 0.12);
+  --tint-tools: rgba(89, 103, 200, 0.12);
+  --tint-inspector: rgba(176, 89, 170, 0.11);
+  --tint-canvas: rgba(201, 79, 101, 0.1);
+  --bg: var(--shell-bg);
+  --bg-elevated: #fff8f1;
+  --surface: var(--panel-bg);
+  --surface-2: var(--card-bg);
+  --surface-3: #f4dfd9;
+  --field: var(--input-bg);
+  --line: #d7bfb6;
+  --line-strong: #b58b80;
+  --divider: #b88f8538;
+  --ink: #25191d;
+  --ink-strong: #1c1115;
+  --muted: #6f5961;
+  --muted-2: #9b8389;
+  --accent: #c94f65;
+  --accent-strong: #aa364e;
+  --accent-2: #248f86;
+  --checkbox-accent: #d86c7a;
+  --checkbox-accent-strong: #ef9f54;
+  --checkbox-border: #caaea4;
+  --checkbox-bg: #fffaf6;
+  --checkbox-check: #ffffff;
+  --checkbox-glow: rgba(216, 108, 122, 0.2);
+  --danger: #bf4158;
+  --success: #2b8a62;
+  --warning: #b86a22;
+  --scene: #5965c9;
+  --choice: #a36b00;
+  --modifier: #b8651b;
+  --loop: #0f8fb8;
+  --loop-exit: #c75b1f;
+  --condition: #218359;
+  --animation: #8f4fb0;
+  --start: #137c86;
+  --end: #b73e56;
+  --radius-button: 7px;
+  --radius-input: 7px;
+  --radius-modal: 10px;
+  --shadow: 0 24px 58px rgba(93, 67, 62, 0.16), 0 8px 20px rgba(122, 91, 86, 0.08);
+  --shadow-card: 0 12px 28px rgba(120, 82, 72, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  --shadow-popover: 0 30px 78px rgba(103, 70, 62, 0.18), 0 0 0 1px rgba(255, 255, 255, 0.85);
+  --control-shadow: 0 10px 24px rgba(110, 81, 74, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.94);
+  --panel-shadow: 12px 0 34px rgba(125, 97, 89, 0.08), inset -1px 0 0 rgba(255, 255, 255, 0.92);
+  --canvas-grid: #d3bdb5;
+  --canvas-bg:
+    linear-gradient(180deg, rgba(216, 95, 115, 0.09), transparent 260px),
+    radial-gradient(circle at top left, rgba(32, 153, 137, 0.09), transparent 390px),
+    radial-gradient(circle at 88% 10%, rgba(89, 101, 201, 0.07), transparent 360px),
+    var(--workspace-bg);
+  --stage-bg:
+    linear-gradient(135deg, rgba(216, 108, 122, 0.12), transparent),
+    linear-gradient(180deg, rgba(242, 166, 90, 0.08), transparent 58%),
+    var(--bg-elevated);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  transition:
+    background-color calc(620ms * var(--motion-scale)) cubic-bezier(0.2, 0.8, 0.2, 1),
+    color calc(620ms * var(--motion-scale)) cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+body *,
+body *::before,
+body *::after {
+  transition-property: background-color, border-color, color, box-shadow;
+  transition-duration: calc(260ms * var(--motion-scale));
+  transition-timing-function: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+html {
+  scrollbar-gutter: stable;
+  scrollbar-color:
+    color-mix(in srgb, var(--ink-strong) 36%, var(--accent) 18%)
+    color-mix(in srgb, var(--bg) 78%, var(--surface) 22%);
+  scrollbar-width: thin;
+}
+
+* {
+  scrollbar-color:
+    color-mix(in srgb, var(--ink-strong) 36%, var(--accent) 18%)
+    color-mix(in srgb, var(--bg) 78%, var(--surface) 22%);
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+}
+
+*::-webkit-scrollbar-track {
+  border: 1px solid color-mix(in srgb, var(--line) 58%, transparent);
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--surface) 58%, transparent),
+      color-mix(in srgb, var(--bg) 82%, transparent));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--ink-strong) 4%, transparent),
+    inset 0 8px 18px color-mix(in srgb, #000 12%, transparent);
+}
+
+*::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background:
+    repeating-linear-gradient(135deg,
+      color-mix(in srgb, var(--ink-strong) 52%, var(--accent) 18%) 0 7px,
+      color-mix(in srgb, var(--muted) 42%, transparent) 7px 13px)
+    border-box;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--ink-strong) 18%, transparent),
+    0 0 18px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background:
+    repeating-linear-gradient(135deg,
+      color-mix(in srgb, var(--ink-strong) 72%, var(--accent) 22%) 0 7px,
+      color-mix(in srgb, var(--accent) 34%, var(--muted)) 7px 13px)
+    border-box;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--ink-strong) 30%, transparent),
+    0 0 24px color-mix(in srgb, var(--accent) 26%, transparent);
+}
+
+*::-webkit-scrollbar-corner {
+  background: color-mix(in srgb, var(--bg) 86%, var(--surface) 14%);
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button,
+.file-button {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--card-bg) 92%, var(--section-tint)), color-mix(in srgb, var(--panel-bg) 88%, var(--bg)));
+  color: var(--ink);
+  min-height: 38px;
+  min-width: 38px;
+  padding: 0 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: var(--control-shadow);
+  transition:
+    background-color var(--control-focus-exit-duration) var(--ease-exit),
+    border-color var(--control-focus-exit-duration) var(--ease-exit),
+    color var(--control-focus-exit-duration) var(--ease-exit),
+    box-shadow var(--control-focus-exit-duration) var(--ease-exit),
+    transform var(--motion-fast) var(--ease-standard);
+}
+
+button:hover,
+.file-button:hover {
+  border-color: var(--accent);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--surface-3) 84%, var(--accent) 16%),
+      color-mix(in srgb, var(--surface-2) 88%, var(--bg))
+    );
+  box-shadow: 0 14px 34px color-mix(in srgb, var(--accent) 22%, transparent), var(--control-shadow);
+  transform: translateY(-1px);
+  transition-duration:
+    var(--control-focus-enter-duration),
+    calc(420ms * var(--motion-scale)),
+    calc(420ms * var(--motion-scale)),
+    var(--control-focus-enter-duration),
+    var(--motion-fast);
+}
+
+button:active,
+.file-button:active {
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--surface-3) 70%, var(--accent) 30%),
+      color-mix(in srgb, var(--surface-2) 82%, var(--bg))
+    );
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+  filter: saturate(0.78);
+}
+
+input,
+textarea,
+select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--input-bg);
+  color: var(--ink);
+  padding: 8px 9px;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--ink-strong) 5%, transparent);
+}
+
+input:not([type]),
+input[type="text"],
+input[type="number"],
+input[type="search"],
+input[type="email"],
+input[type="password"],
+input[type="tel"],
+input[type="url"],
+input[type="date"],
+input[type="month"],
+input[type="week"],
+input[type="time"],
+input[type="datetime-local"],
+textarea,
+select {
+  transition:
+    background-color var(--input-focus-exit-duration) var(--ease-exit),
+    border-color var(--input-focus-exit-duration) var(--ease-exit),
+    box-shadow var(--input-focus-exit-duration) var(--ease-exit);
+}
+
+input:hover,
+textarea:hover,
+select:hover {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--line));
+  background: color-mix(in srgb, var(--input-bg) 88%, var(--selection-bg));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--ink-strong) 7%, transparent),
+    0 0 8px color-mix(in srgb, var(--accent) 20%, transparent),
+    0 0 16px color-mix(in srgb, var(--accent) 11%, transparent);
+  transition-duration:
+    var(--input-focus-enter-duration),
+    calc(420ms * var(--motion-scale)),
+    var(--input-focus-enter-duration);
+  transition-timing-function: var(--ease-emphasis);
+}
+
+input:not([type]):focus,
+input[type="text"]:focus,
+input[type="number"]:focus,
+input[type="search"]:focus,
+input[type="email"]:focus,
+input[type="password"]:focus,
+input[type="tel"]:focus,
+input[type="url"]:focus,
+input[type="date"]:focus,
+input[type="month"]:focus,
+input[type="week"]:focus,
+input[type="time"]:focus,
+input[type="datetime-local"]:focus,
+textarea:focus,
+select:focus {
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+  border-color: var(--input-focus-border);
+  background-color: var(--input-focus-surface);
+  box-shadow: var(--input-focus-shadow);
+  transition-duration:
+    var(--input-focus-enter-duration),
+    calc(420ms * var(--motion-scale)),
+    var(--input-focus-enter-duration);
+  transition-timing-function: var(--ease-emphasis);
+}
+
+button:focus,
+.file-button:focus-within {
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+  border-color: var(--input-focus-border);
+  box-shadow:
+    var(--control-focus-shadow),
+    var(--control-shadow);
+  transition-duration:
+    var(--control-focus-enter-duration),
+    calc(420ms * var(--motion-scale)),
+    calc(420ms * var(--motion-scale)),
+    var(--control-focus-enter-duration),
+    var(--motion-fast);
+  transition-timing-function: var(--ease-emphasis);
+}
+
+input[type="checkbox"] {
+  --checkbox-size: 18px;
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  display: inline-grid;
+  place-content: center;
+  flex: 0 0 var(--checkbox-size);
+  width: var(--checkbox-size);
+  min-width: var(--checkbox-size);
+  height: var(--checkbox-size);
+  min-height: var(--checkbox-size);
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--checkbox-border);
+  border-radius: 5px;
+  background:
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--checkbox-bg) 92%, var(--ink-strong) 8%),
+      var(--checkbox-bg));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--ink-strong) 10%, transparent),
+    0 0 0 0 var(--checkbox-glow);
+  cursor: pointer;
+  transform: translateZ(0);
+  transition:
+    background calc(160ms * var(--motion-scale)) cubic-bezier(0.2, 0.8, 0.2, 1),
+    border-color calc(160ms * var(--motion-scale)) cubic-bezier(0.2, 0.8, 0.2, 1),
+    box-shadow calc(180ms * var(--motion-scale)) cubic-bezier(0.2, 0.8, 0.2, 1),
+    transform calc(120ms * var(--motion-scale)) cubic-bezier(0.2, 0.86, 0.16, 1);
+}
+
+input[type="checkbox"]::before {
+  content: "";
+  width: 9px;
+  height: 5px;
+  margin-top: -1px;
+  border-left: 2px solid var(--checkbox-check);
+  border-bottom: 2px solid var(--checkbox-check);
+  opacity: 0;
+  clip-path: inset(0 100% 0 0);
+  transform: rotate(-45deg) scale(0.92);
+  transform-origin: 42% 58%;
+  transition:
+    clip-path calc(180ms * var(--motion-scale)) cubic-bezier(0.2, 0.86, 0.16, 1),
+    opacity calc(120ms * var(--motion-scale)) ease;
+}
+
+input[type="checkbox"]:hover {
+  border-color: var(--checkbox-border);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--ink-strong) 12%, transparent),
+    0 0 0 0 transparent;
+}
+
+input[type="checkbox"]:focus,
+input[type="checkbox"]:focus-visible {
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--ink-strong) 12%, transparent),
+    0 0 8px color-mix(in srgb, var(--checkbox-accent) 30%, transparent),
+    0 0 18px color-mix(in srgb, var(--checkbox-accent) 18%, transparent);
+  transition-duration:
+    calc(420ms * var(--motion-scale)),
+    calc(420ms * var(--motion-scale)),
+    var(--control-focus-enter-duration),
+    var(--motion-fast);
+}
+
+input[type="checkbox"]:active {
+  transform: scale(0.94);
+}
+
+input[type="checkbox"]:checked {
+  border-color: color-mix(in srgb, var(--checkbox-accent) 82%, var(--checkbox-accent-strong));
+  background:
+    linear-gradient(135deg, var(--checkbox-accent), var(--checkbox-accent-strong));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.34),
+    0 5px 12px color-mix(in srgb, var(--checkbox-accent) 18%, transparent);
+}
+
+input[type="checkbox"]:checked:hover {
+  border-color: color-mix(in srgb, var(--checkbox-accent) 82%, var(--checkbox-accent-strong));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.34),
+    0 5px 12px color-mix(in srgb, var(--checkbox-accent) 18%, transparent);
+}
+
+input[type="checkbox"]:checked::before {
+  opacity: 1;
+  clip-path: inset(0 0 0 0);
+}
+
+input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+  box-shadow: none;
+}
+
+textarea {
+  min-height: 76px;
+  resize: vertical;
+}
+
+label {
+  color: var(--muted);
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+}
+
+@media (forced-colors: active) {
+  button:focus,
+  .file-button:focus-within,
+  input:not([type]):focus,
+  input[type="text"]:focus,
+  input[type="number"]:focus,
+  input[type="search"]:focus,
+  input[type="email"]:focus,
+  input[type="password"]:focus,
+  input[type="tel"]:focus,
+  input[type="url"]:focus,
+  input[type="date"]:focus,
+  input[type="month"]:focus,
+  input[type="week"]:focus,
+  input[type="time"]:focus,
+  input[type="datetime-local"]:focus,
+  textarea:focus,
+  select:focus {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+    border-color: Highlight;
+    box-shadow: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button,
+  .file-button,
+  input,
+  textarea,
+  select {
+    transition: none !important;
+  }
+
+  button:hover,
+  .file-button:hover {
+    transform: none;
+  }
+
+  input[type="checkbox"],
+  input[type="checkbox"]::before {
+    transition: none;
+  }
+
+  input[type="checkbox"]:active {
+    transform: none;
+  }
+}

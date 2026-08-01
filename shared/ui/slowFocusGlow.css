@@ -1,0 +1,77 @@
+:is(
+  button,
+  a[href],
+  summary,
+  [role="button"],
+  [role="tab"],
+  [role="option"],
+  [role="menuitem"],
+  [role="switch"],
+  [tabindex]:not([tabindex="-1"])
+):is(:hover, :focus):not(:active):not(:disabled):not([aria-disabled="true"]) {
+  box-shadow: var(--global-control-focus-shadow, var(--focus-ring)) !important;
+  transition-duration: var(--control-focus-enter-duration, 520ms) !important;
+  transition-timing-function: var(--ease-emphasis, cubic-bezier(0.18, 0.9, 0.18, 1)) !important;
+}
+
+:is(input, textarea, select):is(:hover, :focus):not(:active):not(:disabled) {
+  box-shadow: var(--global-input-focus-shadow, var(--global-control-focus-shadow, var(--focus-ring))) !important;
+  transition-duration: var(--control-focus-enter-duration, 520ms) !important;
+  transition-timing-function: var(--ease-emphasis, cubic-bezier(0.18, 0.9, 0.18, 1)) !important;
+}
+
+:is(
+  button,
+  a[href],
+  summary,
+  input,
+  textarea,
+  select,
+  [role="button"],
+  [role="tab"],
+  [role="option"],
+  [role="menuitem"],
+  [role="switch"],
+  [tabindex]:not([tabindex="-1"])
+):focus:not(:active):not(:disabled):not([aria-disabled="true"]) {
+  outline: 2px solid transparent !important;
+  outline-offset: 3px;
+}
+
+@media (forced-colors: active) {
+  :is(
+    button,
+    a[href],
+    summary,
+    input,
+    textarea,
+    select,
+    [role="button"],
+    [role="tab"],
+    [role="option"],
+    [role="menuitem"],
+    [role="switch"],
+    [tabindex]:not([tabindex="-1"])
+  ):focus:not(:disabled):not([aria-disabled="true"]) {
+    outline: 2px solid Highlight !important;
+    border-color: Highlight !important;
+    box-shadow: none !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root :is(
+    button,
+    a[href],
+    summary,
+    [role="button"],
+    [role="tab"],
+    [role="option"],
+    [role="menuitem"],
+    [role="switch"],
+    [tabindex]:not([tabindex="-1"])
+  ):is(:hover, :focus):not(:active):not(:disabled):not([aria-disabled="true"]),
+  :root :is(input, textarea, select):is(:hover, :focus):not(:active):not(:disabled) {
+    transition-duration: 1ms !important;
+  }
+}

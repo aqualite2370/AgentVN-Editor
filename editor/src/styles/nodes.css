@@ -1,0 +1,524 @@
+.vn-node {
+  --node-type-color: var(--accent);
+  width: 260px;
+  border: 1px solid var(--line);
+  border-top: 3px solid var(--node-type-color);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--node-type-color) 16%, transparent) 0 5px, transparent 5px),
+    radial-gradient(circle at 0% 0%, color-mix(in srgb, var(--node-type-color) 14%, transparent), transparent 42%),
+    linear-gradient(180deg, color-mix(in srgb, var(--card-bg) 98%, transparent), color-mix(in srgb, var(--panel-bg) 92%, transparent));
+  color: var(--ink);
+  box-shadow:
+    var(--shadow-card),
+    0 0 0 1px color-mix(in srgb, var(--node-type-color) 10%, transparent);
+  padding: 10px;
+  transition:
+    transform var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-normal) var(--ease-standard),
+    background var(--motion-normal) var(--ease-standard);
+}
+
+.vn-node:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--node-type-color) 46%, var(--line));
+  box-shadow:
+    0 18px 48px color-mix(in srgb, var(--node-type-color) 12%, rgba(0, 0, 0, 0.28)),
+    0 0 0 1px color-mix(in srgb, var(--node-type-color) 22%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--ink-strong) 7%, transparent);
+}
+
+.vn-node.is-selected {
+  outline: 2px solid color-mix(in srgb, var(--node-type-color) 74%, transparent);
+  outline-offset: 2px;
+  box-shadow:
+    0 24px 58px color-mix(in srgb, var(--node-type-color) 20%, rgba(0, 0, 0, 0.32)),
+    0 0 0 5px color-mix(in srgb, var(--accent) 13%, transparent),
+    0 0 28px color-mix(in srgb, var(--accent-2) 10%, transparent);
+}
+
+.vn-node.is-ai-generated {
+  border-color: color-mix(in srgb, #77d9ff 42%, var(--line));
+  border-top-color: #ffd166;
+  box-shadow:
+    0 18px 45px rgba(0, 0, 0, 0.28),
+    0 0 0 1px color-mix(in srgb, #77d9ff 34%, transparent),
+    0 0 24px color-mix(in srgb, #77d9ff 16%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.vn-node.is-ai-generated.ai-flow-border::before {
+  z-index: 0;
+}
+
+.vn-node.is-ai-generated > * {
+  position: relative;
+  z-index: 1;
+}
+
+.react-flow__node.is-new-node .vn-node {
+  animation:
+    blueprint-node-enter calc(620ms * var(--motion-scale)) var(--ease-emphasis) both,
+    blueprint-node-attention var(--motion-ai-flow) cubic-bezier(0.2, 0.76, 0.18, 1) calc(620ms * var(--motion-scale)) 3;
+}
+
+.react-flow__node.is-new-ai-node .vn-node {
+  border-color: color-mix(in srgb, #77d9ff 58%, var(--line));
+  box-shadow:
+    0 24px 62px color-mix(in srgb, #77d9ff 20%, rgba(0, 0, 0, 0.3)),
+    0 0 0 1px color-mix(in srgb, #77d9ff 42%, transparent),
+    0 0 34px color-mix(in srgb, #ffd166 18%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.react-flow__node.is-new-ai-node .vn-node.ai-flow-border::before {
+  opacity: 0.78;
+  animation-duration: calc(1800ms * var(--motion-scale));
+}
+
+.react-flow__node.is-decluttered-node .vn-node {
+  animation: node-declutter-settle calc(680ms * var(--motion-scale)) cubic-bezier(0.18, 0.9, 0.18, 1) both;
+}
+
+@keyframes blueprint-node-enter {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.965);
+    filter: saturate(1.22);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: saturate(1);
+  }
+}
+
+@keyframes node-declutter-settle {
+  0% {
+    box-shadow:
+      0 24px 58px color-mix(in srgb, var(--accent-2) 18%, rgba(0, 0, 0, 0.3)),
+      0 0 0 4px color-mix(in srgb, var(--accent-2) 18%, transparent),
+      inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  }
+  100% {
+    box-shadow:
+      var(--shadow-card),
+      0 0 0 1px color-mix(in srgb, var(--node-type-color) 10%, transparent);
+  }
+}
+
+@keyframes blueprint-node-attention {
+  0%, 100% {
+    filter: saturate(1);
+  }
+  42% {
+    filter: saturate(1.18);
+    box-shadow:
+      0 24px 60px color-mix(in srgb, #77d9ff 20%, rgba(0, 0, 0, 0.3)),
+      0 0 0 5px color-mix(in srgb, #77d9ff 14%, transparent),
+      0 0 34px color-mix(in srgb, #ffd166 16%, transparent),
+      inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .react-flow__node.is-new-node,
+  .react-flow__node.is-decluttered-node,
+  .react-flow__node.is-new-node .vn-node,
+  .react-flow__node.is-decluttered-node .vn-node {
+    animation: none;
+    transform: none;
+    opacity: 1;
+  }
+
+  .react-flow__node.is-new-node .vn-node {
+    box-shadow:
+      0 18px 45px rgba(0, 0, 0, 0.28),
+      0 0 0 3px color-mix(in srgb, #77d9ff 18%, transparent),
+      inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  }
+}
+
+.vn-node.is-ai-edited {
+  border-top-color: color-mix(in srgb, #77d9ff 70%, var(--line));
+}
+
+.vn-node.is-imported {
+  border-color: color-mix(in srgb, #44d7a8 42%, var(--line));
+  border-top-color: #44d7a8;
+  box-shadow:
+    0 18px 45px rgba(0, 0, 0, 0.28),
+    0 0 0 1px color-mix(in srgb, #44d7a8 24%, transparent),
+    0 0 22px color-mix(in srgb, #44d7a8 12%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.vn-node header {
+  display: grid;
+  gap: 3px;
+  margin-bottom: 8px;
+}
+
+.ai-source-badge {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  padding: 3px 7px;
+  border: 1px solid color-mix(in srgb, #77d9ff 46%, var(--line));
+  border-radius: 999px;
+  color: color-mix(in srgb, #d9f6ff 88%, var(--ink-strong));
+  background:
+    linear-gradient(135deg, color-mix(in srgb, #77d9ff 20%, transparent), color-mix(in srgb, #ffd166 12%, transparent)),
+    color-mix(in srgb, var(--field) 74%, transparent);
+  box-shadow: 0 0 18px color-mix(in srgb, #77d9ff 16%, transparent);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.ai-source-badge.is-edited {
+  border-color: color-mix(in srgb, #77d9ff 30%, var(--line));
+  color: var(--muted);
+  background: color-mix(in srgb, var(--field) 82%, transparent);
+  box-shadow: none;
+}
+
+.ai-source-badge.is-imported {
+  border-color: color-mix(in srgb, #44d7a8 44%, var(--line));
+  color: color-mix(in srgb, #d8ffef 88%, var(--ink-strong));
+  background:
+    linear-gradient(135deg, color-mix(in srgb, #44d7a8 18%, transparent), color-mix(in srgb, #ffd166 10%, transparent)),
+    color-mix(in srgb, var(--field) 78%, transparent);
+  box-shadow: 0 0 16px color-mix(in srgb, #44d7a8 14%, transparent);
+}
+
+.vn-node p {
+  margin: 0 0 8px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.node-preview {
+  display: grid;
+  gap: 5px;
+  min-height: 64px;
+  padding: 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--field) 70%, var(--bg));
+  border: 1px solid var(--divider);
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.node-preview .is-placeholder,
+.preview-choices .is-placeholder {
+  color: var(--muted);
+  font-style: italic;
+  opacity: 0.76;
+}
+
+.node-preview.is-streaming {
+  align-content: start;
+  max-height: 172px;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 44%, var(--divider));
+  background: color-mix(in srgb, var(--accent) 8%, var(--field));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--ink-strong) 7%, transparent);
+  overflow: auto;
+  animation: node-stream-focus var(--motion-ai-flow) ease-in-out infinite;
+}
+
+.node-preview.is-streaming.ai-flow-active {
+  background:
+    linear-gradient(135deg, color-mix(in srgb, #77d9ff 12%, transparent), color-mix(in srgb, #ffd166 7%, transparent)),
+    color-mix(in srgb, var(--field) 90%, transparent);
+}
+
+@keyframes node-stream-focus {
+  0%,
+  100% {
+    box-shadow:
+      inset 0 1px 0 color-mix(in srgb, var(--ink-strong) 7%, transparent),
+      0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+  50% {
+    box-shadow:
+      inset 0 1px 0 color-mix(in srgb, var(--ink-strong) 10%, transparent),
+      0 0 22px color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+}
+
+.node-preview.is-streaming strong {
+  color: var(--accent-strong);
+  font-size: 11px;
+}
+
+.node-preview.is-streaming pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--ink);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.vn-node footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-top: 9px;
+}
+
+.memory-pill {
+  max-width: 118px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 11px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
+  border-radius: 999px;
+  padding: 3px 7px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 8%, transparent), color-mix(in srgb, var(--accent-2) 6%, transparent)),
+    color-mix(in srgb, var(--surface) 74%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.ai-node-button {
+  min-height: 42px;
+  padding: 0 12px;
+  align-items: center;
+  gap: 6px;
+}
+
+.ai-node-button.is-generating {
+  cursor: wait;
+  opacity: 0.92;
+}
+
+.scene-node {
+  --node-type-color: var(--scene);
+  border-top-color: var(--scene);
+}
+
+.scene-node.has-choice-handles {
+  padding-bottom: 28px;
+}
+
+.scene-node.has-choice-handles > .react-flow__handle-bottom.source:not(.scene-choice-handle) {
+  position: absolute;
+  z-index: 4;
+  top: auto;
+  bottom: 28px;
+  transform: translate(-50%, 50%);
+  width: 8px;
+  height: 8px;
+  pointer-events: all;
+  border-color: color-mix(in srgb, var(--surface-2) 90%, white);
+  background: var(--scene);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--scene) 16%, transparent),
+    0 3px 8px color-mix(in srgb, var(--scene) 22%, transparent);
+}
+
+.scene-node.has-choice-handles > .react-flow__handle-bottom.source:not(.scene-choice-handle) {
+  display: none;
+}
+
+.scene-node.has-choice-handles > .scene-choice-handle {
+  position: absolute;
+  z-index: 5;
+  top: auto;
+  bottom: 5px;
+  transform: translate(-50%, 50%);
+  width: 11px;
+  height: 11px;
+  pointer-events: all;
+  border-color: color-mix(in srgb, var(--surface-2) 90%, white);
+  background: var(--choice);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--choice) 18%, transparent),
+    0 4px 10px color-mix(in srgb, var(--choice) 24%, transparent);
+}
+
+.scene-node.has-choice-handles > .scene-choice-handle:hover,
+.scene-node.has-choice-handles > .scene-choice-handle.connectingto,
+.scene-node.has-choice-handles > .scene-choice-handle.valid {
+  background: color-mix(in srgb, var(--choice) 78%, var(--accent-2));
+  box-shadow:
+    0 0 0 5px color-mix(in srgb, var(--choice) 24%, transparent),
+    0 6px 14px color-mix(in srgb, var(--choice) 28%, transparent);
+}
+
+.modifier-node {
+  --node-type-color: var(--modifier);
+  border-top-color: var(--modifier);
+}
+
+.choice-node {
+  --node-type-color: var(--choice);
+  border-top-color: var(--choice);
+}
+
+.condition-node {
+  --node-type-color: var(--condition);
+  border-top-color: var(--condition);
+}
+
+.animation-node {
+  --node-type-color: var(--animation);
+  border-top-color: var(--animation);
+}
+
+.start-node {
+  --node-type-color: var(--start);
+  border-top-color: var(--start);
+}
+
+.end-node {
+  --node-type-color: var(--end);
+  border-top-color: var(--end);
+}
+
+.react-flow__handle {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--surface-2);
+  background: var(--accent-2);
+}
+
+.react-flow__minimap {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--panel-bg) 92%, transparent), color-mix(in srgb, var(--card-bg) 84%, transparent));
+  border: 1px solid color-mix(in srgb, var(--line) 88%, transparent);
+  box-shadow: var(--shadow);
+}
+
+.react-flow__edge-path {
+  stroke: var(--edge-color, var(--line-strong));
+  stroke-width: 2;
+}
+
+.react-flow__edge .orthogonal-edge-path {
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.react-flow__edge .orthogonal-edge-path.is-junction-edge {
+  stroke-width: 2.15;
+}
+
+.react-flow__edge .orthogonal-edge-path.is-back-edge {
+  stroke-dasharray: 9 6;
+}
+
+.react-flow__edge .orthogonal-edge-path.is-loop-edge {
+  stroke-dasharray: 9 6;
+}
+
+.react-flow__edge .orthogonal-edge-path.edge-role-loop-continue {
+  stroke-width: 2.45;
+}
+
+.react-flow__edge .orthogonal-edge-path.edge-role-loop-exit {
+  stroke-dasharray: 5 7;
+  stroke-width: 2.45;
+}
+
+.react-flow__edge .orthogonal-edge-path.edge-role-loop-entry {
+  stroke-dasharray: 12 5;
+}
+
+.react-flow__edge.selected .orthogonal-edge-path,
+.react-flow__edge:focus-visible .orthogonal-edge-path {
+  stroke: var(--accent);
+  stroke-width: 2.6;
+}
+
+.react-flow__connection-path {
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.react-flow__controls {
+  box-shadow: none;
+}
+
+.react-flow__controls button {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface-2) 94%, transparent), color-mix(in srgb, var(--surface) 86%, transparent));
+  border-color: var(--line);
+  color: var(--ink);
+  box-shadow: var(--control-shadow);
+}
+
+.react-flow__background {
+  background-color: transparent;
+}
+
+.loop-node {
+  --node-type-color: var(--loop);
+  position: relative;
+  padding-bottom: 34px;
+  border-top-color: var(--loop);
+}
+
+.loop-node-summary {
+  display: grid;
+  gap: 5px;
+  margin-bottom: 10px;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--loop) 24%, var(--divider));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--loop) 8%, var(--field));
+}
+
+.loop-node-summary span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.loop-node-summary strong {
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.loop-node-exit-labels {
+  position: absolute;
+  right: 8px;
+  bottom: 7px;
+  left: 8px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.loop-node-exit-labels span:first-child {
+  color: color-mix(in srgb, var(--loop) 72%, var(--ink-strong));
+}
+
+.loop-node-exit-labels span:last-child {
+  color: color-mix(in srgb, var(--loop-exit) 76%, var(--ink-strong));
+}
+
+.loop-node > .loop-continue-handle {
+  background: var(--loop);
+}
+
+.loop-node > .loop-exit-handle {
+  background: var(--loop-exit);
+}

@@ -1,0 +1,9 @@
+export class UnsupportedFileTypeError extends Error {}
+export class EmptyDocumentError extends Error {}
+export class TextTooLargeWarning extends Error {}
+export class ChapterSplitError extends Error {}
+export class SceneSplitError extends Error {}
+export class CharacterExtractionError extends Error {}
+export class AdaptationError extends Error {}
+export class SourceMappingError extends Error {}
+export class ImportToGraphError extends Error {}

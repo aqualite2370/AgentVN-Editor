@@ -1,0 +1,22 @@
+{
+  "name": "agentvn",
+  "version": "1.0.0",
+  "description": "Local-first AI-assisted visual novel editor and runtime.",
+  "private": true,
+  "scripts": {
+    "build:editor": "npm --prefix editor run build",
+    "build:player": "npm --prefix GameCli_framework run build",
+    "build": "npm run build:editor && npm run build:player"
+  },
+  "keywords": [
+    "visual-novel",
+    "editor",
+    "tauri",
+    "ai"
+  ],
+  "author": "AquaLite",
+  "license": "SEE LICENSE IN LICENSE",
+  "dependencies": {
+    "jszip": "^3.10.1"
+  }
+}

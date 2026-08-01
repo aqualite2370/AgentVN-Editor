@@ -1,0 +1,1507 @@
+.story-player {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 10%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 34%),
+    var(--bg);
+  cursor: pointer;
+  isolation: isolate;
+}
+
+.story-player.is-launch-covered {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.stage-viewport,
+.camera-impulse,
+.camera-pose {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.stage-viewport {
+  z-index: 0;
+  overflow: hidden;
+  background: var(--bg);
+  contain: paint;
+}
+
+.camera-impulse,
+.camera-pose {
+  transform-origin: 50% 50%;
+  will-change: transform;
+}
+
+.camera-pose {
+  transform-origin: 0 0;
+}
+
+.focused-image-overlay {
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  z-index: var(--overlay-z-modal, 80);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(18px, 4vw, 56px);
+  overflow: hidden;
+  cursor: pointer;
+  outline: none;
+  isolation: isolate;
+  animation: focused-image-enter calc(220ms * var(--runtime-skin-motion-scale, 1)) ease-out both;
+}
+
+.focused-image-overlay.is-exiting {
+  pointer-events: none;
+  animation: focused-image-exit calc(220ms * var(--runtime-skin-motion-scale, 1)) ease-in both;
+}
+
+.focused-image-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: rgb(0 0 0 / var(--focused-image-backdrop-opacity, 0.62));
+  -webkit-backdrop-filter: blur(var(--focused-image-backdrop-blur, 12px));
+  backdrop-filter: blur(var(--focused-image-backdrop-blur, 12px));
+}
+
+.focused-image-figure {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 14px;
+  width: min(88vw, 1120px, 100%);
+  height: min(82vh, 760px, 100%);
+  margin: 0;
+  align-items: stretch;
+  justify-items: center;
+  pointer-events: none;
+}
+
+.focused-image-media {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.focused-image-media img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  filter: drop-shadow(0 24px 50px rgb(0 0 0 / 0.55));
+}
+
+.focused-image-figure figcaption {
+  max-width: min(760px, 88vw);
+  padding: 10px 16px;
+  color: #fff;
+  font-size: clamp(14px, 2vh, 20px);
+  line-height: 1.55;
+  text-align: center;
+  text-shadow: 0 2px 12px #000;
+}
+
+.focused-image-missing {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 9px;
+  width: min(680px, 84vw);
+  min-height: min(420px, 58vh);
+  padding: 30px;
+  border: 1px solid rgb(255 255 255 / 0.3);
+  background: rgb(24 24 28 / 0.9);
+  color: #fff;
+  text-align: center;
+}
+
+.focused-image-missing strong {
+  font-size: 22px;
+}
+
+.focused-image-missing span,
+.focused-image-missing small {
+  color: rgb(255 255 255 / 0.76);
+}
+
+@keyframes focused-image-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes focused-image-exit {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+.ui-skin-scope {
+  position: relative;
+  min-height: 100dvh;
+  height: 100dvh;
+  background: var(--bg);
+  font-family: var(--runtime-ui-font-family, Inter, "Segoe UI", system-ui, sans-serif);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+.runtime-layout-frame {
+  position: relative;
+  width: min(100vw, calc(100vh * 16 / 9));
+  max-width: 100vw;
+  max-height: 100dvh;
+  aspect-ratio: var(--runtime-frame-aspect, 16 / 9);
+  overflow: hidden;
+  background:
+    linear-gradient(color-mix(in srgb, var(--line) 20%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--line) 20%, transparent) 1px, transparent 1px),
+    var(--bg);
+  background-size: 26px 26px;
+}
+
+.ui-skin-scope[data-ui-breakpoint="mobile"] .runtime-layout-frame {
+  width: min(100vw, calc(100vh * 16 / 9));
+}
+
+.ui-skin-scope[data-ui-screen="player"][data-ui-breakpoint="mobile"][data-ui-orientation="portrait"] .runtime-layout-frame {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: min(100vh, calc(100vw * 16 / 9));
+  max-width: none;
+  max-height: none;
+  transform: translate(-50%, -50%) rotate(90deg);
+  transform-origin: center center;
+}
+
+.ui-skin-scope[data-ui-screen="player"][data-ui-breakpoint="mobile"][data-ui-orientation="portrait"] {
+  display: block;
+}
+
+.ui-layouted {
+  transition:
+    background-color calc(240ms * var(--runtime-skin-motion-scale, 1)) ease,
+    border-color calc(240ms * var(--runtime-skin-motion-scale, 1)) ease,
+    opacity calc(240ms * var(--runtime-skin-motion-scale, 1)) ease;
+}
+
+.background-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  isolation: isolate;
+  pointer-events: none;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 22px;
+}
+
+.save-status-toast {
+  position: absolute;
+  top: calc(18px * var(--runtime-ui-scale, 1));
+  left: 50%;
+  z-index: 120;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 6px 11px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 5px;
+  background: rgba(8, 13, 22, 0.88);
+  color: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.3);
+  font-size: 11px;
+  transform: translateX(-50%);
+  backdrop-filter: blur(10px);
+}
+
+.save-status-toast.is-saved {
+  border-color: rgba(118, 214, 154, 0.42);
+}
+
+.save-status-toast.is-error {
+  border-color: rgba(255, 118, 118, 0.48);
+}
+
+.save-status-toast.is-saving svg {
+  animation: save-status-spin 900ms linear infinite;
+}
+
+.background-transition-frame {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 10%, transparent), color-mix(in srgb, var(--accent-2) 8%, transparent)),
+    var(--bg);
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  background-position: center;
+  backface-visibility: hidden;
+  transform: translateZ(0);
+}
+
+.background-transition-frame.is-previous {
+  z-index: 0;
+}
+
+.background-transition-frame.is-current {
+  z-index: 1;
+}
+
+.background-layer.is-transitioning .background-transition-frame {
+  animation-duration: var(--visual-transition-duration, 420ms);
+  animation-timing-function: var(--visual-transition-easing, ease-in-out);
+  animation-fill-mode: both;
+  will-change: opacity, transform, filter, clip-path;
+}
+
+.background-layer.transition-fade .background-transition-frame.is-current,
+.background-layer.transition-crossfade .background-transition-frame.is-current {
+  animation-name: background-transition-fade-in;
+}
+
+.background-layer.transition-crossfade .background-transition-frame.is-previous {
+  animation-name: background-transition-fade-out;
+}
+
+.background-layer.transition-reveal_center .background-transition-frame.is-current {
+  animation-name: background-transition-reveal-center;
+}
+
+.background-layer.transition-wipe_left_to_right .background-transition-frame.is-current {
+  animation-name: background-transition-wipe-left-to-right;
+}
+
+.background-layer.transition-wipe_right_to_left .background-transition-frame.is-current {
+  animation-name: background-transition-wipe-right-to-left;
+}
+
+.background-layer.transition-blur .background-transition-frame.is-current {
+  animation-name: background-transition-blur-in;
+}
+
+.background-layer.transition-blur .background-transition-frame.is-previous {
+  animation-name: background-transition-blur-out;
+}
+
+.background-layer.transition-slide_left .background-transition-frame.is-current {
+  animation-name: background-transition-slide-left-in;
+}
+
+.background-layer.transition-slide_left .background-transition-frame.is-previous {
+  animation-name: background-transition-slide-left-out;
+}
+
+.background-layer.transition-slide_right .background-transition-frame.is-current {
+  animation-name: background-transition-slide-right-in;
+}
+
+.background-layer.transition-slide_right .background-transition-frame.is-previous {
+  animation-name: background-transition-slide-right-out;
+}
+
+.background-layer.transition-slide_up .background-transition-frame.is-current {
+  animation-name: background-transition-slide-up-in;
+}
+
+.background-layer.transition-slide_up .background-transition-frame.is-previous {
+  animation-name: background-transition-slide-up-out;
+}
+
+.background-layer.transition-slide_down .background-transition-frame.is-current {
+  animation-name: background-transition-slide-down-in;
+}
+
+.background-layer.transition-slide_down .background-transition-frame.is-previous {
+  animation-name: background-transition-slide-down-out;
+}
+
+.background-transition-frame.is-missing,
+.background-transition-frame.is-placeholder {
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--runtime-panel) 86%, black 14%), color-mix(in srgb, var(--runtime-panel) 78%, var(--accent-2) 22%)),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.1) 0 2px, transparent 2px 92px),
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.08) 0 2px, transparent 2px 92px),
+    var(--runtime-panel);
+}
+
+.background-transition-frame.is-placeholder::after,
+.background-transition-frame.is-missing::after {
+  content: "";
+  position: absolute;
+  inset: 8%;
+  border: 2px dashed color-mix(in srgb, var(--line) 62%, transparent);
+  border-radius: 18px;
+  pointer-events: none;
+}
+
+.background-placeholder-note {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 8px;
+  max-width: min(620px, 72vw);
+  padding: 18px 20px;
+  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--runtime-panel) 72%, transparent);
+  color: var(--runtime-panel-text);
+  text-align: left;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.26);
+}
+
+.background-placeholder-note strong {
+  font-size: clamp(18px, 2vw, 28px);
+}
+
+.background-placeholder-note span,
+.background-placeholder-note small {
+  overflow-wrap: anywhere;
+  color: color-mix(in srgb, var(--runtime-panel-text) 78%, transparent);
+}
+
+.background-placeholder-note small {
+  font-size: 14px;
+}
+
+@keyframes background-transition-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes background-transition-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes background-transition-reveal-center {
+  from {
+    opacity: 0.72;
+    clip-path: inset(48% 48% 48% 48% round 22px);
+    transform: scale(1.035);
+  }
+  to {
+    opacity: 1;
+    clip-path: inset(0 0 0 0 round 0);
+    transform: scale(1);
+  }
+}
+
+@keyframes background-transition-wipe-left-to-right {
+  from { clip-path: inset(0 100% 0 0); }
+  to { clip-path: inset(0 0 0 0); }
+}
+
+@keyframes background-transition-wipe-right-to-left {
+  from { clip-path: inset(0 0 0 100%); }
+  to { clip-path: inset(0 0 0 0); }
+}
+
+@keyframes background-transition-blur-in {
+  from {
+    opacity: 0;
+    filter: blur(22px) saturate(0.82);
+    transform: scale(1.035);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0) saturate(1);
+    transform: scale(1);
+  }
+}
+
+@keyframes background-transition-blur-out {
+  from {
+    opacity: 1;
+    filter: blur(0);
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    filter: blur(14px);
+    transform: scale(0.985);
+  }
+}
+
+@keyframes background-transition-slide-left-in {
+  from { transform: translate3d(100%, 0, 0); }
+  to { transform: translate3d(0, 0, 0); }
+}
+
+@keyframes background-transition-slide-left-out {
+  from { opacity: 1; transform: translate3d(0, 0, 0); }
+  to { opacity: 0.72; transform: translate3d(-12%, 0, 0); }
+}
+
+@keyframes background-transition-slide-right-in {
+  from { transform: translate3d(-100%, 0, 0); }
+  to { transform: translate3d(0, 0, 0); }
+}
+
+@keyframes background-transition-slide-right-out {
+  from { opacity: 1; transform: translate3d(0, 0, 0); }
+  to { opacity: 0.72; transform: translate3d(12%, 0, 0); }
+}
+
+@keyframes background-transition-slide-up-in {
+  from { transform: translate3d(0, 100%, 0); }
+  to { transform: translate3d(0, 0, 0); }
+}
+
+@keyframes background-transition-slide-up-out {
+  from { opacity: 1; transform: translate3d(0, 0, 0); }
+  to { opacity: 0.72; transform: translate3d(0, -12%, 0); }
+}
+
+@keyframes background-transition-slide-down-in {
+  from { transform: translate3d(0, -100%, 0); }
+  to { transform: translate3d(0, 0, 0); }
+}
+
+@keyframes background-transition-slide-down-out {
+  from { opacity: 1; transform: translate3d(0, 0, 0); }
+  to { opacity: 0.72; transform: translate3d(0, 12%, 0); }
+}
+
+.sprite-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  --sprite-crossfade-duration: calc(340ms * var(--runtime-skin-motion-scale, 1));
+}
+
+.sprite-focus-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: #000;
+  opacity: 0;
+  will-change: opacity;
+  animation: sprite-focus-backdrop var(--sprite-focus-duration, 1400ms) ease-in-out both;
+}
+
+.sprite-slot {
+  position: absolute;
+  bottom: clamp(32px, calc(52px * var(--runtime-ui-scale, 1)), 88px);
+  width: clamp(calc(220px * var(--runtime-ui-scale, 1)), 36%, calc(560px * var(--runtime-ui-scale, 1)));
+  height: min(92%, calc(940px * var(--runtime-ui-scale, 1)));
+  display: grid;
+  place-items: end center;
+  overflow: visible;
+  opacity: 1;
+  transform-origin: center bottom;
+  will-change: opacity;
+}
+
+.sprite-slot.left { left: 7%; }
+.sprite-slot.center { left: 50%; transform: translateX(-50%); }
+.sprite-slot.right { right: 7%; }
+
+.sprite-layer.has-multiple-sprites .sprite-slot {
+  width: clamp(calc(180px * var(--runtime-ui-scale, 1)), 30%, calc(460px * var(--runtime-ui-scale, 1)));
+}
+
+.sprite-layer.has-multiple-sprites .sprite-slot.left {
+  left: 3%;
+}
+
+.sprite-layer.has-multiple-sprites .sprite-slot.right {
+  right: 3%;
+}
+
+.sprite-layer.has-multiple-sprites .sprite-slot.center {
+  width: clamp(calc(180px * var(--runtime-ui-scale, 1)), 28%, calc(430px * var(--runtime-ui-scale, 1)));
+}
+
+.sprite-slot.is-exiting {
+  z-index: 0;
+  animation: sprite-presence-out var(--sprite-crossfade-duration) var(--ease) both;
+}
+
+.sprite-slot.has-runtime-animation .sprite-animation-frame {
+  will-change: transform, opacity, filter;
+}
+
+.sprite-slot.is-focus-companion {
+  will-change: filter;
+  animation: sprite-focus-companion var(--sprite-focus-duration, 1400ms) ease-in-out both;
+}
+
+.sprite-slot.has-runtime-animation.is-exiting {
+  animation: none;
+}
+
+@keyframes sprite-focus-backdrop {
+  0%, 100% { opacity: 0; }
+  18%, 76% { opacity: 0.38; }
+}
+
+@keyframes sprite-focus-companion {
+  0%, 100% { filter: brightness(1); }
+  18%, 76% { filter: brightness(0.58); }
+}
+
+.sprite-slot.is-entering,
+.sprite-slot.is-present {
+  z-index: 1;
+}
+
+.sprite-animation-frame {
+  display: grid;
+  place-items: end center;
+  width: 100%;
+  height: 100%;
+  transform-origin: center bottom;
+}
+
+.sprite-slot.is-speaking {
+  z-index: 3;
+}
+
+.speaker-focus-frame {
+  display: grid;
+  place-items: end center;
+  width: 100%;
+  height: 100%;
+  transform: scale(var(--speaker-focus-scale, 1));
+  transform-origin: center bottom;
+  transition: transform var(--speaker-focus-duration, 220ms) ease-out;
+  will-change: transform;
+}
+
+.sprite-replacement-stack {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: end center;
+}
+
+.sprite-replacement-frame {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: end center;
+  backface-visibility: hidden;
+  transform-origin: center bottom;
+}
+
+.sprite-replacement-frame.is-previous {
+  z-index: 0;
+}
+
+.sprite-replacement-frame.is-current {
+  z-index: 1;
+}
+
+.sprite-replacement-stack.is-switching .sprite-replacement-frame {
+  animation-duration: var(--sprite-switch-duration, 420ms);
+  animation-timing-function: var(--sprite-switch-easing, ease-in-out);
+  animation-fill-mode: both;
+  will-change: opacity, transform, filter, clip-path;
+}
+
+.sprite-replacement-stack.sprite-switch-fade .sprite-replacement-frame.is-current,
+.sprite-replacement-stack.sprite-switch-crossfade .sprite-replacement-frame.is-current {
+  animation-name: background-transition-fade-in;
+}
+
+.sprite-replacement-stack.sprite-switch-crossfade .sprite-replacement-frame.is-previous {
+  animation-name: background-transition-fade-out;
+}
+
+.sprite-replacement-stack.sprite-switch-reveal_center .sprite-replacement-frame.is-current {
+  animation-name: background-transition-reveal-center;
+}
+
+.sprite-replacement-stack.sprite-switch-wipe_left_to_right .sprite-replacement-frame.is-current {
+  animation-name: background-transition-wipe-left-to-right;
+}
+
+.sprite-replacement-stack.sprite-switch-wipe_right_to_left .sprite-replacement-frame.is-current {
+  animation-name: background-transition-wipe-right-to-left;
+}
+
+.sprite-replacement-stack.sprite-switch-blur .sprite-replacement-frame.is-current {
+  animation-name: background-transition-blur-in;
+}
+
+.sprite-replacement-stack.sprite-switch-blur .sprite-replacement-frame.is-previous {
+  animation-name: background-transition-blur-out;
+}
+
+.sprite-replacement-stack.sprite-switch-slide_left .sprite-replacement-frame.is-current {
+  animation-name: background-transition-slide-left-in;
+}
+
+.sprite-replacement-stack.sprite-switch-slide_left .sprite-replacement-frame.is-previous {
+  animation-name: background-transition-slide-left-out;
+}
+
+.sprite-replacement-stack.sprite-switch-slide_right .sprite-replacement-frame.is-current {
+  animation-name: background-transition-slide-right-in;
+}
+
+.sprite-replacement-stack.sprite-switch-slide_right .sprite-replacement-frame.is-previous {
+  animation-name: background-transition-slide-right-out;
+}
+
+.sprite-replacement-stack.sprite-switch-slide_up .sprite-replacement-frame.is-current {
+  animation-name: background-transition-slide-up-in;
+}
+
+.sprite-replacement-stack.sprite-switch-slide_up .sprite-replacement-frame.is-previous {
+  animation-name: background-transition-slide-up-out;
+}
+
+.sprite-replacement-stack.sprite-switch-slide_down .sprite-replacement-frame.is-current {
+  animation-name: background-transition-slide-down-in;
+}
+
+.sprite-replacement-stack.sprite-switch-slide_down .sprite-replacement-frame.is-previous {
+  animation-name: background-transition-slide-down-out;
+}
+
+.sprite-slot img {
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  max-height: 100%;
+  object-fit: contain;
+  object-position: center bottom;
+  transform: scale(var(--sprite-base-scale, 1));
+  transform-origin: center bottom;
+  filter: drop-shadow(0 24px 36px rgba(0, 0, 0, 0.42));
+}
+
+.sprite-slot.is-entering:not(.has-runtime-animation) img {
+  animation: sprite-presence-in var(--motion-emphasis) var(--ease-emphasis) both;
+}
+
+.sprite-slot.has-runtime-animation img {
+  animation: none;
+}
+
+.sprite-placeholder {
+  display: grid;
+  place-items: center;
+  width: 220px;
+  height: 420px;
+  border: 1px solid var(--line);
+  border-radius: 8px 8px 0 0;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--runtime-control-text) 12%, transparent), color-mix(in srgb, var(--runtime-control-text) 4%, transparent));
+  color: var(--ink);
+}
+
+.dialog-box {
+  position: absolute;
+  display: grid;
+  grid-template-rows: auto minmax(0, auto) auto;
+  align-content: stretch;
+  gap: calc(6px * var(--runtime-ui-scale, 1));
+  min-width: min(calc(280px * var(--runtime-ui-scale, 1)), 92%);
+  min-height: min(calc(148px * var(--runtime-ui-scale, 1)), 34%);
+  max-height: min(74%, calc(560px * var(--runtime-ui-scale, 1)));
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 12%, transparent), transparent 54%),
+    color-mix(in srgb, var(--runtime-dialog) 88%, transparent);
+  color: var(--runtime-dialog-text);
+  text-align: left;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(16px);
+  overflow: hidden;
+  cursor: pointer;
+  z-index: var(--overlay-z-player);
+  transition:
+    border-color var(--motion-fast) var(--ease),
+    box-shadow var(--motion-fast) var(--ease),
+    background var(--motion-fast) var(--ease);
+}
+
+.dialog-box.ui-layouted {
+  min-width: 0;
+  min-height: 0;
+  max-height: none;
+  box-sizing: border-box;
+}
+
+.dialog-box,
+.dialog-box::before {
+  background-clip: padding-box;
+}
+
+.dialog-box.runtime-animation-settled {
+  animation: none;
+  filter: none;
+  will-change: auto;
+}
+
+.dialog-box.runtime-animation-settled {
+  transform: none;
+}
+
+.dialog-box.has-dialog-visual-style {
+  background-color: color-mix(in srgb, var(--runtime-dialog) 82%, black 18%);
+}
+
+.dialog-box.has-dialog-visual-style::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background:
+    radial-gradient(circle at 16% 18%, color-mix(in srgb, var(--runtime-dialog-accent, var(--accent)) 18%, transparent), transparent 32%),
+    linear-gradient(90deg, color-mix(in srgb, var(--runtime-dialog-accent, var(--accent)) 12%, transparent), transparent 44%);
+  opacity: 0.72;
+}
+
+.dialog-box.has-dialog-visual-style > * {
+  position: relative;
+  z-index: 1;
+}
+
+.dialog-box.has-child-layout {
+  display: block;
+  /* Skin components are authored in stage coordinates. Speaker labels may
+   * intentionally straddle the dialog panel's top edge, so the React parent
+   * must not clip them to the panel rectangle. Text and decorative layers
+   * retain their own clipping boundaries below. */
+  overflow: visible;
+}
+
+.dialog-box.has-child-layout::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.dialog-box:not(.has-child-layout) {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.dialog-box:not(.has-child-layout) > .speaker,
+.dialog-box:not(.has-child-layout) > .dialog-text,
+.dialog-box:not(.has-child-layout) > .continue-indicator {
+  position: relative;
+  inset: auto;
+}
+
+.dialog-box:not(.has-child-layout) > .speaker {
+  align-self: start;
+  justify-self: start;
+}
+
+.dialog-box:not(.has-child-layout) > .dialog-text {
+  align-self: stretch;
+  width: 100%;
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.dialog-box:not(.has-child-layout) > .continue-indicator {
+  align-self: end;
+  justify-self: end;
+}
+
+.dialog-box::after {
+  content: "";
+  position: absolute;
+  left: var(--dialog-ripple-x, 50%);
+  top: var(--dialog-ripple-y, 50%);
+  z-index: 1;
+  width: clamp(28px, calc(42px * var(--runtime-ui-scale, 1)), 58px);
+  height: clamp(28px, calc(42px * var(--runtime-ui-scale, 1)), 58px);
+  pointer-events: none;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle, color-mix(in srgb, var(--runtime-dialog-text) 16%, transparent) 0 12%, transparent 56%),
+    radial-gradient(circle, color-mix(in srgb, var(--runtime-dialog-accent, var(--accent)) 12%, transparent) 0 28%, transparent 72%);
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.42);
+  transform-origin: center;
+}
+
+.dialog-box.is-rippling::after {
+  animation: dialog-touch-ripple 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.speaker.ui-layouted,
+.dialog-text.ui-layouted,
+.continue-indicator.ui-layouted {
+  position: absolute;
+  margin: 0;
+  z-index: 2;
+  box-sizing: border-box;
+  transition:
+    background-color calc(240ms * var(--runtime-skin-motion-scale, 1)) ease,
+    border-color calc(240ms * var(--runtime-skin-motion-scale, 1)) ease,
+    opacity calc(240ms * var(--runtime-skin-motion-scale, 1)) ease;
+}
+
+.speaker.ui-layouted {
+  min-width: 0;
+  min-height: 0;
+  max-width: none;
+  flex: none;
+}
+
+.speaker {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  max-width: min(56%, calc(360px * var(--runtime-ui-scale, 1)));
+  min-width: calc(72px * var(--runtime-ui-scale, 1));
+  min-height: calc(24px * var(--runtime-ui-scale, 1));
+  padding: calc(4px * var(--runtime-ui-scale, 1)) calc(12px * var(--runtime-ui-scale, 1));
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line));
+  border-radius: 7px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--runtime-speaker) 92%, var(--runtime-control-text) 8%), var(--runtime-speaker)),
+    var(--runtime-speaker);
+  color: var(--runtime-speaker-text);
+  font-weight: 700;
+  font-size: var(--runtime-speaker-layout-font-size, var(--runtime-body-font-size));
+  line-height: 1.05;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 0 color-mix(in srgb, var(--runtime-speaker) 78%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--runtime-speaker-text) 20%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--accent) 10%, transparent),
+    0 8px 18px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.speaker.ui-layouted.has-layout-style {
+  min-width: 0;
+  min-height: 0;
+  max-width: none;
+  max-height: none;
+}
+
+.dialog-text {
+  position: absolute;
+  align-self: stretch;
+  margin: 0;
+  min-height: 0;
+  max-height: none;
+  overflow: visible;
+  font-family: var(--runtime-text-font-family, var(--runtime-ui-font-family, Inter, "Segoe UI", system-ui, sans-serif));
+  font-size: var(--runtime-dialog-layout-font-size, var(--runtime-dialog-font-size));
+  line-height: 1.58;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  hyphens: auto;
+  text-wrap: pretty;
+}
+
+.dialog-text > span {
+  display: block;
+  white-space: pre-wrap;
+  max-width: 100%;
+  overflow-wrap: inherit;
+  word-break: inherit;
+}
+
+.dialog-text.has-layout-style {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.dialog-box[data-ui-frame-mode="image_owned"],
+.choice-panel[data-ui-frame-mode="image_owned"],
+.choice-panel[data-ui-frame-mode="image_owned"] .choice-option,
+.choice-panel .choice-option[data-ui-frame-mode="image_owned"] {
+  background-color: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+}
+
+.dialog-box[data-ui-frame-mode="image_owned"]::before,
+.dialog-box[data-ui-frame-mode="image_owned"]::after,
+.choice-panel[data-ui-frame-mode="image_owned"]::before,
+.choice-panel[data-ui-frame-mode="image_owned"]::after {
+  display: none !important;
+}
+
+.dialog-text.is-paginated {
+  overflow: hidden;
+}
+
+/* A custom skin may omit a continue-indicator component.  In that case the
+ * absolutely positioned fallback must still have a deterministic safe area;
+ * relying on its static position puts it over the first line of dialogue. */
+.dialog-box.has-child-layout > .continue-indicator:not(.ui-layouted) {
+  right: 3%;
+  bottom: 4%;
+  z-index: 3;
+}
+
+.dialog-box.has-child-layout > .speaker:not(.ui-layouted) {
+  left: 3%;
+  top: 6%;
+  z-index: 3;
+}
+
+.dialog-box.has-child-layout > .dialog-text:not(.ui-layouted) {
+  left: 4%;
+  top: 28%;
+  width: 88%;
+  height: 54%;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.dialog-text.is-narration {
+  color: color-mix(in srgb, var(--runtime-dialog-text) 94%, white 6%);
+  text-shadow: 0 1px 18px color-mix(in srgb, var(--runtime-dialog) 36%, transparent);
+  display: flex;
+  align-items: center;
+}
+
+.continue-indicator {
+  position: absolute;
+  justify-self: end;
+  color: var(--accent-2);
+  font-size: var(--runtime-small-font-size);
+  line-height: 1.15;
+  white-space: nowrap;
+  animation: continue-pulse var(--runtime-continue-pulse-ms, 1440ms) ease-in-out infinite;
+}
+
+.choice-panel {
+  position: absolute;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: var(--runtime-choice-local-gap, calc(12px * var(--runtime-ui-scale, 1)));
+  pointer-events: none;
+  overflow: visible;
+  z-index: var(--overlay-z-player);
+}
+
+.choice-panel.ui-layouted {
+  min-width: 0;
+  min-height: 0;
+  max-width: none;
+  max-height: none;
+  box-sizing: border-box;
+}
+
+.choice-panel.is-entering {
+  pointer-events: none;
+}
+
+.choice-panel .ui-button.choice-option {
+  pointer-events: auto;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  min-height: max(36px, calc(var(--runtime-touch-size) * 0.82));
+  padding: var(--runtime-choice-local-padding, calc(8px * var(--runtime-ui-scale, 1)) calc(24px * var(--runtime-ui-scale, 1)));
+  border: 1px solid var(--runtime-choice-local-border, color-mix(in srgb, var(--runtime-choice-local-accent, var(--runtime-choice, var(--accent))) 36%, transparent));
+  border-radius: var(--runtime-choice-local-radius, 999px);
+  background-color: var(--runtime-choice-local-bg, var(--runtime-choice, var(--accent)));
+  background-image: var(--runtime-choice-option-background-image, linear-gradient(180deg, color-mix(in srgb, #fff 12%, transparent), transparent));
+  background-size: var(--runtime-choice-option-background-size, auto);
+  background-repeat: var(--runtime-choice-option-background-repeat, repeat);
+  background-position: var(--runtime-choice-option-background-position, 0% 0%);
+  color: var(--runtime-choice-local-text, var(--runtime-choice-text, #07111f));
+  justify-content: center;
+  justify-self: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+  text-align: center;
+  line-height: 1.28;
+  font-size: var(--runtime-choice-local-font-size, var(--runtime-body-font-size));
+  font-weight: var(--runtime-choice-local-font-weight, 760);
+  box-shadow: var(--runtime-choice-local-shadow, 0 10px 24px color-mix(in srgb, var(--runtime-choice-local-accent, var(--runtime-choice, var(--accent))) 14%, transparent));
+  backdrop-filter: blur(8px);
+  transition:
+    transform var(--motion-fast) var(--ease),
+    opacity var(--motion-fast) var(--ease),
+    border-color var(--control-focus-exit-duration) var(--ease),
+    background-color var(--control-focus-exit-duration) var(--ease),
+    box-shadow var(--control-focus-exit-duration) var(--ease);
+  animation: choice-fade-in calc(var(--motion-emphasis) * var(--runtime-skin-motion-scale, 1)) var(--ease-emphasis) both;
+  animation-delay: calc(var(--choice-delay, 0ms) * var(--runtime-skin-motion-scale, 1));
+}
+
+.choice-panel .ui-button.choice-option:hover:not(:disabled),
+.choice-panel .ui-button.choice-option:focus:not(:disabled),
+.choice-panel .ui-button.choice-option:focus-visible:not(:disabled) {
+  border-color: var(--runtime-choice-local-border, color-mix(in srgb, var(--runtime-choice-local-accent, var(--runtime-choice, var(--accent))) 36%, transparent));
+  background-color: var(--runtime-choice-local-bg, var(--runtime-choice, var(--accent)));
+  background-image: var(--runtime-choice-option-background-image, linear-gradient(180deg, color-mix(in srgb, #fff 12%, transparent), transparent));
+  color: var(--runtime-choice-local-text, var(--runtime-choice-text, #07111f));
+  box-shadow: var(--runtime-choice-local-shadow, 0 9px 20px color-mix(in srgb, var(--runtime-choice-local-accent, var(--runtime-choice, var(--accent))) 16%, transparent));
+  transform: scale(1.015);
+  transition-duration:
+    var(--motion-fast),
+    var(--motion-fast),
+    calc(420ms * var(--runtime-skin-motion-scale, 1)),
+    var(--control-focus-enter-duration),
+    var(--control-focus-enter-duration);
+  transition-timing-function: var(--ease-emphasis);
+}
+
+.choice-panel .ui-button.choice-option:active:not(:disabled) {
+  transform: translateY(0) scale(0.985);
+}
+
+.choice-panel .ui-button.choice-option.runtime-animation-settled {
+  animation: none;
+  filter: none;
+  will-change: auto;
+}
+
+.choice-panel .ui-button.choice-option.runtime-animation-settled:not(:hover):not(:focus-visible):not(:active) {
+  transform: none;
+}
+
+.choice-panel.is-exiting .ui-button.choice-option {
+  cursor: default;
+  animation: choice-fade-out calc(180ms * var(--runtime-skin-motion-scale, 1)) var(--ease) both;
+  animation-delay: 0ms;
+}
+
+.choice-panel.is-exiting .ui-button.choice-option:disabled {
+  opacity: 1;
+}
+
+.playback-controls {
+  position: absolute;
+  display: inline-flex;
+  --runtime-quick-menu-padding: clamp(2px, calc(3px * var(--runtime-ui-scale, 1)), 6px);
+  --runtime-quick-menu-gap: clamp(2px, calc(3px * var(--runtime-ui-scale, 1)), 6px);
+  --runtime-quick-menu-gap-count: 8;
+  --runtime-quick-menu-slot-count: 9;
+  --runtime-quick-menu-layout-width: 480px;
+  --runtime-quick-menu-layout-height: 72px;
+  --runtime-quick-menu-inner-height: calc(var(--runtime-quick-menu-layout-height) - (var(--runtime-quick-menu-padding) * 2));
+  --runtime-quick-menu-width-button-max: calc((var(--runtime-quick-menu-layout-width) - (var(--runtime-quick-menu-padding) * 2) - (var(--runtime-quick-menu-gap) * var(--runtime-quick-menu-gap-count))) / var(--runtime-quick-menu-slot-count));
+  --runtime-quick-menu-button-size: max(18px, min(var(--runtime-quick-menu-width-button-max), var(--runtime-quick-menu-inner-height), calc(38px * var(--runtime-ui-scale, 1))));
+  gap: var(--runtime-quick-menu-gap);
+  flex-wrap: nowrap;
+  align-items: center;
+  align-content: start;
+  justify-content: center;
+  overflow: hidden;
+  z-index: var(--overlay-z-quick-menu);
+  padding: var(--runtime-quick-menu-padding);
+  border: 1px solid color-mix(in srgb, var(--line) 64%, transparent);
+  border-radius: 999px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--runtime-control-text) 11%, transparent), color-mix(in srgb, var(--runtime-control-hover) 28%, transparent)),
+    color-mix(in srgb, var(--runtime-quick-menu) 78%, transparent);
+  backdrop-filter: blur(16px) saturate(1.2);
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--accent) 12%, transparent), inset 0 1px 0 color-mix(in srgb, var(--runtime-control-text) 14%, transparent);
+  opacity: 0.72;
+  transform: translateY(-2px);
+  transition:
+    opacity var(--motion) var(--ease),
+    background var(--motion) var(--ease),
+    transform var(--motion) var(--ease),
+    box-shadow var(--motion) var(--ease),
+    border-color var(--motion) var(--ease);
+}
+
+.playback-controls.ui-layouted {
+  width: max-content !important;
+  height: max-content !important;
+  min-width: 0;
+  box-sizing: border-box;
+  gap: var(--runtime-quick-menu-gap) !important;
+  padding: var(--runtime-quick-menu-padding) !important;
+  overflow: hidden !important;
+}
+
+.playback-controls:hover,
+.playback-controls:focus-within {
+  opacity: 1;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--runtime-control-text) 14%, transparent), color-mix(in srgb, var(--runtime-control-hover) 40%, transparent)),
+    color-mix(in srgb, var(--runtime-quick-menu) 88%, transparent);
+  border-color: color-mix(in srgb, var(--runtime-focus) 40%, var(--line));
+  box-shadow: 0 16px 40px color-mix(in srgb, var(--accent) 16%, transparent), inset 0 1px 0 color-mix(in srgb, var(--runtime-control-text) 18%, transparent);
+  transform: translateY(0);
+}
+
+.playback-controls .ui-button.icon-button {
+  color: var(--runtime-control-text);
+  border-color: transparent;
+  background: color-mix(in srgb, var(--runtime-control) 70%, transparent);
+  flex: 0 0 var(--runtime-quick-menu-button-size);
+  width: var(--runtime-quick-menu-button-size);
+  height: var(--runtime-quick-menu-button-size);
+  min-width: 0;
+  min-height: 0;
+  max-width: var(--runtime-quick-menu-button-size);
+  max-height: var(--runtime-quick-menu-button-size);
+  aspect-ratio: 1 / 1;
+  padding: 0;
+  align-self: center;
+  flex-shrink: 0;
+}
+
+.playback-controls .ui-button.icon-button:hover:not(:disabled) {
+  color: var(--accent);
+  background: var(--runtime-control-hover);
+  box-shadow: 0 8px 22px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.playback-controls .ui-button.icon-button.active::after {
+  content: "";
+  position: absolute;
+  right: 7px;
+  top: 7px;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--runtime-control-active);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--runtime-control-active) 18%, transparent);
+}
+
+.preview-badge {
+  flex: 0 0 var(--runtime-quick-menu-button-size);
+  width: var(--runtime-quick-menu-button-size);
+  height: var(--runtime-quick-menu-button-size);
+  min-width: var(--runtime-quick-menu-button-size);
+  min-height: var(--runtime-quick-menu-button-size);
+  max-width: var(--runtime-quick-menu-button-size);
+  max-height: var(--runtime-quick-menu-button-size);
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--accent-2) 42%, var(--line));
+  border-radius: 999px;
+  color: var(--accent-2);
+  background: color-mix(in srgb, var(--accent-2) 12%, transparent);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.game-entry-transition {
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  pointer-events: none;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(circle at center, color-mix(in srgb, var(--runtime-dialog) 82%, transparent), color-mix(in srgb, var(--runtime-dialog) 62%, transparent) 40%, color-mix(in srgb, var(--accent) 18%, transparent) 72%, transparent);
+  animation: game-entry-fade 980ms var(--ease-emphasis) both;
+}
+
+.animation-hint {
+  position: absolute;
+  top: calc(72px * var(--runtime-ui-scale, 1));
+  left: 50%;
+  transform: translateX(-50%);
+  padding: calc(8px * var(--runtime-ui-scale, 1)) calc(12px * var(--runtime-ui-scale, 1));
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  font-size: var(--runtime-body-font-size);
+  animation: runtime-hint-pop var(--motion-emphasis) var(--ease-emphasis) both;
+}
+
+.animation-hint.runtime-animation-settled {
+  animation: none;
+  transform: translateX(-50%);
+  filter: none;
+  will-change: auto;
+}
+
+.game-entry-transition.runtime-animation-settled {
+  animation: none;
+  opacity: 0;
+  backdrop-filter: none;
+}
+
+.choice-panel[data-ui-frame-mode="image_owned"] .ui-button.choice-option,
+.choice-panel .ui-button.choice-option[data-ui-frame-mode="image_owned"] {
+  background-color: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+}
+
+.choice-panel[data-ui-frame-mode="image_owned"] .ui-button.choice-option:hover:not(:disabled),
+.choice-panel[data-ui-frame-mode="image_owned"] .ui-button.choice-option:focus-visible:not(:disabled),
+.choice-panel[data-ui-frame-mode="image_owned"] .ui-button.choice-option:active:not(:disabled),
+.choice-panel .ui-button.choice-option[data-ui-frame-mode="image_owned"]:hover:not(:disabled),
+.choice-panel .ui-button.choice-option[data-ui-frame-mode="image_owned"]:focus-visible:not(:disabled),
+.choice-panel .ui-button.choice-option[data-ui-frame-mode="image_owned"]:active:not(:disabled) {
+  background-color: transparent !important;
+  background-image: var(--runtime-choice-option-background-image) !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  filter: none !important;
+  transform: none !important;
+}
+
+.ui-skin-scope[data-ui-form-factor="handheld"] .playback-controls {
+  max-width: calc(100% - var(--runtime-safe-left) - var(--runtime-safe-right));
+  max-height: calc(100% - var(--runtime-safe-top) - var(--runtime-safe-bottom));
+}
+
+.cutscene-video-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: #000;
+  opacity: 1;
+  touch-action: none;
+  animation: cutscene-fade-in var(--cutscene-fade-in, 500ms) ease both;
+}
+
+.cutscene-video-overlay.is-ending,
+.cutscene-video-overlay.is-exiting {
+  animation: cutscene-fade-out var(--cutscene-fade-out, 500ms) ease both;
+}
+
+.cutscene-video-overlay video {
+  width: 100%;
+  height: 100%;
+  background: #000;
+}
+
+.cutscene-skip-prompt {
+  position: absolute;
+  left: 50%;
+  bottom: clamp(28px, 7vh, 72px);
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  transform: translateX(-50%);
+  color: #fff;
+  text-shadow: 0 2px 12px #000;
+  pointer-events: none;
+}
+
+.cutscene-skip-prompt svg {
+  width: 76px;
+  height: 76px;
+  transform: rotate(-90deg);
+}
+
+.cutscene-skip-prompt circle {
+  fill: rgba(0, 0, 0, 0.38);
+  stroke-width: 7;
+}
+
+.cutscene-progress-track {
+  stroke: rgba(255, 255, 255, 0.26);
+}
+
+.cutscene-progress-value {
+  stroke: #fff;
+  stroke-linecap: round;
+}
+
+.cutscene-video-error {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  max-width: min(520px, 86vw);
+  padding: 24px;
+  color: #fff;
+  text-align: center;
+}
+
+@keyframes cutscene-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes cutscene-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+.camera-shake {
+  animation: shake 420ms ease;
+}
+
+@keyframes shake {
+  20% { transform: translateX(-8px); }
+  40% { transform: translateX(7px); }
+  60% { transform: translateX(-5px); }
+  80% { transform: translateX(4px); }
+}
+
+@keyframes sprite-presence-in {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes sprite-presence-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes dialog-touch-ripple {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.42);
+  }
+
+  24% {
+    opacity: 0.16;
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.35);
+  }
+}
+
+@keyframes choice-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+    filter: blur(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes choice-fade-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.99);
+  }
+}
+
+@keyframes runtime-hint-pop {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -6px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+}
+
+@keyframes continue-pulse {
+  0%, 100% { opacity: 0.42; transform: translateX(0); }
+  50% { opacity: 0.74; transform: translateX(2px); }
+}
+
+@keyframes game-entry-fade {
+  0% { opacity: 1; backdrop-filter: blur(18px); }
+  62% { opacity: 1; backdrop-filter: blur(10px); }
+  100% { opacity: 0; backdrop-filter: blur(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .background-layer.is-transitioning .background-transition-frame,
+  .sprite-replacement-stack.is-switching .sprite-replacement-frame {
+    animation-duration: 90ms !important;
+    animation-timing-function: linear !important;
+    transform: none !important;
+    filter: none !important;
+    clip-path: none !important;
+    will-change: opacity;
+  }
+
+  .background-layer.is-transitioning .background-transition-frame.is-current,
+  .sprite-replacement-stack.is-switching .sprite-replacement-frame.is-current {
+    animation-name: background-transition-fade-in !important;
+  }
+
+  .background-layer.is-transitioning .background-transition-frame.is-previous,
+  .sprite-replacement-stack.is-switching .sprite-replacement-frame.is-previous {
+    animation-name: background-transition-fade-out !important;
+  }
+
+  .camera-shake,
+  .sprite-slot.is-exiting,
+  .sprite-slot img,
+  .dialog-box,
+  .choice-panel .choice-option,
+  .animation-hint,
+  .continue-indicator,
+  .game-entry-transition {
+    animation: none !important;
+  }
+
+  .game-entry-transition {
+    display: none;
+  }
+
+  .sprite-focus-backdrop {
+    animation: none !important;
+    opacity: 0.38;
+  }
+
+  .speaker-focus-frame {
+    transition-duration: 80ms !important;
+  }
+
+  .sprite-slot.is-focus-companion {
+    animation: none !important;
+    filter: brightness(0.58);
+  }
+
+  .focused-image-overlay,
+  .focused-image-overlay.is-exiting {
+    animation: none !important;
+  }
+}

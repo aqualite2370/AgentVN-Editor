@@ -1,0 +1,230 @@
+@media (max-width: 900px), (pointer: coarse) {
+  .main-menu,
+  .screen-panel,
+  .library-shell {
+    overflow: auto;
+  }
+
+  .menu-hero h1 {
+    font-size: clamp(34px, 12vw, 56px);
+    overflow-wrap: anywhere;
+  }
+
+  .library-workbench {
+    grid-template-columns: 1fr;
+    overflow: visible;
+    align-content: start;
+  }
+
+  .cartridge-rail,
+  .launch-panel {
+    min-height: auto;
+  }
+
+  .library-topbar,
+  .screen-panel > header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .library-topbar nav,
+  .launch-actions,
+  .card-actions {
+    width: 100%;
+  }
+
+  .library-topbar .ui-button,
+  .launch-actions .ui-button,
+  .card-actions .ui-button {
+    flex: 1 1 120px;
+  }
+
+  .cartridge-import {
+    grid-template-columns: 1fr;
+  }
+
+  .launch-panel {
+    grid-template-rows: 180px auto auto auto;
+  }
+
+  .menu-actions {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .playback-controls .ui-button {
+    padding: 0 calc(10px * var(--runtime-ui-scale, 1));
+  }
+
+  .playback-controls .ui-button.icon-button {
+    padding: 0;
+  }
+
+  .playback-controls {
+    opacity: 1;
+    border-radius: 14px;
+    justify-content: center;
+    background:
+      linear-gradient(135deg, rgba(255, 255, 255, 0.92), rgba(236, 246, 255, 0.66)),
+      rgba(255, 255, 255, 0.56);
+  }
+
+  .choice-panel .choice-option {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    min-height: 48px;
+  }
+
+  .settings-renpy {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    max-width: calc(100% - var(--runtime-safe-left) - var(--runtime-safe-right));
+    max-height: calc(100% - var(--runtime-safe-top) - var(--runtime-safe-bottom));
+  }
+
+  .settings-tabs {
+    grid-auto-flow: column;
+    grid-auto-columns: max-content;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .settings-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px 10px;
+  }
+
+  .settings-row .settings-slider {
+    grid-column: 1 / -1;
+  }
+
+  .boot-card {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-row output,
+  .settings-row small {
+    text-align: right;
+    min-width: 58px;
+  }
+
+  .save-load-toolbar {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .screen-panel > header.save-load-header {
+    align-items: flex-start;
+    flex-direction: row;
+  }
+
+  .save-operation-status {
+    display: none;
+  }
+
+  .save-delete-button {
+    opacity: 1;
+  }
+}
+
+@media (max-width: 700px) {
+  .save-load-screen .save-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .save-kind-tabs button {
+    padding-inline: 9px;
+  }
+}
+
+@media (max-height: 520px) and (orientation: landscape) {
+  .save-load-screen {
+    padding: 16px 22px;
+  }
+
+  .save-load-header .panel-kicker {
+    font-size: 8px;
+  }
+
+  .save-load-header h2 {
+    font-size: 22px;
+  }
+
+  .save-load-toolbar {
+    top: 62px;
+    left: 22px;
+    right: 22px;
+    gap: 8px;
+  }
+
+  .save-mode-switch .ui-button {
+    min-height: 30px;
+    padding: 5px 9px;
+  }
+
+  .save-kind-tabs button {
+    min-height: 34px;
+  }
+
+  .save-load-screen .save-grid {
+    top: 108px !important;
+    height: calc(100% - 120px) !important;
+  }
+
+  .ui-skin-scope[data-ui-screen="player"][data-ui-breakpoint="mobile"] .choice-panel .choice-option {
+    min-height: 42px;
+    padding-block: 6px;
+  }
+}
+
+/* Android WebView input policy: feedback must not change control geometry.
+   Desktop keeps the richer hover/active motion; handheld input uses paint-only
+   feedback so a tap cannot trigger a compositor-wide rescale/re-raster. */
+.ui-skin-scope[data-runtime-platform="android"] {
+  --runtime-skin-motion-scale: 0;
+}
+
+.ui-skin-scope[data-runtime-platform="android"] .ui-button,
+.ui-skin-scope[data-runtime-platform="android"] .menu-action-button,
+.ui-skin-scope[data-runtime-platform="android"] .choice-panel .choice-option,
+.ui-skin-scope[data-runtime-platform="android"] .settings-tabs button,
+.ui-skin-scope[data-runtime-platform="android"] .playback-controls button,
+.ui-skin-scope[data-runtime-platform="android"] .quick-menu button {
+  transition-property: background-color, border-color, color, opacity, box-shadow;
+  transition-duration: 90ms;
+  will-change: background-color, border-color, opacity;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.ui-skin-scope[data-runtime-platform="android"] .ui-button:hover:not(:disabled),
+.ui-skin-scope[data-runtime-platform="android"] .ui-button:active:not(:disabled),
+.ui-skin-scope[data-runtime-platform="android"] .choice-panel .ui-button.choice-option:hover:not(:disabled),
+.ui-skin-scope[data-runtime-platform="android"] .choice-panel .ui-button.choice-option:active:not(:disabled),
+.ui-skin-scope[data-runtime-platform="android"] .settings-slider:has(input[type="range"]:not(:disabled):active),
+.ui-skin-scope[data-runtime-platform="android"] input[type="checkbox"]:active {
+  transform: none !important;
+}
+
+.ui-skin-scope[data-runtime-platform="android"] .ui-button:active:not(:disabled),
+.ui-skin-scope[data-runtime-platform="android"] .choice-panel .ui-button.choice-option:active:not(:disabled),
+.ui-skin-scope[data-runtime-platform="android"] .settings-tabs button:active:not(:disabled),
+.ui-skin-scope[data-runtime-platform="android"] .playback-controls button:active:not(:disabled),
+.ui-skin-scope[data-runtime-platform="android"] .quick-menu button:active:not(:disabled) {
+  background: color-mix(in srgb, currentColor 10%, var(--runtime-control, var(--surface-2)));
+  border-color: var(--line-strong);
+  opacity: 0.86;
+  box-shadow: none;
+}
+
+.ui-skin-scope[data-runtime-platform="android"] .main-menu,
+.ui-skin-scope[data-runtime-platform="android"] .screen-panel,
+.ui-skin-scope[data-runtime-platform="android"] .library-shell,
+.ui-skin-scope[data-runtime-platform="android"] .ui-layouted,
+.ui-skin-scope[data-runtime-platform="android"] .background-layer.is-transitioning .background-transition-frame {
+  animation: none !important;
+  transition: none !important;
+}
+
+.ui-skin-scope[data-runtime-platform="android"] .background-transition-frame {
+  will-change: auto;
+}

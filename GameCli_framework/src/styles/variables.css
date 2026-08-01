@@ -1,0 +1,228 @@
+:root {
+  color-scheme: light dark;
+  font-family: Inter, "Segoe UI", system-ui, sans-serif;
+  --bg: #eef5fb;
+  --bg-elevated: #f8fbff;
+  --surface: rgba(247, 251, 255, 0.96);
+  --surface-2: rgba(226, 237, 248, 0.94);
+  --surface-3: rgba(205, 221, 237, 0.96);
+  --ink: #0b1d2e;
+  --muted: #3e5266;
+  --muted-2: #607286;
+  --line: rgba(52, 81, 112, 0.34);
+  --line-strong: rgba(34, 76, 120, 0.56);
+  --accent: #256eb8;
+  --accent-2: #0d9f9a;
+  --amber: #c7831d;
+  --cart-gold: #b87918;
+  --cart-green: #257047;
+  --cart-metal: #c7ccd4;
+  --player-scrim: rgba(255, 255, 255, 0.5);
+  --runtime-panel: var(--surface);
+  --runtime-panel-text: var(--ink);
+  --runtime-control: var(--surface-2);
+  --runtime-control-hover: var(--surface);
+  --runtime-control-active: var(--accent);
+  --runtime-control-text: var(--ink);
+  --runtime-dialog: var(--surface);
+  --runtime-dialog-text: var(--ink);
+  --runtime-speaker: var(--surface-2);
+  --runtime-speaker-text: var(--accent);
+  --runtime-choice: var(--cart-gold);
+  --runtime-choice-text: #041013;
+  --runtime-quick-menu: var(--surface);
+  --runtime-focus: var(--accent);
+  --overlay-z-player: 20;
+  --overlay-z-quick-menu: 30;
+  --overlay-z-debug: 40;
+  --overlay-z-modal: 70;
+  --overlay-z-toast: 90;
+  --control-focus-enter-duration: 520ms;
+  --control-focus-exit-duration: 300ms;
+  --focus-ring:
+    0 0 8px rgba(37, 110, 184, 0.28),
+    0 0 18px rgba(37, 110, 184, 0.17);
+  --global-control-focus-shadow: var(--focus-ring);
+  --global-input-focus-shadow: var(--focus-ring);
+  --success: #75d58c;
+  --warning: #f3b45f;
+  --danger: #ff7d8a;
+  --radius: 8px;
+  --radius-sm: 5px;
+  --shadow: 0 28px 82px rgba(54, 86, 118, 0.2), 0 10px 28px rgba(29, 52, 82, 0.12);
+  --shadow-soft: 0 14px 34px rgba(54, 86, 118, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  --motion-fast: 140ms;
+  --motion: 220ms;
+  --motion-emphasis: 420ms;
+  --motion-ai-flow: 1600ms;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-emphasis: cubic-bezier(0.18, 0.9, 0.18, 1);
+  --checkbox-size: 18px;
+  --checkbox-accent: #2f8ed9;
+  --checkbox-accent-strong: #0d9f9a;
+  --checkbox-border: rgba(37, 110, 184, 0.54);
+  --checkbox-bg: rgba(248, 252, 255, 0.92);
+  --checkbox-check: #ffffff;
+  --checkbox-glow: rgba(37, 110, 184, 0.2);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 100%;
+  overflow: hidden;
+  background: #000;
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  color: var(--ink);
+  background: #000;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  transition:
+    background-color var(--control-focus-exit-duration) var(--ease),
+    border-color var(--control-focus-exit-duration) var(--ease),
+    color var(--control-focus-exit-duration) var(--ease),
+    box-shadow var(--control-focus-exit-duration) var(--ease);
+}
+
+button:focus,
+input:focus,
+textarea:focus,
+select:focus {
+  outline: 2px solid transparent;
+  outline-offset: 3px;
+  border-color: color-mix(in srgb, var(--runtime-focus, var(--accent)) 70%, var(--line));
+  box-shadow: var(--focus-ring);
+  transition-duration:
+    var(--control-focus-enter-duration),
+    calc(420ms * var(--runtime-skin-motion-scale, 1)),
+    calc(420ms * var(--runtime-skin-motion-scale, 1)),
+    var(--control-focus-enter-duration);
+  transition-timing-function: var(--ease-emphasis);
+}
+
+input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  display: inline-grid;
+  place-content: center;
+  flex: 0 0 var(--checkbox-size);
+  width: var(--checkbox-size);
+  min-width: var(--checkbox-size);
+  height: var(--checkbox-size);
+  min-height: var(--checkbox-size);
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--checkbox-border);
+  border-radius: 5px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--checkbox-bg) 90%, white 10%), var(--checkbox-bg));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.72),
+    0 0 0 0 var(--checkbox-glow);
+  cursor: pointer;
+  transform: translateZ(0);
+  transition:
+    background var(--motion-fast) var(--ease),
+    border-color var(--motion-fast) var(--ease),
+    box-shadow var(--motion) var(--ease),
+    transform 120ms var(--ease-emphasis);
+}
+
+input[type="checkbox"]::before {
+  content: "";
+  width: 9px;
+  height: 5px;
+  margin-top: -1px;
+  border-left: 2px solid var(--checkbox-check);
+  border-bottom: 2px solid var(--checkbox-check);
+  opacity: 0;
+  clip-path: inset(0 100% 0 0);
+  transform: rotate(-45deg) scale(0.9);
+  transform-origin: 42% 58%;
+  transition:
+    clip-path 180ms var(--ease-emphasis),
+    opacity 120ms ease;
+}
+
+input[type="checkbox"]:hover {
+  border-color: color-mix(in srgb, var(--checkbox-accent) 70%, var(--checkbox-border));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.82),
+    0 0 0 3px color-mix(in srgb, var(--checkbox-glow) 72%, transparent);
+}
+
+input[type="checkbox"]:focus,
+input[type="checkbox"]:focus-visible {
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.76),
+    0 0 8px color-mix(in srgb, var(--checkbox-accent) 30%, transparent),
+    0 0 18px color-mix(in srgb, var(--checkbox-accent) 18%, transparent);
+}
+
+input[type="checkbox"]:active {
+  transform: scale(0.94);
+}
+
+input[type="checkbox"]:checked {
+  border-color: color-mix(in srgb, var(--checkbox-accent) 82%, var(--checkbox-accent-strong));
+  background: linear-gradient(135deg, var(--checkbox-accent), var(--checkbox-accent-strong));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.34),
+    0 5px 12px color-mix(in srgb, var(--checkbox-accent) 18%, transparent);
+}
+
+input[type="checkbox"]:checked::before {
+  opacity: 1;
+  clip-path: inset(0 0 0 0);
+}
+
+input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+  box-shadow: none;
+}
+
+@media (forced-colors: active) {
+  button:focus,
+  input:focus,
+  textarea:focus,
+  select:focus {
+    outline: 2px solid Highlight;
+    outline-offset: 3px;
+    border-color: Highlight;
+    box-shadow: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    scroll-behavior: auto !important;
+    transition-duration: 1ms !important;
+  }
+
+  input[type="checkbox"],
+  input[type="checkbox"]::before {
+    transition-duration: 1ms !important;
+  }
+}

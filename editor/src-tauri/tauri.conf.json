@@ -1,0 +1,53 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "AgentVN Editor",
+  "version": "1.0.1",
+  "identifier": "com.agentvn.editor",
+  "build": {
+    "beforeDevCommand": "",
+    "devUrl": "http://127.0.0.1:6767",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "AgentVN Editor",
+        "width": 1440,
+        "height": 920,
+        "fullscreen": false,
+        "maximized": true,
+        "visible": false,
+        "minWidth": 1100,
+        "minHeight": 720
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "msi"],
+    "icon": ["icons/icon.ico"],
+    "resources": {
+      "binaries/agentvn-player.exe": "agentvn-player.exe",
+      "binaries/creator-backend.exe": "creator-backend.exe",
+      "bundle-workspace/GameCli_framework": "GameCli_framework",
+      "bundle-workspace/scripts": "scripts",
+      "bundle-workspace/shared": "shared",
+      "../../scripts/setup-android-build-env.ps1": "setup-android-build-env.ps1",
+      "../../scripts/setup-windows-build-env.ps1": "setup-windows-build-env.ps1"
+    },
+    "windows": {
+      "wix": {
+        "language": ["zh-CN", "en-US"]
+      },
+      "nsis": {
+        "languages": ["SimpChinese", "English"],
+        "displayLanguageSelector": true
+      }
+    }
+  }
+}

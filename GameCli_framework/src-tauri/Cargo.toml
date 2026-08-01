@@ -1,0 +1,28 @@
+[package]
+name = "agentvn-player"
+version = "1.0.1"
+description = "AgentVN Player"
+authors = ["AquaLite"]
+edition = "2021"
+license-file = "../../LICENSE"
+
+[lib]
+name = "agentvn_player_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release.package.agentvn-player]
+# Tauri codegen places fixed frontend assets in this crate. Avoid LLVM's
+# multi-copy optimization spike when a standalone game carries a large vncart.
+opt-level = 0
+codegen-units = 256

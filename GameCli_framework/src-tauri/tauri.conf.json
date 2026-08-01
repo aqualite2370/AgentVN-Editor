@@ -1,0 +1,66 @@
+{
+    "$schema": "https://schema.tauri.app/config/2",
+    "productName": "AgentVN Player",
+    "version": "1.0.1",
+    "identifier": "com.agentvn.player",
+    "build": {
+        "beforeDevCommand": "npm run dev",
+        "devUrl": "http://127.0.0.1:6868",
+        "beforeBuildCommand": "npm run build",
+        "frontendDist": "../dist"
+    },
+    "app": {
+        "windows": [
+            {
+                "title": "AgentVN Player",
+                "width": 1280,
+                "height": 720,
+                "minWidth": 960,
+                "minHeight": 540,
+                "fullscreen": true,
+                "maximized": false,
+                "resizable": false,
+                "maximizable": false,
+                "minimizable": false,
+                "decorations": false
+            }
+        ],
+        "security": {
+            "csp": null,
+            "assetProtocol": {
+                "enable": true,
+                "scope": [
+                    "**"
+                ]
+            }
+        }
+    },
+    "bundle": {
+        "active": true,
+        "targets": [
+            "nsis",
+            "msi"
+        ],
+        "icon": [
+            "icons/icon.ico"
+        ],
+        "resources": {
+            "resources/embedded-cartridge": "embedded-cartridge"
+        },
+        "windows": {
+            "wix": {
+                "language": [
+                    "zh-CN",
+                    "en-US"
+                ]
+            },
+            "nsis": {
+                "languages": [
+                    "SimpChinese",
+                    "English"
+                ],
+                "displayLanguageSelector": true
+            }
+        }
+    }
+}

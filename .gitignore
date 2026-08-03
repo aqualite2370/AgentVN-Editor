@@ -12,6 +12,16 @@ gitpush/
 # Dependencies and caches
 node_modules/
 **/node_modules/
+.venv/
+**/.venv/
+venv/
+**/venv/
+env/
+**/env/
+ENV/
+**/ENV/
+virtualenv/
+**/virtualenv/
 .pytest_cache/
 **/.pytest_cache/
 __pycache__/

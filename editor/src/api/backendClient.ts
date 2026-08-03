@@ -443,6 +443,17 @@ export interface NovelProcessChunkResult {
   sceneCount?: number;
   usedFallbackScene?: boolean;
   schemaRepairCount?: number;
+  characterCandidates?: Array<{
+    character_id: string;
+    name: string;
+    aliases: string[];
+    first_seen_offset: number;
+    description: string;
+    speaking_style_hint?: string;
+    confidence: number;
+  }>;
+  semanticRepairCount?: number;
+  semanticValidationStatus?: "passed" | "repaired" | "blocked";
   mergeStatus?: "pending" | "merged" | "discarded_cancelled" | "failed" | "cancelled";
   continuityNotes: string[];
   warnings: string[];
@@ -460,11 +471,27 @@ export interface NovelProcessChunkResult {
   completedAt: string;
 }
 
+export interface NovelProcessChapterResult {
+  chapterTitle: string;
+  chapterIndex: number;
+  status: "pending" | "completed" | "failed" | "cancelled";
+  summary: string;
+  scene?: SceneBeat | null;
+  sourceChunkIds: string[];
+  qualityWarnings: string[];
+  errorMessage?: string | null;
+  completedChunks: number;
+  failedChunks: number;
+  cancelledChunks: number;
+}
+
 export interface NovelProcessJobResultsResponse {
   jobId: string;
   status: string;
   completedResults: NovelProcessChunkResult[];
   failedResults: NovelProcessChunkResult[];
+  completedChapterResults?: NovelProcessChapterResult[];
+  failedChapterResults?: NovelProcessChapterResult[];
   warnings: string[];
 }
 

@@ -1,21 +1,14 @@
 import {
-  Activity,
-  AlertTriangle,
-  BarChart3,
-  CheckCircle2,
   ChevronDown,
-  Clock3,
   Eye,
-  ListChecks,
   Minimize2,
   Pause,
   Play,
   RotateCcw,
-  TerminalSquare,
-  X,
+  Sparkles,
   XCircle,
 } from "lucide-react";
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { backendClient } from "../../api/backendClient";
 import { reportFrontendError } from "../../../../shared/logging/frontendErrorLogger";
@@ -104,6 +97,7 @@ const machineValueLabels: Record<string, string> = {
   discarded_cancelled: "取消后丢弃",
   streaming: "流式输出",
   streaming_partial_chars: "流式输出字符数",
+  provider_connection_interrupted: "模型连接中断",
   mock_adapter: "模拟适配器",
   "phase:chunk_parse": "阶段：切片解析",
   "Preparing structured model request": "正在准备结构化模型请求",
@@ -604,6 +598,20 @@ const AgentDetail = memo(function AgentDetail({ agent }: { agent: NovelProcessAg
         <DetailRow label="Token 来源" value={displayMachineValue(agent.tokenSource, "无")} />
         <DetailRow label="场景数" value={`${agent.sceneCount ?? 0}${agent.usedFallbackScene ? " · 回退场景" : ""}`} />
         <DetailRow label="结构修复" value={agent.schemaRepairCount ?? 0} />
+        <DetailRow
+          label="对白结构"
+          value={agent.semanticValidationStatus === "passed"
+            ? "已通过"
+            : agent.semanticValidationStatus === "repaired"
+              ? `已自动修复 ${agent.semanticRepairCount ?? 0} 条`
+              : agent.semanticValidationStatus === "blocked"
+                ? "未通过"
+                : "未检测"}
+        />
+        <DetailRow
+          label="聊天昵称"
+          value={agent.characterCandidates?.map((item) => item.name).join("、") || "-"}
+        />
         <DetailRow label="合并状态" value={displayMachineValue(agent.mergeStatus, "待处理")} />
         <DetailRow label="进度依据" value={displayMachineValue(agent.progressBasis, "按阶段")} />
         <DetailRow label="队列位置" value={agent.queuePosition ?? "-"} />
@@ -615,6 +623,12 @@ const AgentDetail = memo(function AgentDetail({ agent }: { agent: NovelProcessAg
       {agent.assignmentReason && <p className="novel-agent-detail-note">{agent.assignmentReason}</p>}
       {agent.staleReason && <p className="novel-agent-quality-warning">{agent.staleReason}</p>}
       {agent.usedFallbackScene && <p className="novel-agent-quality-warning">回退场景将被标记为需要复核。</p>}
+      {agent.semanticValidationStatus === "repaired" && (
+        <p className="novel-agent-quality-warning">对白结构已由规则拆分，导入后仍需复核人物昵称与消息边界。</p>
+      )}
+      {agent.semanticValidationStatus === "blocked" && (
+        <p className="novel-agent-quality-warning">对白结构无法安全修复。该切片不会写入项目，请新建 v2 任务重跑。</p>
+      )}
       <QualityIssueList issues={agent.qualityIssues} />
       {agent.qualityWarnings && agent.qualityWarnings.length > 0 && (
         <ul className="novel-agent-quality-list">
@@ -670,6 +684,9 @@ function agentPanelSignature(agents: NovelProcessAgentProgress[], expandedAgentI
       agent.sceneCount ?? 0,
       agent.usedFallbackScene ? 1 : 0,
       agent.schemaRepairCount ?? 0,
+      agent.semanticRepairCount ?? 0,
+      agent.semanticValidationStatus ?? "",
+      agent.characterCandidates?.map((item) => item.name).join(",") ?? "",
       warnings,
       events,
     ].join("\u001f");
@@ -723,10 +740,13 @@ const AgentPanel = memo(function AgentPanel({
                 <div><dt>进度依据</dt><dd title={agent.progressBasis}>{displayMachineValue(agent.progressBasis, "按阶段")}</dd></div>
                 <div><dt>重试次数</dt><dd>{agent.retryCount}</dd></div>
               </dl>
-              {(agent.usedFallbackScene || (agent.qualityWarnings && agent.qualityWarnings.length > 0)) && (
+              {(agent.usedFallbackScene || Boolean(agent.semanticValidationStatus) || (agent.qualityWarnings && agent.qualityWarnings.length > 0)) && (
                 <div className="novel-agent-quality-strip">
                   {agent.usedFallbackScene ? <span>回退场景待复核</span> : null}
                   {agent.schemaRepairCount ? <span>{agent.schemaRepairCount} 次结构修复</span> : null}
+                  {agent.semanticValidationStatus === "passed" ? <span>对白结构已通过</span> : null}
+                  {agent.semanticValidationStatus === "repaired" ? <span>{agent.semanticRepairCount ?? 0} 条对白已自动修复</span> : null}
+                  {agent.semanticValidationStatus === "blocked" ? <span>对白结构阻断</span> : null}
                   {agent.qualityWarnings?.slice(0, 1).map((warning) => <span key={warning} title={warning}>{warning}</span>)}
                 </div>
               )}
@@ -1145,13 +1165,18 @@ export function NovelProcessTaskWorkbench() {
               </div>
               <div className="novel-task-header-status">
                 <span className={`novel-task-status is-${meta.tone}`}>{meta.label}</span>
-                <button type="button" className="novel-task-icon-button" data-help-key="novel.task.closePanel" aria-label="收起任务面板" onClick={closePanel}>
-                  <X size={16} />
+                <button type="button" className="novel-task-icon-button" data-help-key="novel.task.closePanel" aria-label="最小化任务面板" onClick={closePanel}>
+                  <Minimize2 size={16} />
                 </button>
               </div>
             </header>
 
             <div className="novel-task-body">
+              {job.promptVersion && job.promptVersion !== "novel-process-v3" && (
+                <div className="novel-agent-quality-warning">
+                  旧解析版本 {job.promptVersion} 不支持章节片段聚合；请新建任务以使用 novel-process-v3。
+                </div>
+              )}
               <OverviewPanel job={job} />
               <AssignmentPanel job={job} />
               <QualityDimensionPanel dimensions={job.qualityDimensions} issues={job.qualityIssues} />
@@ -1203,8 +1228,10 @@ export function NovelProcessTaskWorkbench() {
         <button
           type="button"
           className={`novel-task-mini-entry is-${meta.tone}`}
+          style={{ "--novel-task-progress": `${Math.max(0, Math.min(100, job.progressPercent)) * 3.6}deg` } as CSSProperties}
           data-help-key="novel.task.openPanel"
           aria-label={`打开小说任务面板，当前状态：${meta.label}`}
+          title={`${job.novelTitle} · ${meta.label} · ${job.completedChunks}/${job.totalChunks} · ${formatPercent(job.progressPercent)}`}
           data-testid="novel-task-mini-entry"
           data-job-status={job.status}
           onClick={() => {
@@ -1212,12 +1239,14 @@ export function NovelProcessTaskWorkbench() {
             openPanel();
           }}
         >
-          {job.status === "completed" ? <CheckCircle2 size={18} /> : job.status === "failed" || job.status === "failed_partial" ? <AlertTriangle size={18} /> : job.status === "cancelled" ? <XCircle size={18} /> : <Activity size={18} />}
-          <span>
+          <span className="novel-task-mini-icon">
+            <Sparkles size={20} />
+            {(job.status === "failed" || job.status === "failed_partial" || job.status === "retrying") && <i aria-hidden="true" />}
+          </span>
+          <span className="novel-task-mini-tooltip" role="tooltip">
             <strong>{statusMeta[job.status].label}</strong>
             <small>{job.completedChunks}/{job.totalChunks} · {formatPercent(job.progressPercent)}</small>
           </span>
-          {job.status === "running" || job.status === "retrying" ? <TerminalSquare size={16} /> : job.status === "completed" ? <ListChecks size={16} /> : job.status === "paused" ? <Clock3 size={16} /> : <BarChart3 size={16} />}
         </button>
       )}
     </>

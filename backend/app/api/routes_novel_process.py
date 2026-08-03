@@ -314,7 +314,10 @@ def _phase_progress(job: NovelProcessJob, finished: int) -> list[dict[str, objec
 
 def _quality_dimensions(job: NovelProcessJob) -> list[dict[str, object]]:
     completed_results = [result for result in job.chunkResults if result.status == "completed"]
-    scene_results = [result for result in completed_results if result.sceneCount > 0 and not result.usedFallbackScene]
+    completed_chapters = [
+        result for result in job.chapterResults
+        if result.status == "completed" and result.scene is not None
+    ]
     issue_count = sum(len(result.qualityIssues) or len(result.qualityWarnings) for result in job.chunkResults)
     blocked_issue_count = sum(
         1
@@ -325,7 +328,7 @@ def _quality_dimensions(job: NovelProcessJob) -> list[dict[str, object]]:
     total = max(1, job.totalChunks)
     dimensions = [
         ("source_coverage", "原文覆盖", round((job.completedChunks / total) * 100), job.completedChunks, total),
-        ("structured_scenes", "结构化场景", round((len(scene_results) / max(1, len(completed_results) or job.completedChunks)) * 100), len(scene_results), max(1, len(completed_results) or job.completedChunks)),
+        ("structured_scenes", "结构化场景", round((len(completed_chapters) / max(1, len(job.chapterResults))) * 100), len(completed_chapters), max(1, len(job.chapterResults))),
         ("continuity", "连续性", 100 if any(event.eventType == "continuity_review_completed" for event in job.eventLogs) and issue_count == 0 else max(30, 100 - issue_count * 12), max(0, issue_count), 0),
         ("low_quality_text", "低质文本风险", 100 if blocked_issue_count == 0 else 0, blocked_issue_count, 0),
         ("asset_readiness", "素材就绪", 100, 1, 1),
@@ -364,7 +367,8 @@ def _quality_issues(job: NovelProcessJob) -> list[dict[str, object]]:
 def _panel_job(job: NovelProcessJob) -> dict[str, object]:
     finished = job.completedChunks + job.failedChunks + job.cancelledChunks
     selected_chapter_count = len({chunk.chapterIndex for chunk in job.chunks}) or len(job.chapterResults)
-    estimated_tokens = sum(max(1, estimate_tokens(chunk.chunkText)) for chunk in job.chunks)
+    leaf_chunks = [chunk for chunk in job.chunks if chunk.status != "superseded"]
+    estimated_tokens = sum(max(1, estimate_tokens(chunk.chunkText)) for chunk in leaf_chunks)
     agent_rows = []
     tasks_by_agent: dict[int, list[AgentTask]] = {}
     for task in job.agentTasks:
@@ -373,7 +377,7 @@ def _panel_job(job: NovelProcessJob) -> dict[str, object]:
     result_by_chunk = {result.chunkId: result for result in job.chunkResults}
     queued_chunk_ids = [
         chunk.chunkId
-        for chunk in sorted(job.chunks, key=lambda item: (item.chapterIndex, item.chunkIndex))
+        for chunk in sorted(leaf_chunks, key=lambda item: (item.chapterIndex, item.startOffset, item.chunkIndex))
         if chunk.status in {"pending", "waiting", "retrying"}
     ]
     for index in range(max(1, job.maxConcurrency)):
@@ -412,7 +416,7 @@ def _panel_job(job: NovelProcessJob) -> dict[str, object]:
             "currentChunkId": task.chunkId if task else None,
             "currentChapterTitle": task.chapterTitle if task else "Waiting for assignment",
             "currentChunkIndex": task.chunkIndex + 1 if task else max(1, len(completed_agent_chunks)),
-            "currentChunkTotal": max(1, len([chunk for chunk in job.chunks if task and chunk.chapterIndex == task.chapterIndex]) or len(agent_tasks) or 1),
+            "currentChunkTotal": max(1, len([chunk for chunk in leaf_chunks if task and chunk.chapterIndex == task.chapterIndex]) or len(agent_tasks) or 1),
             "inputTokens": sum(item.inputTokens for item in agent_tasks),
             "outputTokens": sum(item.outputTokens for item in agent_tasks),
             "totalTokens": sum(item.totalTokens for item in agent_tasks),
@@ -439,6 +443,9 @@ def _panel_job(job: NovelProcessJob) -> dict[str, object]:
             "inputChunkChars": task.inputChunkChars if task else 0,
             "contextChars": task.contextChars if task else (current_chunk.contextChars if current_chunk else 0),
             "schemaRepairCount": task.schemaRepairCount if task else 0,
+            "semanticRepairCount": current_result.semanticRepairCount if current_result else 0,
+            "semanticValidationStatus": current_result.semanticValidationStatus if current_result else None,
+            "characterCandidates": [item.model_dump(mode="json") for item in current_result.characterCandidates] if current_result else [],
             "failureCategory": task.failureCategory if task else None,
             "retryBackoffMs": task.retryBackoffMs if task else 0,
             "sceneCount": current_result.sceneCount if current_result else 0,
@@ -494,8 +501,9 @@ def _panel_job(job: NovelProcessJob) -> dict[str, object]:
         "runningAgentCount": job.runningTasks,
         "estimatedRemainingChunks": max(0, job.totalChunks - finished),
         "maxConcurrency": job.maxConcurrency,
-        "queueDepth": len([chunk for chunk in job.chunks if chunk.status in {"pending", "waiting", "retrying"}]),
+        "queueDepth": len([chunk for chunk in leaf_chunks if chunk.status in {"pending", "waiting", "retrying"}]),
         "activePhase": job.activePhase,
+        "promptVersion": job.promptVersion,
         "phaseProgress": _phase_progress(job, finished),
         "progressPercent": round((finished / max(1, job.totalChunks)) * 100),
         "qualityDimensions": _quality_dimensions(job),
@@ -517,7 +525,7 @@ def _panel_job(job: NovelProcessJob) -> dict[str, object]:
                 "chapterId": f"chapter_{chapter.chapterIndex}",
                 "chapterIndex": chapter.chapterIndex,
                 "title": chapter.chapterTitle or f"Chapter {chapter.chapterIndex + 1}",
-                "totalChunks": len([chunk for chunk in job.chunks if chunk.chapterIndex == chapter.chapterIndex]),
+                "totalChunks": len([chunk for chunk in leaf_chunks if chunk.chapterIndex == chapter.chapterIndex]),
                 "completedChunks": chapter.completedChunks,
                 "failedChunks": chapter.failedChunks,
                 "inputTokens": chapter.tokens.inputTokens,

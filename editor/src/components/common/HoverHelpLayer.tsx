@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
+import { useEditorPreferencesStore } from "../../store/editorPreferencesStore";
 import {
   formatHoverHelp,
   type HoverHelpEntry,
@@ -275,6 +276,7 @@ function prefersReducedMotion(): boolean {
 }
 
 export function HoverHelpLayer() {
+  const hoverHelpEnabled = useEditorPreferencesStore((state) => state.hoverHelpEnabled);
   const [help, setHelp] = useState<HoverHelpState | null>(null);
   const helpRef = useRef<HoverHelpState | null>(null);
   const contentVersionRef = useRef(0);
@@ -412,6 +414,11 @@ export function HoverHelpLayer() {
   }, [help?.title, help?.body, help?.mode]);
 
   useEffect(() => {
+    if (!hoverHelpEnabled) {
+      setHelpState(null);
+      return;
+    }
+
     const selector = [
       "button",
       ".file-button",
@@ -637,9 +644,9 @@ export function HoverHelpLayer() {
       clearDescribedElement();
       pointerRef.current = null;
     };
-  }, []);
+  }, [hoverHelpEnabled]);
 
-  if (!help) return null;
+  if (!hoverHelpEnabled || !help) return null;
 
   return createPortal(
     <aside

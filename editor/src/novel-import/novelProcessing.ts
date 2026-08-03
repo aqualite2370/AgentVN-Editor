@@ -129,7 +129,7 @@ export const emptyNovelProcessingState: NovelProcessingState = {
   config: defaultNovelProcessingConfig,
   userInstruction: "",
   outputFormat: "visual_novel_blueprint",
-  promptVersion: "novel-process-v1",
+  promptVersion: "novel-process-v3",
 };
 
 const quotePairs: Array<[string, string]> = [
@@ -186,6 +186,9 @@ export function estimateProcessTokens(text: string): number {
 }
 
 export function createEmptyNovelProcessingState(seed?: Partial<NovelProcessingState>): NovelProcessingState {
+  const promptVersion = seed?.promptVersion === "novel-process-v1" || seed?.promptVersion === "novel-process-v2"
+    ? emptyNovelProcessingState.promptVersion
+    : seed?.promptVersion ?? emptyNovelProcessingState.promptVersion;
   return {
     ...emptyNovelProcessingState,
     ...seed,
@@ -198,7 +201,7 @@ export function createEmptyNovelProcessingState(seed?: Partial<NovelProcessingSt
     config: sanitizeNovelProcessingConfig(seed?.config),
     userInstruction: seed?.userInstruction ?? emptyNovelProcessingState.userInstruction,
     outputFormat: seed?.outputFormat ?? emptyNovelProcessingState.outputFormat,
-    promptVersion: seed?.promptVersion ?? emptyNovelProcessingState.promptVersion,
+    promptVersion,
   };
 }
 
@@ -340,7 +343,7 @@ export function createNovelProcessJob(input: {
     maxRetryCount: config.maxRetryCount,
     userInstruction: input.userInstruction ?? "",
     outputFormat: input.outputFormat ?? "visual_novel_blueprint",
-    promptVersion: input.promptVersion ?? "novel-process-v1",
+    promptVersion: input.promptVersion ?? "novel-process-v3",
     status: input.chunks.length > 0 ? "processing" : "waiting",
     createdAt: now,
     startedAt: input.chunks.length > 0 ? now : undefined,

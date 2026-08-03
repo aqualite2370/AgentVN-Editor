@@ -9,7 +9,7 @@ export interface RecentProjectRecord extends ProjectSummary {
 }
 
 const QQ_GROUP_QR_IMAGE = "/agentvn-qq-qrcode.jpg";
-const QQ_GROUP_VERSION = "1.6";
+const QQ_GROUP_VERSION = "1.7";
 const QR_DIALOG_EXIT_MS = 220;
 
 function formatProjectTime(value: string): string {

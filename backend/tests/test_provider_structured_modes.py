@@ -2,6 +2,8 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from httpx import RemoteProtocolError, Request
+from openai import APIConnectionError
 from pydantic import BaseModel, ValidationError
 
 from app.ai.provider import AIProvider
@@ -122,6 +124,18 @@ def test_structured_json_parser_accepts_common_model_wrappers() -> None:
     result = provider._validate_structured_content(ProbeModel, content)  # type: ignore[attr-defined]
 
     assert result.message == "ready"
+
+
+def test_structured_json_parser_rejects_complete_inner_value_from_truncated_outer_object() -> None:
+    provider = AIProvider()
+    content = (
+        '{"status":"completed","fragment":{"summary":"partial","commands":'
+        '[{"type":"narration","text":"kept inside an unfinished outer object"}],'
+        '"tags":["science","mystery"]'
+    )
+
+    with pytest.raises(json.JSONDecodeError):
+        provider._load_structured_json(content)  # type: ignore[attr-defined]
 
 
 def test_branch_suggestion_missing_confidence_defaults_to_usable_review_stub() -> None:
@@ -381,20 +395,24 @@ class FakeToolMessage:
 
 
 class FakeCompletions:
-    def __init__(self, messages: list[FakeToolMessage]) -> None:
+    def __init__(self, messages: list[object]) -> None:
         self.messages = messages
         self.calls: list[dict[str, object]] = []
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
         message = self.messages.pop(0)
+        if isinstance(message, Exception):
+            raise message
+        if not isinstance(message, FakeToolMessage):
+            return message
         return SimpleNamespace(
             choices=[SimpleNamespace(message=message, finish_reason=message.finish_reason)]
         )
 
 
 class FakeLLMClient:
-    def __init__(self, messages: list[FakeToolMessage]) -> None:
+    def __init__(self, messages: list[object]) -> None:
         self.chat = SimpleNamespace(completions=FakeCompletions(messages))
 
 
@@ -434,6 +452,334 @@ def test_mcp_tool_call_returns_validated_scene() -> None:
     call_kwargs = client.chat.completions.calls[0]
     assert call_kwargs["tool_choice"] == {"type": "function", "function": {"name": "create_scene_beat"}}
     assert call_kwargs["tools"][0]["function"]["name"] == "create_scene_beat"
+
+
+def test_structured_tool_call_retries_incomplete_chunked_transport_once(monkeypatch) -> None:
+    provider = AIProvider()
+    client = FakeLLMClient(
+        [
+            RemoteProtocolError("peer closed connection without sending complete message body (incomplete chunked read)"),
+            FakeToolMessage(
+                [
+                    make_tool_call(
+                        "extract_memory_update",
+                        {
+                            "summary_100": "Recovered memory update.",
+                            "invalidated_relations": [],
+                            "new_relations": [],
+                            "emotion_snapshots": [],
+                        },
+                    )
+                ]
+            ),
+        ]
+    )
+
+    monkeypatch.setattr("app.ai.provider.OpenAI", lambda **_kwargs: client)
+
+    events = list(
+        provider.stream_with_tools(
+            MemoryUpdate,
+            "system",
+            "user",
+            selection=make_selection("tools"),
+        )
+    )
+
+    assert len(client.chat.completions.calls) == 2
+    assert [event for event, _payload in events].count("final") == 1
+    assert any(
+        event == "trace"
+        and payload["phase"] == "provider_transport_retry"
+        and payload["details"]["attempt"] == 2
+        and payload["details"]["maximumAttempts"] == 2
+        and payload["details"]["responseModel"] == "MemoryUpdate"
+        and payload["details"]["fallbackMode"] == "same_request"
+        for event, payload in events
+    )
+
+
+def test_streamed_json_transport_failure_discards_partial_buffer_and_recovers_non_streaming(monkeypatch) -> None:
+    provider = AIProvider()
+
+    def interrupted_stream():
+        yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content='{"ok": true,'))])
+        raise RemoteProtocolError(
+            "peer closed connection without sending complete message body (incomplete chunked read)"
+        )
+
+    client = FakeLLMClient(
+        [
+            interrupted_stream(),
+            FakeToolMessage(content='{"ok": true, "message": "recovered"}'),
+        ]
+    )
+    monkeypatch.setattr("app.ai.provider.OpenAI", lambda **_kwargs: client)
+
+    events = list(
+        provider.stream_structured_json(
+            ProbeModel,
+            "system",
+            "user",
+            selection=make_selection("json_object"),
+        )
+    )
+
+    finals = [payload for event, payload in events if event == "final"]
+    assert len(finals) == 1
+    assert finals[0].message == "recovered"
+    assert len(client.chat.completions.calls) == 2
+    assert client.chat.completions.calls[0]["stream"] is True
+    assert "stream" not in client.chat.completions.calls[1]
+    assert any(
+        event == "trace"
+        and payload["phase"] == "provider_transport_retry"
+        and payload["details"]["attempt"] == 2
+        and payload["details"]["maximumAttempts"] == 2
+        and payload["details"]["responseModel"] == "ProbeModel"
+        and payload["details"]["fallbackMode"] == "non_stream"
+        for event, payload in events
+    )
+
+
+def test_streamed_json_length_finish_is_reported_as_truncation_without_resending(monkeypatch) -> None:
+    provider = AIProvider()
+
+    def truncated_stream():
+        yield SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(content='{"status":"completed","fragment":{"tags":["science"]'),
+                    finish_reason=None,
+                )
+            ]
+        )
+        yield SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(content=""),
+                    finish_reason="length",
+                )
+            ]
+        )
+
+    client = FakeLLMClient([truncated_stream()])
+    monkeypatch.setattr("app.ai.provider.OpenAI", lambda **_kwargs: client)
+
+    with pytest.raises(AIProviderError, match="finish_reason=length"):
+        list(
+            provider.stream_structured_json(
+                SubagentModelOutput,
+                "system",
+                "user",
+                selection=make_selection("json_object"),
+            )
+        )
+
+    assert len(client.chat.completions.calls) == 1
+
+
+def test_non_streaming_json_length_finish_is_not_sent_to_schema_repair() -> None:
+    provider = AIProvider()
+    client = FakeLLMClient(
+        [
+            FakeToolMessage(
+                content='{"status":"completed","fragment":{"tags":["science"]',
+                finish_reason="length",
+            )
+        ]
+    )
+
+    with pytest.raises(AIProviderError, match="finish_reason=length"):
+        provider._create_json_structured(  # type: ignore[attr-defined]
+            client,
+            SubagentModelOutput,
+            "system",
+            "user",
+            {"model": "deepseek-v4-flash", "temperature": 0, "max_tokens": 6500},
+        )
+
+    assert len(client.chat.completions.calls) == 1
+
+
+def test_structured_transport_retry_exhaustion_keeps_host_model_and_reason(monkeypatch) -> None:
+    provider = AIProvider()
+    client = FakeLLMClient(
+        [
+            RemoteProtocolError("peer closed connection (incomplete chunked read)"),
+            RemoteProtocolError("peer closed connection (incomplete chunked read)"),
+        ]
+    )
+    monkeypatch.setattr("app.ai.provider.OpenAI", lambda **_kwargs: client)
+
+    with pytest.raises(AIProviderError) as raised:
+        list(
+            provider.stream_with_tools(
+                MemoryUpdate,
+                "system",
+                "user",
+                selection=make_selection(
+                    "tools",
+                    base_url="https://api.example.test/v1",
+                    model_id="model-transport-test",
+                ),
+            )
+        )
+
+    message = str(raised.value)
+    assert len(client.chat.completions.calls) == 2
+    assert "host: api.example.test" in message
+    assert "model: model-transport-test" in message
+    assert "incomplete chunked read" in message
+
+
+@pytest.mark.parametrize("status_code", [400, 401])
+def test_structured_deterministic_client_error_is_not_retried(monkeypatch, status_code: int) -> None:
+    provider = AIProvider()
+    bad_request = RuntimeError(f"Error code: {status_code} - invalid request")
+    setattr(bad_request, "status_code", status_code)
+    client = FakeLLMClient([bad_request])
+    monkeypatch.setattr("app.ai.provider.OpenAI", lambda **_kwargs: client)
+
+    with pytest.raises(AIProviderError, match="invalid request"):
+        list(
+            provider.stream_with_tools(
+                MemoryUpdate,
+                "system",
+                "user",
+                selection=make_selection("tools"),
+            )
+        )
+
+    assert len(client.chat.completions.calls) == 1
+
+
+def test_openai_connection_error_with_nested_protocol_cause_is_retried(monkeypatch) -> None:
+    provider = AIProvider()
+    connection_error = APIConnectionError(request=Request("POST", "https://example.com/v1/chat/completions"))
+    connection_error.__cause__ = RemoteProtocolError(
+        "peer closed connection without sending complete message body (incomplete chunked read)"
+    )
+    client = FakeLLMClient(
+        [
+            connection_error,
+            FakeToolMessage(
+                [
+                    make_tool_call(
+                        "extract_memory_update",
+                        {
+                            "summary_100": "Recovered nested connection failure.",
+                            "invalidated_relations": [],
+                            "new_relations": [],
+                            "emotion_snapshots": [],
+                        },
+                    )
+                ]
+            ),
+        ]
+    )
+    monkeypatch.setattr("app.ai.provider.OpenAI", lambda **_kwargs: client)
+
+    events = list(
+        provider.stream_with_tools(
+            MemoryUpdate,
+            "system",
+            "user",
+            selection=make_selection("tools"),
+        )
+    )
+
+    assert len(client.chat.completions.calls) == 2
+    assert any(
+        event == "trace"
+        and payload["phase"] == "provider_transport_retry"
+        and payload["details"]["errorCategory"] == "protocol_error"
+        for event, payload in events
+    )
+
+
+def test_non_streaming_json_structured_call_retries_transient_transport_once(monkeypatch) -> None:
+    provider = AIProvider()
+    client = FakeLLMClient(
+        [
+            RemoteProtocolError("peer closed connection (incomplete chunked read)"),
+            FakeToolMessage(content='{"ok": true, "message": "recovered"}'),
+        ]
+    )
+    monkeypatch.setattr("app.ai.provider.OpenAI", lambda **_kwargs: client)
+
+    result = provider.create_structured(
+        ProbeModel,
+        "system",
+        "user",
+        selection=make_selection("json_object"),
+    )
+
+    assert result.message == "recovered"
+    assert len(client.chat.completions.calls) == 2
+
+
+def test_transport_retry_does_not_consume_tool_schema_attempts() -> None:
+    provider = AIProvider()
+    invalid_payload = {"scene_id": "missing_required_fields"}
+    client = FakeLLMClient(
+        [
+            RemoteProtocolError("peer closed connection (incomplete chunked read)"),
+            FakeToolMessage([make_tool_call("create_scene_beat", invalid_payload, "call_bad")]),
+            FakeToolMessage([make_tool_call("create_scene_beat", valid_scene_payload(), "call_good")]),
+        ]
+    )
+
+    result = provider._create_tool_structured(  # type: ignore[attr-defined]
+        client,
+        SceneBeat,
+        {
+            "model": "test-model",
+            "temperature": 0,
+            "messages": [{"role": "system", "content": "system"}, {"role": "user", "content": "user"}],
+        },
+        max_attempts=2,
+    )
+
+    assert result.scene_id == "scene_tool"
+    assert len(client.chat.completions.calls) == 3
+    assert any(
+        message.get("role") == "tool"
+        for message in client.chat.completions.calls[2]["messages"]
+    )
+
+
+def test_json_repair_request_retries_transient_transport_once() -> None:
+    provider = AIProvider()
+    client = FakeLLMClient(
+        [
+            FakeToolMessage(content='{"ok": true, "wrong": "field"}'),
+            RemoteProtocolError("peer closed connection (incomplete chunked read)"),
+            FakeToolMessage(content='{"ok": true, "message": "repaired"}'),
+        ]
+    )
+    retry_events: list[dict[str, object]] = []
+
+    result = provider._create_json_structured(  # type: ignore[attr-defined]
+        client,
+        ProbeModel,
+        "system",
+        "user",
+        {"model": "test-model", "temperature": 0},
+        on_transport_retry=retry_events.append,
+    )
+
+    assert result.message == "repaired"
+    assert len(client.chat.completions.calls) == 3
+    assert retry_events == [
+        {
+            "attempt": 2,
+            "maximumAttempts": 2,
+            "responseModel": "ProbeModel",
+            "fallbackMode": "json_repair",
+            "errorCategory": "protocol_error",
+        }
+    ]
 
 
 def test_scene_beat_normalizes_common_animation_aliases_from_tool_call() -> None:

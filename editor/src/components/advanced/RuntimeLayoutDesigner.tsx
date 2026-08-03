@@ -499,6 +499,8 @@ export function RuntimeLayoutDesigner() {
   const [customButtonUrlTest, setCustomButtonUrlTest] = useState<CustomButtonUrlTestState | undefined>();
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
   const stageRef = useRef<HTMLDivElement | null>(null);
+  const stageResizeObserverRef = useRef<ResizeObserver | null>(null);
+  const pointerSessionCleanupRef = useRef<(() => void) | null>(null);
   const customButtonImageInputRef = useRef<HTMLInputElement | null>(null);
   const lastSavedSkinRef = useRef(savedSkin);
   const saved = useMemo(() => cloneSkin(savedSkin), [savedSkin]);
@@ -553,17 +555,38 @@ export function RuntimeLayoutDesigner() {
     height: Math.round(stageSize.height * selectedRect.height / 100),
   } : undefined;
   const setStageNode = useCallback((node: HTMLDivElement | null) => {
+    stageResizeObserverRef.current?.disconnect();
+    stageResizeObserverRef.current = null;
     stageRef.current = node;
     if (!node) return;
-    const rect = node.getBoundingClientRect();
-    if (!rect.width || !rect.height) return;
-    const next = { width: Math.round(rect.width), height: Math.round(rect.height) };
-    setStageSize((current) => current.width === next.width && current.height === next.height ? current : next);
+    const measure = () => {
+      const rect = node.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      const next = { width: rect.width, height: rect.height };
+      setStageSize((current) => (
+        Math.abs(current.width - next.width) < 0.01 && Math.abs(current.height - next.height) < 0.01
+          ? current
+          : next
+      ));
+    };
+    measure();
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(measure);
+      observer.observe(node);
+      stageResizeObserverRef.current = observer;
+    }
   }, []);
   const fontAssetOptions = useMemo(() => assetManifest
     .filter((asset) => asset.asset_type === "font")
     .map((asset) => ({ value: asset.asset_id, label: asset.metadata.display_name ?? asset.metadata.filename ?? asset.asset_id })),
     [assetManifest]);
+
+  useEffect(() => {
+    return () => {
+      stageResizeObserverRef.current?.disconnect();
+      pointerSessionCleanupRef.current?.();
+    };
+  }, []);
 
   useEffect(() => {
     if (lastSavedSkinRef.current === savedSkin) return;
@@ -887,16 +910,76 @@ export function RuntimeLayoutDesigner() {
     setSelectedRect({ ...selectedRect, [field]: value });
   }
 
+  function beginPointerSession(
+    target: HTMLElement,
+    pointerId: number,
+    onMove: (event: PointerEvent) => void,
+  ) {
+    pointerSessionCleanupRef.current?.();
+    let closed = false;
+
+    function cleanup() {
+      if (closed) return;
+      closed = true;
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleEnd);
+      window.removeEventListener("pointercancel", handleEnd);
+      window.removeEventListener("blur", cleanup);
+      target.removeEventListener("lostpointercapture", handleLostCapture);
+      if (pointerSessionCleanupRef.current === cleanup) {
+        pointerSessionCleanupRef.current = null;
+      }
+      try {
+        if (target.hasPointerCapture?.(pointerId)) {
+          target.releasePointerCapture?.(pointerId);
+        }
+      } catch {
+        // The browser may have already released capture after pointerup/pointercancel.
+      }
+    }
+
+    function handleMove(moveEvent: PointerEvent) {
+      if (moveEvent.pointerId !== pointerId) return;
+      onMove(moveEvent);
+    }
+
+    function handleEnd(endEvent: PointerEvent) {
+      if (endEvent.pointerId !== pointerId) return;
+      cleanup();
+    }
+
+    function handleLostCapture(lostEvent: PointerEvent) {
+      if (lostEvent.pointerId !== pointerId) return;
+      cleanup();
+    }
+
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleEnd);
+    window.addEventListener("pointercancel", handleEnd);
+    window.addEventListener("blur", cleanup);
+    target.addEventListener("lostpointercapture", handleLostCapture);
+    pointerSessionCleanupRef.current = cleanup;
+
+    try {
+      target.setPointerCapture?.(pointerId);
+    } catch {
+      // Window listeners still provide a complete mouse fallback when capture is unavailable.
+    }
+  }
+
   function startDrag(component: UILayoutComponent, event: ReactPointerEvent<HTMLButtonElement>) {
     if (component.locked) return;
     const stage = stageRef.current;
     if (!stage) return;
-    const bounds = stage.getBoundingClientRect();
     const rect = getRect(component, breakpoint);
     const startX = event.clientX;
     const startY = event.clientY;
+    const pointerId = event.pointerId;
+    const target = event.currentTarget;
     selectComponent(component.component_id, event.ctrlKey || event.metaKey);
-    const onMove = (moveEvent: PointerEvent) => {
+    beginPointerSession(target, pointerId, (moveEvent) => {
+      const bounds = stage.getBoundingClientRect();
+      if (!bounds.width || !bounds.height) return;
       const dx = ((moveEvent.clientX - startX) / bounds.width) * 100;
       const dy = ((moveEvent.clientY - startY) / bounds.height) * 100;
       const targetX = Math.max(0, Math.min(100, rect.x + dx));
@@ -912,13 +995,7 @@ export function RuntimeLayoutDesigner() {
           ? fitCustomButtonContainer(next, breakpoint)
           : next;
       }));
-    };
-    const onUp = () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
+    });
   }
 
   function startResize(component: UILayoutComponent, event: ReactPointerEvent<HTMLSpanElement>) {
@@ -926,9 +1003,12 @@ export function RuntimeLayoutDesigner() {
     if (component.locked || isCustomButtonContainer(component)) return;
     const stage = stageRef.current;
     if (!stage) return;
-    const bounds = stage.getBoundingClientRect();
     const rect = getRect(component, breakpoint);
-    const onMove = (moveEvent: PointerEvent) => {
+    const pointerId = event.pointerId;
+    const target = event.currentTarget;
+    beginPointerSession(target, pointerId, (moveEvent) => {
+      const bounds = stage.getBoundingClientRect();
+      if (!bounds.width || !bounds.height) return;
       const pointerX = ((moveEvent.clientX - bounds.left) / bounds.width) * 100;
       const pointerY = ((moveEvent.clientY - bounds.top) / bounds.height) * 100;
       setDraft((current) => updateScreenComponents(current, screenId, (components) => {
@@ -943,13 +1023,7 @@ export function RuntimeLayoutDesigner() {
           ? fitCustomButtonContainer(next, breakpoint)
           : next;
       }));
-    };
-    const onUp = () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
+    });
   }
 
   function align(action: string) {

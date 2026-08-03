@@ -1,11 +1,12 @@
 import { useMemo, useRef, useState } from "react";
-import { Image, Type, X, ZoomIn } from "lucide-react";
+import { CircleHelp, Image, Type, X, ZoomIn } from "lucide-react";
 import {
   getDefaultUISkinLayout,
   type UILayoutComponentStyle,
   type UISkinLayout,
 } from "../../../../shared/cartridge/uiSkin";
 import { useProjectStore } from "../../store/projectStore";
+import { useEditorPreferencesStore } from "../../store/editorPreferencesStore";
 import type { AssetRef } from "../../types/assets";
 import type { EditorCanvasBackgroundImage } from "../../types/project";
 import { RangeControl } from "../common/RangeControl";
@@ -189,6 +190,8 @@ export function ProjectSettingsPanel() {
   const setEditorAppearance = useProjectStore((state) => state.setEditorAppearance);
   const setRuntimeUILayout = useProjectStore((state) => state.setRuntimeUILayout);
   const setSpeakerFocus = useProjectStore((state) => state.setSpeakerFocus);
+  const hoverHelpEnabled = useEditorPreferencesStore((state) => state.hoverHelpEnabled);
+  const setHoverHelpEnabled = useEditorPreferencesStore((state) => state.setHoverHelpEnabled);
   const packageAppearance = settings.packageAppearance ?? {};
   const aboutFields = packageAppearance.about?.fields ?? defaultAboutFields;
   const editorAppearance = settings.editorAppearance ?? {};
@@ -282,6 +285,25 @@ export function ProjectSettingsPanel() {
           />
         </label>
       </div>
+
+      <section className="package-appearance-setting editor-hover-help-setting">
+        <header>
+          <div>
+            <strong><CircleHelp size={16} /> 鼠标悬停提示</strong>
+            <p>控制鼠标停在按钮和控件上时显示的说明小浮窗。部分工作区原本已禁用提示，开启此选项也不会改变这些局部规则。</p>
+          </div>
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={hoverHelpEnabled}
+              aria-label="启用鼠标悬停提示"
+              data-tooltip="开启后，鼠标停在支持说明的按钮和控件上会显示提示小浮窗；关闭后不再显示。"
+              onChange={(event) => setHoverHelpEnabled(event.target.checked)}
+            />
+            启用
+          </label>
+        </header>
+      </section>
 
       <section className="editor-appearance-setting package-appearance-setting">
         <header>

@@ -1,8 +1,8 @@
 """OpenAI-compatible provider with validated native tool calling."""
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
-from time import perf_counter
+from time import perf_counter, sleep
 from typing import Any, TypeVar
 from urllib.parse import urlsplit, urlunsplit
 from urllib import error, request
@@ -11,11 +11,13 @@ import json
 import logging
 import re
 
-from httpx import Timeout
-from openai import OpenAI
+import httpcore
+from httpx import Timeout, TransportError
+from openai import APIConnectionError, APITimeoutError, OpenAI
 from pydantic import BaseModel, ValidationError
 
 from app.core.config import Settings, get_settings
+from app.core.error_logging import sanitize_log_text
 from app.core.errors import AIProviderError
 from app.ai.structured_normalization import normalize_structured_payload
 from app.mcp.tools import agentvn_tool_registry, generation_schema_for_model
@@ -30,6 +32,9 @@ logger = logging.getLogger("agentvn.backend.ai_provider")
 
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 300.0
 DEFAULT_EMBEDDING_TIMEOUT_SECONDS = 12.0
+STRUCTURED_TRANSPORT_MAX_ATTEMPTS = 2
+STRUCTURED_TRANSPORT_RETRY_DELAY_SECONDS = 0.2
+TransportRetryCallback = Callable[[dict[str, object]], None]
 
 
 class AIProvider:
@@ -74,6 +79,146 @@ class AIProvider:
             write=request_timeout,
             pool=request_timeout,
         )
+
+    def _exception_chain(self, exc: BaseException) -> Iterator[BaseException]:
+        pending = [exc]
+        seen: set[int] = set()
+        while pending:
+            current = pending.pop()
+            identity = id(current)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            yield current
+            cause = getattr(current, "__cause__", None)
+            context = getattr(current, "__context__", None)
+            if isinstance(cause, BaseException):
+                pending.append(cause)
+            if isinstance(context, BaseException):
+                pending.append(context)
+
+    def _is_transient_transport_error(self, exc: BaseException) -> bool:
+        transient_types = (
+            APIConnectionError,
+            APITimeoutError,
+            TransportError,
+            httpcore.NetworkError,
+            httpcore.ProtocolError,
+            httpcore.TimeoutException,
+            ConnectionError,
+            TimeoutError,
+        )
+        message_markers = (
+            "incomplete chunked read",
+            "peer closed connection",
+            "server disconnected",
+            "connection reset",
+            "connection aborted",
+            "connection broken",
+            "remote protocol error",
+            "remoteprotocolerror",
+            "read error",
+            "write error",
+            "network error",
+            "timed out",
+            "timeout",
+        )
+        chain = list(self._exception_chain(exc))
+        if any(
+            isinstance(getattr(current, "status_code", None), int)
+            and 400 <= getattr(current, "status_code") < 500
+            and getattr(current, "status_code") not in {408, 409, 429}
+            for current in chain
+        ):
+            return False
+        for current in chain:
+            if isinstance(current, transient_types):
+                return True
+            message = str(current).lower()
+            if any(marker in message for marker in message_markers):
+                return True
+        return False
+
+    def _transport_error_category(self, exc: BaseException) -> str:
+        chain = list(self._exception_chain(exc))
+        if any(isinstance(current, (APITimeoutError, httpcore.TimeoutException, TimeoutError)) for current in chain):
+            return "timeout"
+        if any(
+            isinstance(current, httpcore.ProtocolError) or type(current).__name__ in {
+                "ProtocolError",
+                "RemoteProtocolError",
+                "LocalProtocolError",
+            }
+            for current in chain
+        ):
+            return "protocol_error"
+        if any(
+            isinstance(current, (APIConnectionError, TransportError, httpcore.NetworkError, ConnectionError))
+            for current in chain
+        ):
+            return "connection_error"
+        lower = str(exc).lower()
+        if "chunked" in lower or "peer closed" in lower or "protocol" in lower:
+            return "protocol_error"
+        return "transport_error"
+
+    def _structured_transport_retry_details(
+        self,
+        exc: BaseException,
+        *,
+        response_model: type[BaseModel],
+        attempt: int,
+        fallback_mode: str,
+        maximum_attempts: int = STRUCTURED_TRANSPORT_MAX_ATTEMPTS,
+    ) -> dict[str, object]:
+        return {
+            "attempt": attempt,
+            "maximumAttempts": maximum_attempts,
+            "responseModel": response_model.__name__,
+            "fallbackMode": fallback_mode,
+            "errorCategory": self._transport_error_category(exc),
+        }
+
+    def _create_with_transport_retry(
+        self,
+        create: Callable[[], T],
+        *,
+        response_model: type[BaseModel],
+        model_name: str,
+        fallback_mode: str = "same_request",
+        on_retry: TransportRetryCallback | None = None,
+        maximum_attempts: int = STRUCTURED_TRANSPORT_MAX_ATTEMPTS,
+    ) -> T:
+        maximum_attempts = max(1, min(STRUCTURED_TRANSPORT_MAX_ATTEMPTS, maximum_attempts))
+        for attempt in range(1, maximum_attempts + 1):
+            try:
+                return create()
+            except Exception as exc:
+                if not self._is_transient_transport_error(exc) or attempt >= maximum_attempts:
+                    raise
+                next_attempt = attempt + 1
+                details = self._structured_transport_retry_details(
+                    exc,
+                    response_model=response_model,
+                    attempt=next_attempt,
+                    fallback_mode=fallback_mode,
+                    maximum_attempts=maximum_attempts,
+                )
+                logger.warning(
+                    "Structured provider transport interrupted; retrying: model=%s response_model=%s "
+                    "attempt=%s/%s fallback_mode=%s error_category=%s error=%s",
+                    model_name,
+                    response_model.__name__,
+                    next_attempt,
+                    maximum_attempts,
+                    fallback_mode,
+                    details["errorCategory"],
+                    sanitize_log_text(str(exc))[:800],
+                )
+                if on_retry is not None:
+                    on_retry(details)
+                sleep(STRUCTURED_TRANSPORT_RETRY_DELAY_SECONDS)
+        raise AssertionError("unreachable")
 
     def _is_deepseek_provider(self, base_url: str, model_name: str) -> bool:
         return "deepseek" in base_url.lower() or model_name.lower().startswith("deepseek-")
@@ -180,16 +325,53 @@ class AIProvider:
                     # error-log-ignore: 这是从模型文本中逐个尝试提取 JSON 代码块，失败后还会继续尝试其他候选。
                     continue
             decoder = json.JSONDecoder()
-            for index, char in enumerate(stripped):
-                if char not in "{[":
-                    continue
+            candidate_indexes = [index for index in (stripped.find("{"), stripped.find("[")) if index >= 0]
+            if candidate_indexes:
+                first_index = min(candidate_indexes)
                 try:
-                    payload, _ = decoder.raw_decode(stripped[index:])
+                    payload, _ = decoder.raw_decode(stripped[first_index:])
                     return payload
                 except json.JSONDecodeError:
-                    # error-log-ignore: 这是模型文本中的候选起点探测，单个起点解析失败不代表整次请求失败。
-                    continue
+                    # Do not keep scanning nested values. A truncated outer object can contain a
+                    # complete command object or tags array; accepting that child as the whole
+                    # response hides output truncation and can silently discard story content.
+                    pass
             raise original_exc
+
+    @staticmethod
+    def _is_structured_output_truncation(exc: Exception) -> bool:
+        if isinstance(exc, json.JSONDecodeError):
+            remaining = exc.doc[exc.pos:].strip() if exc.doc else ""
+            if exc.pos >= max(0, len(exc.doc.rstrip()) - 2) or not remaining:
+                return True
+        lower = str(exc).lower()
+        return any(
+            marker in lower
+            for marker in (
+                "json eof",
+                "unexpected eof",
+                "end of data",
+                "unterminated string",
+                "unclosed",
+                "incomplete json",
+                "truncated json",
+                "finish_reason=length",
+                "finish reason: length",
+                "maximum context length",
+                "max_tokens",
+                "output length",
+                "token limit",
+            )
+        )
+
+    @staticmethod
+    def _raise_if_length_finished(choice: object) -> None:
+        finish_reason = str(getattr(choice, "finish_reason", "") or "").lower()
+        if finish_reason == "length":
+            raise AIProviderError(
+                "Structured output truncated before the JSON object completed "
+                "(finish_reason=length, output length limit reached)."
+            )
 
     def create_structured(
         self,
@@ -289,6 +471,8 @@ class AIProvider:
         user_prompt: str,
         temperature: float = 0.4,
         selection: ProviderSelectionRequest | None = None,
+        *,
+        max_tool_attempts: int = 3,
     ) -> Iterator[tuple[str, object]]:
         """Emit debug status while obtaining a validated final object from a tool call."""
 
@@ -315,6 +499,7 @@ class AIProvider:
             model_name,
             parameter_overrides,
             structured_mode,
+            max_tool_attempts,
         )
         return
 
@@ -329,6 +514,7 @@ class AIProvider:
         model_name: str,
         parameter_overrides: dict[str, Any],
         structured_mode: str,
+        max_tool_attempts: int,
     ) -> Iterator[tuple[str, object]]:
         system_prompt = self._merge_system_prompt(system_prompt, parameter_overrides)
         request_kwargs: dict[str, object] = {
@@ -370,11 +556,36 @@ class AIProvider:
                 "request_timeout_seconds": self._request_timeout_seconds(parameter_overrides),
             },
         )
+        transport_retry_events: list[dict[str, object]] = []
         try:
-            result = self._create_tool_structured(llm_client, response_model, request_kwargs, base_url, model_name)
+            result = self._create_tool_structured(
+                llm_client,
+                response_model,
+                request_kwargs,
+                base_url,
+                model_name,
+                max_attempts=max_tool_attempts,
+                on_transport_retry=transport_retry_events.append,
+            )
+            for details in transport_retry_events:
+                yield from self._status_trace(
+                    "provider_transport_retry",
+                    "warning",
+                    "模型连接中断，正在自动重试",
+                    "结构化模型请求的响应传输提前中断；后端正在使用相同输入重新请求。",
+                    details,
+                )
             yield from self._status_trace("validation", "success", "Tool Call 参数已通过 AgentVN 结构校验", "最终数据可以安全写入画布。")
             yield ("final", result)
         except Exception as exc:
+            for details in transport_retry_events:
+                yield from self._status_trace(
+                    "provider_transport_retry",
+                    "warning",
+                    "模型连接中断，正在自动重试",
+                    "结构化模型请求的响应传输提前中断；后端已使用相同输入重新请求。",
+                    details,
+                )
             if self._is_explicit_tool_unsupported(exc):
                 logger.warning(
                     "Provider explicitly rejected streamed tool calling; using one JSON compatibility request: "
@@ -391,9 +602,25 @@ class AIProvider:
                     "当前模型服务明确声明不支持 Tool Call，后端将执行一次 JSON 兼容请求。",
                     {"reason": str(exc)[:800], "fallback_used": True, "error_type": type(exc).__name__},
                 )
+                json_transport_retry_events: list[dict[str, object]] = []
                 try:
-                    result = self._create_json_structured(llm_client, response_model, system_prompt, user_prompt, request_kwargs)
+                    result = self._create_json_structured(
+                        llm_client,
+                        response_model,
+                        system_prompt,
+                        user_prompt,
+                        request_kwargs,
+                        on_transport_retry=json_transport_retry_events.append,
+                    )
                 except Exception as json_exc:
+                    for details in json_transport_retry_events:
+                        yield from self._status_trace(
+                            "provider_transport_retry",
+                            "warning",
+                            "JSON 兼容请求连接中断，正在自动重试",
+                            "JSON 兼容结构化请求的响应传输提前中断；后端已使用相同输入重新请求。",
+                            details,
+                        )
                     if response_model is MemoryUpdate:
                         result = self._partial_memory_update(user_prompt, json_exc)  # type: ignore[assignment]
                         yield ("trace", self._trace_event(
@@ -407,6 +634,14 @@ class AIProvider:
                         return
                     yield ("trace", self._trace_event("validation", "error", "JSON 兼容模式校验失败", str(json_exc)[:1200]))
                     raise AIProviderError(self._format_provider_error(json_exc, base_url, model_name)) from json_exc
+                for details in json_transport_retry_events:
+                    yield from self._status_trace(
+                        "provider_transport_retry",
+                        "warning",
+                        "JSON 兼容请求连接中断，正在自动重试",
+                        "JSON 兼容结构化请求的响应传输提前中断；后端已使用相同输入重新请求。",
+                        details,
+                    )
                 yield from self._status_trace("validation", "success", "JSON 兼容结果已通过 AgentVN 结构校验", "最终数据可以安全写入画布。")
                 yield ("final", result)
                 return
@@ -472,25 +707,69 @@ class AIProvider:
             else:
                 yield from self._status_trace("memory", "info", "正在分析记忆更新", "正在分析客观事实与角色主观记忆。")
             yield from self._status_trace("json_mode", "info", "模型已连接，正在生成结构化结果", "JSON 文本只用于后端校验，不作为公开决策内容显示。")
-            stream = llm_client.chat.completions.create(**request_kwargs)
-            for chunk in stream:
-                delta = chunk.choices[0].delta.content or ""
-                if delta:
-                    chunks.append(delta)
-                    if expose_model_delta:
-                        yield ("delta", delta)
-            content = "".join(chunks)
             try:
-                result = self._validate_structured_content(response_model, content)
-            except Exception as validation_exc:
-                logger.warning(
-                    "模型流式 JSON 校验失败，改用非流式结构化模式：model=%s error=%s",
-                    model_name,
-                    validation_exc,
-                )
+                stream = llm_client.chat.completions.create(**request_kwargs)
+                for chunk in stream:
+                    choice = chunk.choices[0]
+                    delta = choice.delta.content or ""
+                    if delta:
+                        chunks.append(delta)
+                        if expose_model_delta:
+                            yield ("delta", delta)
+                    self._raise_if_length_finished(choice)
+            except Exception as stream_exc:
+                if not self._is_transient_transport_error(stream_exc):
+                    raise
                 retry_kwargs = {key: value for key, value in request_kwargs.items() if key != "stream"}
-                yield from self._status_trace("fallback", "warning", "模型返回 JSON 不完整", "正在使用非流式结构化模式重试。")
-                result = self._create_json_structured(llm_client, response_model, system_prompt, user_prompt, retry_kwargs)
+                details = self._structured_transport_retry_details(
+                    stream_exc,
+                    response_model=response_model,
+                    attempt=2,
+                    fallback_mode="non_stream",
+                )
+                logger.warning(
+                    "Structured JSON stream interrupted; recovering with non-stream request: "
+                    "model=%s response_model=%s error_category=%s error=%s",
+                    model_name,
+                    response_model.__name__,
+                    details["errorCategory"],
+                    sanitize_log_text(str(stream_exc))[:800],
+                )
+                chunks.clear()
+                yield from self._status_trace(
+                    "provider_transport_retry",
+                    "warning",
+                    "模型流中断，正在使用非流式模式恢复",
+                    "已丢弃未完成的流式 JSON；后端正在使用相同输入重新请求完整结构化结果。",
+                    details,
+                )
+                sleep(STRUCTURED_TRANSPORT_RETRY_DELAY_SECONDS)
+                result = self._create_json_structured(
+                    llm_client,
+                    response_model,
+                    system_prompt,
+                    user_prompt,
+                    retry_kwargs,
+                    transport_max_attempts=1,
+                )
+            else:
+                content = "".join(chunks)
+                try:
+                    result = self._validate_structured_content(response_model, content)
+                except Exception as validation_exc:
+                    if self._is_structured_output_truncation(validation_exc):
+                        raise AIProviderError(
+                            "Structured output truncated before the JSON object completed "
+                            f"(JSON EOF/unclosed content: {validation_exc})."
+                        ) from validation_exc
+                    logger.warning(
+                        "模型流式 JSON 校验失败，改用非流式结构化模式：model=%s error=%s",
+                        model_name,
+                        validation_exc,
+                    )
+                    retry_kwargs = {key: value for key, value in request_kwargs.items() if key != "stream"}
+                    yield from self._status_trace("fallback", "warning", "模型返回 JSON 不完整", "正在使用非流式结构化模式重试。")
+                    result = self._create_json_structured(llm_client, response_model, system_prompt, user_prompt, retry_kwargs)
             yield from self._status_trace("validation", "success", "结构化结果已通过 AgentVN 校验", "最终数据可以安全写入画布。")
             yield ("final", result)
         except Exception as exc:
@@ -684,6 +963,9 @@ class AIProvider:
         request_kwargs: dict[str, object],
         base_url: str = "",
         model_name: str = "",
+        *,
+        max_attempts: int = 3,
+        on_transport_retry: TransportRetryCallback | None = None,
     ) -> T:
         tool = agentvn_tool_registry.tool_for_model(response_model)
         openai_tool = agentvn_tool_registry.openai_tool_for_model(response_model)
@@ -715,9 +997,14 @@ class AIProvider:
         )
 
         last_error: Exception | None = None
-        max_attempts = 3
+        max_attempts = max(1, min(3, max_attempts))
         for attempt in range(max_attempts):
-            response = llm_client.chat.completions.create(**tool_kwargs)
+            response = self._create_with_transport_retry(
+                lambda: llm_client.chat.completions.create(**tool_kwargs),
+                response_model=response_model,
+                model_name=model_name or str(request_kwargs.get("model", "")),
+                on_retry=on_transport_retry,
+            )
             if not response.choices:
                 raise AIProviderError(f"Provider returned no choices for AgentVN tool `{tool.name}`.")
             choice = response.choices[0]
@@ -853,6 +1140,9 @@ class AIProvider:
         system_prompt: str,
         user_prompt: str,
         request_kwargs: dict[str, object],
+        *,
+        on_transport_retry: TransportRetryCallback | None = None,
+        transport_max_attempts: int = STRUCTURED_TRANSPORT_MAX_ATTEMPTS,
     ) -> T:
         json_kwargs = {
             **request_kwargs,
@@ -869,11 +1159,24 @@ class AIProvider:
             ],
             "response_format": {"type": "json_object"},
         }
-        response = llm_client.chat.completions.create(**json_kwargs)
-        content = response.choices[0].message.content or ""
+        response = self._create_with_transport_retry(
+            lambda: llm_client.chat.completions.create(**json_kwargs),
+            response_model=response_model,
+            model_name=str(request_kwargs.get("model", "")),
+            on_retry=on_transport_retry,
+            maximum_attempts=transport_max_attempts,
+        )
+        choice = response.choices[0]
+        self._raise_if_length_finished(choice)
+        content = choice.message.content or ""
         try:
             return self._validate_structured_content(response_model, content)
         except Exception as exc:
+            if response_model is not MemoryUpdate and self._is_structured_output_truncation(exc):
+                raise AIProviderError(
+                    "Structured output truncated before the JSON object completed "
+                    f"(JSON EOF/unclosed content: {exc})."
+                ) from exc
             try:
                 logger.warning(
                     "模型 JSON 结果校验失败，尝试修复：model=%s error=%s",
@@ -888,6 +1191,7 @@ class AIProvider:
                     request_kwargs,
                     content,
                     exc,
+                    on_transport_retry=on_transport_retry,
                 )
             except Exception as repair_exc:
                 if response_model is MemoryUpdate:
@@ -906,6 +1210,8 @@ class AIProvider:
         request_kwargs: dict[str, object],
         invalid_content: str,
         validation_error: Exception,
+        *,
+        on_transport_retry: TransportRetryCallback | None = None,
     ) -> T:
         repair_kwargs = {
             **request_kwargs,
@@ -934,8 +1240,16 @@ class AIProvider:
         }
         self._apply_deepseek_repair_tokens(repair_kwargs)
         self._apply_structured_token_floor(response_model, repair_kwargs)
-        repair_response = llm_client.chat.completions.create(**repair_kwargs)
-        repaired_content = repair_response.choices[0].message.content or ""
+        repair_response = self._create_with_transport_retry(
+            lambda: llm_client.chat.completions.create(**repair_kwargs),
+            response_model=response_model,
+            model_name=str(request_kwargs.get("model", "")),
+            fallback_mode="json_repair",
+            on_retry=on_transport_retry,
+        )
+        repair_choice = repair_response.choices[0]
+        self._raise_if_length_finished(repair_choice)
+        repaired_content = repair_choice.message.content or ""
         return self._validate_structured_content(response_model, repaired_content)
 
     def _validation_error_text(self, exc: Exception) -> str:

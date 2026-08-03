@@ -149,20 +149,23 @@
 
 .ui-skin-scope {
   position: relative;
-  min-height: 100dvh;
-  height: 100dvh;
+  width: 100%;
+  min-width: 0;
+  min-height: 100%;
+  height: 100%;
   background: var(--bg);
   font-family: var(--runtime-ui-font-family, Inter, "Segoe UI", system-ui, sans-serif);
   display: grid;
   place-items: center;
   overflow: hidden;
+  container-type: size;
 }
 
 .runtime-layout-frame {
   position: relative;
-  width: min(100vw, calc(100vh * 16 / 9));
-  max-width: 100vw;
-  max-height: 100dvh;
+  width: min(100cqw, calc(100cqh * 16 / 9));
+  max-width: 100%;
+  max-height: 100%;
   aspect-ratio: var(--runtime-frame-aspect, 16 / 9);
   overflow: hidden;
   background:
@@ -173,7 +176,7 @@
 }
 
 .ui-skin-scope[data-ui-breakpoint="mobile"] .runtime-layout-frame {
-  width: min(100vw, calc(100vh * 16 / 9));
+  width: min(100cqw, calc(100cqh * 16 / 9));
 }
 
 .ui-skin-scope[data-ui-screen="player"][data-ui-breakpoint="mobile"][data-ui-orientation="portrait"] .runtime-layout-frame {

@@ -2,19 +2,22 @@
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
+from app.models.commands import GameCommand
 from app.models.common import JsonValue, StrictBaseModel
+from app.models.novel_import import CharacterCandidate
 from app.models.scene import SceneBeat
 from app.schemas.requests import ProviderSelectionRequest
 
 
 JobStatus = Literal["created", "running", "paused", "cancelled", "completed", "failed", "failed_partial", "retrying"]
-ChunkStatus = Literal["pending", "waiting", "retrying", "running", "completed", "failed", "cancelled"]
+ChunkStatus = Literal["pending", "waiting", "retrying", "running", "completed", "failed", "cancelled", "superseded"]
 AgentTaskStatus = Literal["waiting", "running", "completed", "failed", "retrying", "cancelled"]
 TokenSource = Literal["provider", "estimated", "mixed", "none"]
 AgentRole = Literal["chunk_parser", "chapter_merger", "continuity_reviewer", "link_polisher"]
 QualitySeverity = Literal["info", "warning", "danger", "blocked"]
+ChapterResultStatus = Literal["pending", "completed", "failed", "cancelled"]
 
 
 class TokenUsage(StrictBaseModel):
@@ -35,12 +38,33 @@ class SubagentModelInput(StrictBaseModel):
     userInstruction: str
     outputFormat: str
     promptVersion: str
+    speakerCandidates: list[str] | None = None
+
+
+class SceneFragment(StrictBaseModel):
+    summary: str = ""
+    tags: list[str] = Field(default_factory=list)
+    commands: list[GameCommand] = Field(default_factory=list)
+    continuityNotes: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    errorMessage: str | None = None
+
+    @model_validator(mode="after")
+    def reject_route_commands(self) -> "SceneFragment":
+        route_types = {"choice", "jump", "conditional_jump"}
+        invalid = [command.type for command in self.commands if command.type in route_types]
+        if invalid:
+            raise ValueError(
+                "Scene fragments cannot contain route commands; chapter links are created after chapter merge."
+            )
+        return self
 
 
 class SubagentModelOutput(StrictBaseModel):
     status: Literal["completed", "failed"] = "completed"
     resultText: str = ""
     summary: str = ""
+    fragment: SceneFragment | None = None
     scenes: list[SceneBeat] = Field(default_factory=list)
     continuityNotes: list[str] = Field(default_factory=list)
     inputTokens: int = Field(default=0, ge=0)
@@ -76,6 +100,8 @@ class ChunkRecord(StrictBaseModel):
     chapterIndex: int = Field(default=0, ge=0)
     chunkIndex: int = Field(..., ge=0)
     chunkText: str
+    parentChunkId: str | None = None
+    splitDepth: int = Field(default=0, ge=0, le=2)
     startOffset: int = Field(default=0, ge=0)
     endOffset: int = Field(default=0, ge=0)
     status: ChunkStatus = "pending"
@@ -138,10 +164,14 @@ class ChunkResult(StrictBaseModel):
     status: Literal["completed", "failed", "cancelled"] = "completed"
     resultText: str = ""
     summary: str = ""
+    fragment: SceneFragment | None = None
     scenes: list[SceneBeat] = Field(default_factory=list)
     sceneCount: int = Field(default=0, ge=0)
     usedFallbackScene: bool = False
     schemaRepairCount: int = Field(default=0, ge=0)
+    characterCandidates: list[CharacterCandidate] = Field(default_factory=list)
+    semanticRepairCount: int = Field(default=0, ge=0)
+    semanticValidationStatus: Literal["passed", "repaired", "blocked"] = "passed"
     mergeStatus: Literal["pending", "merged", "discarded_cancelled", "failed", "cancelled"] = "pending"
     continuityNotes: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
@@ -156,7 +186,12 @@ class ChunkResult(StrictBaseModel):
 class ChapterResult(StrictBaseModel):
     chapterTitle: str = ""
     chapterIndex: int = Field(default=0, ge=0)
+    status: ChapterResultStatus = "pending"
     summary: str = Field(default="", max_length=1500)
+    scene: SceneBeat | None = None
+    sourceChunkIds: list[str] = Field(default_factory=list)
+    qualityWarnings: list[str] = Field(default_factory=list)
+    errorMessage: str | None = None
     completedChunks: int = Field(default=0, ge=0)
     failedChunks: int = Field(default=0, ge=0)
     cancelledChunks: int = Field(default=0, ge=0)
@@ -187,7 +222,7 @@ class NovelProcessJobCreateRequest(StrictBaseModel):
     chunks: list[NovelProcessChunkInput]
     userInstruction: str
     outputFormat: str = "markdown"
-    promptVersion: str = "subagent-v1"
+    promptVersion: str = "novel-process-v3"
     maxConcurrency: int = Field(default=3, ge=1, le=10)
     maxRetries: int = Field(default=2, ge=0, le=10)
     providerSelection: ProviderSelectionRequest | None = None
@@ -237,6 +272,8 @@ class NovelProcessJobResults(StrictBaseModel):
     status: JobStatus
     completedResults: list[ChunkResult] = Field(default_factory=list)
     failedResults: list[ChunkResult] = Field(default_factory=list)
+    completedChapterResults: list[ChapterResult] = Field(default_factory=list)
+    failedChapterResults: list[ChapterResult] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
 

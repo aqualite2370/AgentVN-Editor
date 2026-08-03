@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+import hashlib
 import logging
 import os
+import re
 import sqlite3
 from threading import Event, RLock, Thread
 import json
@@ -15,8 +17,15 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from app.ai.context_budget import estimate_tokens
+from app.ai.novel_dialogue_semantics import (
+    build_character_candidates,
+    detect_speaker_names,
+    semantic_correction_prompt,
+    validate_dialogue_semantics,
+)
 from app.ai.provider import AIProvider
 from app.core.error_logging import log_exception
+from app.models.novel_import import CharacterCandidate
 from app.models.novel_process import (
     AgentTask,
     BookGlobalMemory,
@@ -28,6 +37,7 @@ from app.models.novel_process import (
     NovelProcessJob,
     NovelProcessJobCreateRequest,
     NovelProcessJobResults,
+    SceneFragment,
     SceneLinkPolishPatch,
     SceneLinkPolishItem,
     SceneLinkPolishRequest,
@@ -39,6 +49,7 @@ from app.models.novel_process import (
 )
 from app.schemas.requests import ProviderSelectionParameters, ProviderSelectionRequest
 from app.db.init_db import init_db
+from app.models.scene import SceneBeat
 from app.utils.ids import new_id
 
 
@@ -55,6 +66,10 @@ STALE_RUNNING_TASK_SECONDS = 90
 TASK_LEASE_SECONDS = 90
 BASE_RETRY_BACKOFF_SECONDS = 0.2
 MAX_RETRY_BACKOFF_SECONDS = 3.0
+FRAGMENT_PROMPT_VERSION = "novel-process-v3"
+MAX_AUTO_SPLIT_DEPTH = 2
+MIN_AUTO_SPLIT_CHARS = 1500
+ROUTE_COMMAND_TYPES = {"choice", "jump", "conditional_jump"}
 
 
 class TaskCancelled(RuntimeError):
@@ -69,6 +84,10 @@ class AgentExecutionResult:
     output_tokens: int
     token_source: str
     cancelled_after_start: bool = False
+    character_candidates: list[CharacterCandidate] = field(default_factory=list)
+    semantic_repair_count: int = 0
+    semantic_validation_status: str = "passed"
+    semantic_quality_issues: list[QualityIssue] = field(default_factory=list)
 
 
 def utc_now() -> str:
@@ -374,7 +393,7 @@ class NovelProcessService:
         with lock:
             job = self._load_job_unlocked(job_id)
             now = utc_now()
-            failed_ids = {chunk.chunkId for chunk in job.chunks if chunk.status == "failed"}
+            failed_ids = {chunk.chunkId for chunk in self._leaf_chunks(job) if chunk.status == "failed"}
             for chunk in job.chunks:
                 if chunk.chunkId in failed_ids:
                     chunk.status = "pending"
@@ -401,7 +420,16 @@ class NovelProcessService:
         lock = self._lock_for(job_id)
         with lock:
             job = self._load_job_unlocked(job_id)
-            ordered = sorted(job.chunkResults, key=lambda item: (item.chapterIndex, item.chunkIndex, item.completedAt))
+            job.chapterResults = self._chapter_results(job)
+            chunk_offsets = {chunk.chunkId: chunk.startOffset for chunk in job.chunks}
+            ordered = sorted(
+                job.chunkResults,
+                key=lambda item: (
+                    item.chapterIndex,
+                    chunk_offsets.get(item.chunkId, item.chunkIndex),
+                    item.completedAt,
+                ),
+            )
             warnings = [
                 f"{result.chapterTitle or ('Chapter ' + str(result.chapterIndex + 1))} chunk {result.chunkIndex + 1}: {result.errorMessage}"
                 for result in ordered
@@ -412,6 +440,14 @@ class NovelProcessService:
                 status=job.status,
                 completedResults=[result for result in ordered if result.status == "completed"],
                 failedResults=[result for result in ordered if result.status == "failed"],
+                completedChapterResults=[
+                    result for result in job.chapterResults
+                    if result.status == "completed" and result.scene is not None
+                ],
+                failedChapterResults=[
+                    result for result in job.chapterResults
+                    if result.status == "failed"
+                ],
                 warnings=warnings,
             )
 
@@ -503,36 +539,75 @@ class NovelProcessService:
         input_tokens = estimate_tokens(f"{system_prompt}\n{user_prompt}")
         selection = self._json_mode_selection(provider_selection)
         partial: list[str] = []
-        final_output: SubagentModelOutput | None = None
+        semantic_quality_issues: list[QualityIssue] = []
 
-        for event, payload in self.provider.stream_with_tools(
-            SubagentModelOutput,
-            system_prompt,
+        def call_model(prompt: str, *, max_tool_attempts: int) -> SubagentModelOutput:
+            final: SubagentModelOutput | None = None
+            for event, payload in self.provider.stream_with_tools(
+                SubagentModelOutput,
+                system_prompt,
+                prompt,
+                temperature=0.2,
+                selection=selection,
+                max_tool_attempts=max_tool_attempts,
+            ):
+                if event == "delta" and isinstance(payload, str):
+                    partial.append(payload)
+                    self._record_partial(job_id, task_id, payload)
+                elif event == "status" and isinstance(payload, str):
+                    self._record_task_status(job_id, task_id, payload)
+                elif event == "final":
+                    final = payload if isinstance(payload, SubagentModelOutput) else SubagentModelOutput.model_validate(payload)
+                if cancel_event.is_set():
+                    if final is None:
+                        raise TaskCancelled("Task was cancelled while the model stream was active.")
+                    break
+            if final is None:
+                raise RuntimeError(f"Subagent did not return a structured final payload. Raw output: {''.join(partial)[:2000]}")
+            if final.status == "failed":
+                raise RuntimeError(final.errorMessage or f"Subagent returned failed status. Raw output: {''.join(partial)[:2000]}")
+            return final
+
+        final_output = call_model(
             user_prompt,
-            temperature=0.2,
-            selection=selection,
-        ):
-            if event == "delta" and isinstance(payload, str):
-                partial.append(payload)
-                self._record_partial(job_id, task_id, payload)
-            elif event == "status" and isinstance(payload, str):
-                self._record_task_status(job_id, task_id, payload)
-            elif event == "final":
-                final_output = payload if isinstance(payload, SubagentModelOutput) else SubagentModelOutput.model_validate(payload)
-            if cancel_event.is_set():
-                if final_output is None:
-                    raise TaskCancelled("Task was cancelled while the model stream was active.")
-                break
+            max_tool_attempts=2 if model_input.promptVersion in {"novel-process-v2", FRAGMENT_PROMPT_VERSION} else 3,
+        )
+        semantic_repair_count = 0
+        semantic_validation_status = "passed"
+        speaker_names = model_input.speakerCandidates or []
+        if model_input.promptVersion in {"novel-process-v2", FRAGMENT_PROMPT_VERSION}:
+            semantic_issues = validate_dialogue_semantics(
+                final_output,
+                speaker_names,
+                model_input.chunkText,
+            )
+            if semantic_issues:
+                self._record_task_status(job_id, task_id, "对白语义校验失败，正在请求模型纠正")
+                correction_prompt = semantic_correction_prompt(user_prompt, semantic_issues, speaker_names)
+                input_tokens += estimate_tokens(f"{system_prompt}\n{correction_prompt}")
+                final_output = call_model(correction_prompt, max_tool_attempts=1)
+                semantic_issues = validate_dialogue_semantics(
+                    final_output,
+                    speaker_names,
+                    model_input.chunkText,
+                )
+            if semantic_issues:
+                evidence = "; ".join(f"{issue.path}: {issue.evidence}" for issue in semantic_issues[:6])
+                raise RuntimeError(
+                    "speaker_structure_unresolved: 对白语义校验仍未通过，结果未写入项目。"
+                    f" {evidence}"
+                )
+
+        if model_input.promptVersion == FRAGMENT_PROMPT_VERSION and self._fragment_from_output(final_output) is None:
+            raise RuntimeError("structured fragment missing from chunk output")
 
         raw_output = "".join(partial)
-        if final_output is None:
-            raise RuntimeError(f"Subagent did not return a structured final payload. Raw output: {raw_output[:2000]}")
-        if final_output.status == "failed":
-            raise RuntimeError(final_output.errorMessage or f"Subagent returned failed status. Raw output: {raw_output[:2000]}")
+        character_candidates = build_character_candidates(model_input.chunkText, speaker_names, final_output)
 
         output_text = "\n".join([
             final_output.resultText,
             final_output.summary,
+            final_output.fragment.model_dump_json() if final_output.fragment else "",
             final_output.model_dump_json(include={"scenes"}) if final_output.scenes else "",
             "\n".join(final_output.continuityNotes),
         ])
@@ -548,6 +623,10 @@ class NovelProcessService:
             output_tokens=output_tokens,
             token_source="estimated",
             cancelled_after_start=cancel_event.is_set(),
+            character_candidates=character_candidates,
+            semantic_repair_count=semantic_repair_count,
+            semantic_validation_status=semantic_validation_status,
+            semantic_quality_issues=semantic_quality_issues,
         )
 
     def _handle_task_completed(self, job_id: str, task_id: str, result: AgentExecutionResult) -> None:
@@ -556,8 +635,13 @@ class NovelProcessService:
             task = self._find_task(job, task_id)
             chunk = self._find_chunk(job, task.chunkId)
             now = utc_now()
+            fragment = self._fragment_from_output(result.output)
             scenes = result.output.scenes
-            quality_issues = self._quality_issues(result.output, chunk.chunkId)
+            semantic_quality_issues = [
+                issue.model_copy(update={"sourceChunkId": chunk.chunkId})
+                for issue in result.semantic_quality_issues
+            ]
+            quality_issues = [*self._quality_issues(result.output, chunk.chunkId), *semantic_quality_issues]
             quality_warnings = [issue.message for issue in quality_issues]
             tokens = TokenUsage(
                 inputTokens=result.input_tokens,
@@ -598,10 +682,14 @@ class NovelProcessService:
                         status="cancelled",
                         resultText=result.output.resultText,
                         summary=chunk.summary,
+                        fragment=fragment,
                         scenes=scenes,
                         sceneCount=len(scenes),
                         usedFallbackScene=len(scenes) == 0,
                         schemaRepairCount=task.schemaRepairCount,
+                        characterCandidates=result.character_candidates,
+                        semanticRepairCount=result.semantic_repair_count,
+                        semanticValidationStatus=result.semantic_validation_status,
                         mergeStatus="discarded_cancelled",
                         continuityNotes=[clip_text(note, 240) for note in result.output.continuityNotes[:20]],
                         warnings=[*result.output.warnings, "Cancelled result was not merged."],
@@ -629,7 +717,8 @@ class NovelProcessService:
             task.tokenSource = tokens.tokenSource
             task.rawOutput = result.raw_output[:12000]
             task.resultPreview = clip_text(result.output.resultText or result.output.summary, 600)
-            task.warnings = [*result.output.warnings, *quality_warnings]
+            fragment_warnings = fragment.warnings if fragment else []
+            task.warnings = [*result.output.warnings, *fragment_warnings, *quality_warnings]
             task.errorMessage = None
 
             result_id = new_id("chunk_result")
@@ -648,13 +737,17 @@ class NovelProcessService:
                     status="completed",
                     resultText=result.output.resultText,
                     summary=chunk.summary,
+                    fragment=fragment,
                     scenes=scenes,
                     sceneCount=len(scenes),
                     usedFallbackScene=len(scenes) == 0,
                     schemaRepairCount=task.schemaRepairCount,
+                    characterCandidates=result.character_candidates,
+                    semanticRepairCount=result.semantic_repair_count,
+                    semanticValidationStatus=result.semantic_validation_status,
                     mergeStatus="merged",
                     continuityNotes=[clip_text(note, 240) for note in result.output.continuityNotes[:20]],
-                    warnings=result.output.warnings,
+                    warnings=list(dict.fromkeys([*result.output.warnings, *fragment_warnings])),
                     qualityWarnings=quality_warnings,
                     qualityIssues=quality_issues,
                     rawOutput=result.raw_output[:12000],
@@ -677,7 +770,11 @@ class NovelProcessService:
             failure_category = self._failure_category(message)
             task.status = "failed"
             task.phase = "failed"
-            task.currentStepLabel = "Failed; retry scheduled" if chunk.retryCount < job.maxRetries else "Failed"
+            task.currentStepLabel = (
+                "Failed; retry scheduled"
+                if failure_category != "speaker_structure_unresolved" and chunk.retryCount < job.maxRetries
+                else "Failed"
+            )
             task.completedAt = now
             task.lastHeartbeatAt = now
             task.leaseExpiresAt = now
@@ -694,7 +791,9 @@ class NovelProcessService:
                 self._save_job_unlocked(job)
                 return
 
-            if chunk.retryCount < job.maxRetries:
+            if self._should_auto_split_chunk(chunk, failure_category, message):
+                self._split_failed_chunk_unlocked(job, chunk, task, message)
+            elif failure_category != "speaker_structure_unresolved" and chunk.retryCount < job.maxRetries:
                 chunk.retryCount += 1
                 backoff_seconds = self._retry_backoff_seconds(chunk.retryCount)
                 chunk.status = "retrying"
@@ -728,15 +827,30 @@ class NovelProcessService:
                         errorMessage=message,
                         rawOutput=task.partialResult[:12000],
                         schemaRepairCount=task.schemaRepairCount,
+                        characterCandidates=(
+                            build_character_candidates(
+                                chunk.chunkText,
+                                detect_speaker_names(chunk.chunkText),
+                            )
+                            if failure_category == "speaker_structure_unresolved"
+                            else []
+                        ),
+                        semanticValidationStatus=(
+                            "blocked" if failure_category == "speaker_structure_unresolved" else "passed"
+                        ),
                         mergeStatus="failed",
                         qualityWarnings=[f"{failure_category}: {clip_text(message, 240)}"],
                         qualityIssues=[
                             QualityIssue(
                                 code=failure_category,
-                                severity="danger",
+                                severity="blocked" if failure_category == "speaker_structure_unresolved" else "danger",
                                 message=clip_text(message, 240),
                                 evidence=task.chunkId,
-                                action="修复模型连接或结构化输出后重试该切片。",
+                                action=(
+                                    "新建 novel-process-v3 任务重跑该切片，或人工修正人物对白。"
+                                    if failure_category == "speaker_structure_unresolved"
+                                    else "修复模型连接或结构化输出后重试该切片。"
+                                ),
                                 sourceChunkId=task.chunkId,
                             )
                         ],
@@ -824,7 +938,7 @@ class NovelProcessService:
             leaseExpiresAt=utc_after(TASK_LEASE_SECONDS),
             retryCount=chunk.retryCount,
             startedAt=now,
-            inputKeys=list(model_input.model_dump().keys()),
+            inputKeys=list(model_input.model_dump(exclude_none=True).keys()),
             inputChunkChars=len(model_input.chunkText),
             contextChars=len(model_input.previousContextSummary) + len(model_input.nextContextHint),
         )
@@ -862,6 +976,11 @@ class NovelProcessService:
             userInstruction=job.userInstruction,
             outputFormat=job.outputFormat,
             promptVersion=job.promptVersion,
+            speakerCandidates=(
+                detect_speaker_names(chunk.chunkText)
+                if job.promptVersion in {"novel-process-v2", FRAGMENT_PROMPT_VERSION}
+                else None
+            ),
         )
 
     def _agent_prompts(self, model_input: SubagentModelInput) -> tuple[str, str]:
@@ -871,18 +990,53 @@ class NovelProcessService:
             "Use previousContextSummary and nextContextHint only as compressed continuity/context, never as source text to transform or repeat. "
             "Keep summary concise."
         )
+        fragment_mode = model_input.promptVersion == FRAGMENT_PROMPT_VERSION
+        output_instructions = (
+            (
+                "Return JSON matching SubagentModelOutput. Populate exactly one `fragment` with summary, tags, commands, continuityNotes, warnings, and errorMessage; "
+                "keep `scenes` empty. Every fragment command must be a legal AgentVN GameCommand with a type discriminator. "
+                "Use exact command types: `background` (not `show_background`), `sprite` (not `show_character`), "
+                "and `dialog` (not `dialogue`). For sprite entry effects, put the object in `animation_config`; "
+                "`animation` itself is only a string preset ID. "
+                "Do not emit choice, jump, or conditional_jump commands: routes are built only after all chapter fragments merge. "
+                "Do not return scene IDs, scene titles, planner beats, locations, or characters outside legal commands. "
+            )
+            if fragment_mode
+            else (
+                "Return JSON matching SubagentModelOutput with fields: status, resultText, summary, continuityNotes, "
+                "scenes, inputTokens, outputTokens, warnings, errorMessage. "
+                "When possible, include one or more complete AgentVN SceneBeat objects in scenes. "
+                "Use these exact snake_case SceneBeat fields only: scene_id, scene_display_name, title, summary, commands, tags, chapter. "
+                "`chapter` must be an integer. Use exact command types: `background` (not `show_background`), "
+                "`sprite` (not `show_character`), and `dialog` (not `dialogue`). For sprite entry effects, "
+                "put the object in `animation_config`; `animation` itself is only a string preset ID. "
+                "Every commands item must be a legal AgentVN GameCommand with a type discriminator; do not return sceneId, sceneTitle, "
+                "sceneType, dialogue, actions, beats, location, characters, or other prose-planner fields inside scenes. "
+            )
+        )
         user_prompt = (
             "Subagent input JSON follows. The only source text you may transform is chunkText in this object.\n"
-            f"{model_input.model_dump_json()}\n\n"
-            "Return JSON matching SubagentModelOutput with fields: status, resultText, summary, continuityNotes, "
-            "scenes, inputTokens, outputTokens, warnings, errorMessage. "
-            "When possible, include one or more complete AgentVN SceneBeat objects in scenes. "
-            "Use these exact snake_case SceneBeat fields only: scene_id, scene_display_name, title, summary, commands, tags, chapter. "
-            "Every commands item must be a legal AgentVN GameCommand with a type discriminator; do not return sceneId, sceneTitle, "
-            "sceneType, dialogue, actions, beats, location, characters, or other prose-planner fields inside scenes. "
+            f"{model_input.model_dump_json(exclude_none=True)}\n\n"
+            f"{output_instructions}"
             "continuityNotes and warnings must always be JSON arrays of strings, even when there is only one item. "
             "Set status to completed unless the chunk cannot be processed."
         )
+        if model_input.promptVersion in {"novel-process-v2", FRAGMENT_PROMPT_VERSION}:
+            user_prompt += (
+                "\nDialogue semantics for novel-process-v2/v3:\n"
+                "- Infer prose speakers from quotation attribution and surrounding context in chunkText.\n"
+                "- Every dialog character_id must be a concise person name, nickname, or human title that occurs verbatim in chunkText.\n"
+                "- speakerCandidates contains only deterministic nicknames from explicit `nickname: content` chat records; when present, preserve those exact nicknames.\n"
+                "- `narration`, `narrator`, `旁白`, pronouns (for example 我们/他们), actions, locations, quote lead-ins, and attribution phrases are never character_id values.\n"
+                "- Preserve the source paragraph types and order. Text outside quotation marks remains narration; quoted speech with a reliable speaker becomes dialog.\n"
+                "- Never turn third-person prose into a character's `(内心独白)` / `（内心独白）`, and never invent such labels when they are absent from chunkText.\n"
+                "- If a prose speaker cannot be identified reliably, emit narration rather than inventing a character identity.\n"
+                "- Every `人物名：内容` or `nickname: content` message must be one separate dialog command.\n"
+                "- Use the exact original nickname as character_id. Nicknames are independent characters, not aliases of real identities.\n"
+                "- narration is only for prose without a speaker. Never leave a detected speaker prefix inside narration or dialog text.\n"
+                "- Never merge multiple messages, even consecutive messages from the same speaker.\n"
+                "- Convert `[name.jpg]` and equivalent image attachment markers to textual dialog `［发送图片：name.jpg］`; do not create image assets.\n"
+            )
         return system_prompt, user_prompt
 
     def _previous_context_summary(self, job: NovelProcessJob, chunk: ChunkRecord) -> str:
@@ -935,16 +1089,17 @@ class NovelProcessService:
             return job.status in TERMINAL_JOB_STATUSES
         if self._eligible_chunks(job):
             return False
-        if any(chunk.status in ELIGIBLE_CHUNK_STATUSES for chunk in job.chunks):
+        leaf_chunks = self._leaf_chunks(job)
+        if any(chunk.status in ELIGIBLE_CHUNK_STATUSES for chunk in leaf_chunks):
             return False
         if any(task.status == "running" for task in job.agentTasks):
             return False
         now = utc_now()
         self._run_merge_review_unlocked(job)
-        if any(chunk.status == "failed" for chunk in job.chunks):
-            job.status = "failed_partial" if any(chunk.status == "completed" for chunk in job.chunks) else "failed"
+        if any(chunk.status == "failed" for chunk in leaf_chunks):
+            job.status = "failed_partial" if any(chunk.status == "completed" for chunk in leaf_chunks) else "failed"
             self._append_event(job, "job_failed_partial", "Job finished with failed chunks.")
-        elif all(chunk.status in {"completed", "cancelled"} for chunk in job.chunks):
+        elif leaf_chunks and all(chunk.status in {"completed", "cancelled"} for chunk in leaf_chunks):
             job.status = "completed"
             self._append_event(job, "job_completed", "Job completed.")
         job.completedAt = now
@@ -953,10 +1108,11 @@ class NovelProcessService:
         return job.status in TERMINAL_JOB_STATUSES
 
     def _refresh_progress(self, job: NovelProcessJob) -> None:
-        job.totalChunks = len(job.chunks)
-        job.completedChunks = sum(1 for chunk in job.chunks if chunk.status == "completed")
-        job.failedChunks = sum(1 for chunk in job.chunks if chunk.status == "failed")
-        job.cancelledChunks = sum(1 for chunk in job.chunks if chunk.status == "cancelled")
+        leaf_chunks = self._leaf_chunks(job)
+        job.totalChunks = len(leaf_chunks)
+        job.completedChunks = sum(1 for chunk in leaf_chunks if chunk.status == "completed")
+        job.failedChunks = sum(1 for chunk in leaf_chunks if chunk.status == "failed")
+        job.cancelledChunks = sum(1 for chunk in leaf_chunks if chunk.status == "cancelled")
         job.runningTasks = sum(1 for task in job.agentTasks if task.status == "running")
         job.actualInputTokens = sum(result.tokens.inputTokens for result in job.chunkResults)
         job.actualOutputTokens = sum(result.tokens.outputTokens for result in job.chunkResults)
@@ -968,25 +1124,64 @@ class NovelProcessService:
 
     def _chapter_results(self, job: NovelProcessJob) -> list[ChapterResult]:
         chapters: dict[tuple[int, str], list[ChunkRecord]] = {}
-        for chunk in job.chunks:
+        for chunk in self._leaf_chunks(job):
             chapters.setdefault((chunk.chapterIndex, chunk.chapterTitle), []).append(chunk)
         result_by_chunk = {result.chunkId: result for result in job.chunkResults}
         chapter_results: list[ChapterResult] = []
         now = utc_now()
         for (chapter_index, chapter_title), chunks in sorted(chapters.items()):
-            summaries = [chunk.summary for chunk in sorted(chunks, key=lambda item: item.chunkIndex) if chunk.summary]
-            chapter_token_results = [result_by_chunk[chunk.chunkId] for chunk in chunks if chunk.chunkId in result_by_chunk]
+            ordered_chunks = sorted(chunks, key=lambda item: (item.startOffset, item.endOffset, item.chunkIndex))
+            summaries = [chunk.summary for chunk in ordered_chunks if chunk.summary]
+            chapter_token_results = [result_by_chunk[chunk.chunkId] for chunk in ordered_chunks if chunk.chunkId in result_by_chunk]
             input_tokens = sum(result.tokens.inputTokens for result in chapter_token_results)
             output_tokens = sum(result.tokens.outputTokens for result in chapter_token_results)
             sources = {result.tokens.tokenSource for result in chapter_token_results if result.tokens.tokenSource != "none"}
+            failed_chunks = [chunk for chunk in ordered_chunks if chunk.status == "failed"]
+            cancelled_chunks = [chunk for chunk in ordered_chunks if chunk.status == "cancelled"]
+            completed_chunks = [chunk for chunk in ordered_chunks if chunk.status == "completed"]
+            scene: SceneBeat | None = None
+            quality_warnings = [
+                warning
+                for result in chapter_token_results
+                for warning in [*result.qualityWarnings, *result.warnings]
+            ]
+            status: str = "pending"
+            error_message: str | None = None
+            if failed_chunks:
+                status = "failed"
+                error_message = clip_text(
+                    "; ".join(chunk.errorMessage or chunk.chunkId for chunk in failed_chunks),
+                    800,
+                )
+            elif cancelled_chunks and len(cancelled_chunks) == len(ordered_chunks):
+                status = "cancelled"
+            elif len(completed_chunks) == len(ordered_chunks) and ordered_chunks:
+                scene = self._merge_chapter_scene(
+                    job,
+                    chapter_index,
+                    chapter_title,
+                    ordered_chunks,
+                    result_by_chunk,
+                )
+                if scene is not None:
+                    status = "completed"
+                else:
+                    status = "failed"
+                    error_message = "Chapter fragments contained no usable structured commands."
+                    quality_warnings.append(error_message)
             chapter_results.append(
                 ChapterResult(
                     chapterTitle=chapter_title,
                     chapterIndex=chapter_index,
+                    status=status,  # type: ignore[arg-type]
                     summary=clip_text("\n".join(summaries), CHAPTER_SUMMARY_LIMIT),
-                    completedChunks=sum(1 for chunk in chunks if chunk.status == "completed"),
-                    failedChunks=sum(1 for chunk in chunks if chunk.status == "failed"),
-                    cancelledChunks=sum(1 for chunk in chunks if chunk.status == "cancelled"),
+                    scene=scene,
+                    sourceChunkIds=[chunk.chunkId for chunk in ordered_chunks],
+                    qualityWarnings=list(dict.fromkeys(filter(None, quality_warnings))),
+                    errorMessage=error_message,
+                    completedChunks=len(completed_chunks),
+                    failedChunks=len(failed_chunks),
+                    cancelledChunks=len(cancelled_chunks),
                     tokens=TokenUsage(
                         inputTokens=input_tokens,
                         outputTokens=output_tokens,
@@ -1002,16 +1197,16 @@ class NovelProcessService:
         if not any(event.eventType == "chapter_merge_completed" for event in job.eventLogs):
             job.activePhase = "chapter_merge"
             job.chapterResults = self._chapter_results(job)
-            merged_results = [result for result in job.chunkResults if result.status == "completed"]
+            merged_results = [result for result in job.chapterResults if result.status == "completed"]
             self._append_event(
                 job,
                 "chapter_merge_completed",
-                f"Chapter merge summarized {len(job.chapterResults)} chapters from {len(merged_results)} completed chunks.",
+                f"Chapter merge produced {len(merged_results)} complete chapter scenes from {len(job.chapterResults)} chapters.",
                 details={
                     "chapterCount": len(job.chapterResults),
-                    "completedChunkResults": len(merged_results),
-                    "failedChunks": sum(1 for chunk in job.chunks if chunk.status == "failed"),
-                    "cancelledChunks": sum(1 for chunk in job.chunks if chunk.status == "cancelled"),
+                    "completedChapterResults": len(merged_results),
+                    "failedChapters": sum(1 for result in job.chapterResults if result.status == "failed"),
+                    "cancelledChapters": sum(1 for result in job.chapterResults if result.status == "cancelled"),
                 },
             )
         if not any(event.eventType == "continuity_review_completed" for event in job.eventLogs):
@@ -1021,15 +1216,19 @@ class NovelProcessService:
                 for result in job.chunkResults
                 for issue in result.qualityIssues
             ]
-            fallback_count = sum(1 for result in job.chunkResults if result.usedFallbackScene)
+            fallback_count = sum(
+                1
+                for result in job.chunkResults
+                if result.status == "completed" and result.fragment is None and not result.scenes
+            )
             if fallback_count:
                 review_issues.append(
                     QualityIssue(
                         code="fallback_scene_chunks",
                         severity="danger",
-                        message=f"{fallback_count} 个切片没有返回结构化场景，结果只能进入作者复核。",
+                        message=f"{fallback_count} 个切片没有返回可合并的结构化内容，对应章节不会进入正式导入。",
                         evidence=str(fallback_count),
-                        action="重跑对应切片或补齐结构化场景，避免把复核文本导入玩家可见内容。",
+                        action="重跑对应切片或补齐结构化命令，避免把残缺章节导入玩家可见内容。",
                     )
                 )
             self._append_event(
@@ -1050,14 +1249,18 @@ class NovelProcessService:
     @staticmethod
     def _quality_issues(output: SubagentModelOutput, source_chunk_id: str | None = None) -> list[QualityIssue]:
         issues: list[QualityIssue] = []
-        if not output.scenes:
+        has_structured_commands = bool(
+            (output.fragment and output.fragment.commands)
+            or any(scene.commands for scene in output.scenes)
+        )
+        if not has_structured_commands:
             issues.append(
                 QualityIssue(
-                    code="missing_structured_scenes",
+                    code="missing_structured_content",
                     severity="danger",
-                    message="该切片没有返回结构化场景，不能作为最终玩家内容直接导入。",
+                    message="该切片没有返回可合并的结构化命令，不能作为最终玩家内容直接导入。",
                     evidence=clip_text(output.resultText or output.summary, 180),
-                    action="重跑该切片，或在编辑器中补齐 SceneBeat 后再导入。",
+                    action="重跑该切片，或在编辑器中补齐结构化命令后再导入。",
                     sourceChunkId=source_chunk_id,
                 )
             )
@@ -1072,7 +1275,7 @@ class NovelProcessService:
                     sourceChunkId=source_chunk_id,
                 )
             )
-        if not output.resultText.strip() and not output.scenes:
+        if not output.resultText.strip() and not has_structured_commands:
             issues.append(
                 QualityIssue(
                     code="empty_chunk_output",
@@ -1098,6 +1301,7 @@ class NovelProcessService:
             [
                 output.resultText,
                 output.summary,
+                output.fragment.summary if output.fragment else "",
                 *[scene.title for scene in output.scenes],
                 *[scene.summary for scene in output.scenes],
             ]
@@ -1120,15 +1324,270 @@ class NovelProcessService:
     @staticmethod
     def _failure_category(message: str) -> str:
         lower = message.lower()
+        if "speaker_structure_unresolved" in lower:
+            return "speaker_structure_unresolved"
         if "cancel" in lower:
             return "cancelled"
         if "timeout" in lower or "timed out" in lower or "abort" in lower or "超时" in message:
             return "provider_timeout"
+        if any(
+            marker in lower
+            for marker in (
+                "incomplete chunked read",
+                "peer closed connection",
+                "server disconnected",
+                "connection reset",
+                "connection aborted",
+                "remoteprotocolerror",
+                "remote protocol error",
+            )
+        ):
+            return "provider_connection_interrupted"
         if "429" in lower or "rate limit" in lower or "quota" in lower:
             return "rate_limited"
+        if NovelProcessService._looks_like_truncated_structured_output(message):
+            return "structured_output_truncated"
         if "structured" in lower or "json" in lower or "validation" in lower or "not_valid" in lower:
             return "structured_output"
         return "provider_error"
+
+    @staticmethod
+    def _looks_like_truncated_structured_output(message: str) -> bool:
+        lower = message.lower()
+        return any(
+            marker in lower
+            for marker in (
+                "json eof",
+                "unexpected eof",
+                "end of data",
+                "unterminated string",
+                "unclosed",
+                "incomplete json",
+                "truncated json",
+                "finish_reason=length",
+                "finish reason: length",
+                "maximum context length",
+                "max_tokens",
+                "output length",
+                "token limit",
+            )
+        )
+
+    @staticmethod
+    def _leaf_chunks(job: NovelProcessJob) -> list[ChunkRecord]:
+        return [chunk for chunk in job.chunks if chunk.status != "superseded"]
+
+    @staticmethod
+    def _fragment_from_output(output: SubagentModelOutput) -> SceneFragment | None:
+        if output.fragment is not None:
+            return output.fragment
+        if not output.scenes:
+            return None
+        commands = [
+            command
+            for scene in output.scenes
+            for command in scene.commands
+            if command.type not in ROUTE_COMMAND_TYPES
+        ]
+        tags = list(dict.fromkeys(tag for scene in output.scenes for tag in scene.tags if tag))
+        summary = output.summary or "\n".join(scene.summary for scene in output.scenes if scene.summary)
+        warnings = list(output.warnings)
+        if any(
+            command.type in ROUTE_COMMAND_TYPES
+            for scene in output.scenes
+            for command in scene.commands
+        ):
+            warnings.append("Legacy chunk route commands were discarded during chapter fragment normalization.")
+        return SceneFragment(
+            summary=clip_text(summary, SUMMARY_LIMIT),
+            tags=tags,
+            commands=commands,
+            continuityNotes=output.continuityNotes,
+            warnings=list(dict.fromkeys(warnings)),
+            errorMessage=output.errorMessage,
+        )
+
+    @staticmethod
+    def _command_fingerprint(command: object) -> str:
+        if hasattr(command, "model_dump"):
+            payload = command.model_dump(mode="json", exclude_none=True)  # type: ignore[attr-defined]
+        else:
+            payload = command
+        normalized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+    @classmethod
+    def _append_fragment_commands(cls, merged: list[object], incoming: list[object]) -> None:
+        if not merged:
+            merged.extend(incoming)
+            return
+        merged_fingerprints = [cls._command_fingerprint(command) for command in merged]
+        incoming_fingerprints = [cls._command_fingerprint(command) for command in incoming]
+        maximum = min(len(merged_fingerprints), len(incoming_fingerprints))
+        overlap = 0
+        for length in range(maximum, 0, -1):
+            if merged_fingerprints[-length:] == incoming_fingerprints[:length]:
+                overlap = length
+                break
+        merged.extend(incoming[overlap:])
+
+    @staticmethod
+    def _stable_chapter_scene_id(book_id: str, chapter_index: int) -> str:
+        safe_book = re.sub(r"[^a-zA-Z0-9_-]+", "_", book_id).strip("_")[:48] or "book"
+        return f"novel_{safe_book}_chapter_{chapter_index + 1}"
+
+    def _merge_chapter_scene(
+        self,
+        job: NovelProcessJob,
+        chapter_index: int,
+        chapter_title: str,
+        chunks: list[ChunkRecord],
+        result_by_chunk: dict[str, ChunkResult],
+    ) -> SceneBeat | None:
+        merged_commands: list[object] = []
+        summaries: list[str] = []
+        tags: list[str] = ["novel_process", "chapter_merged"]
+        for chunk in chunks:
+            result = result_by_chunk.get(chunk.chunkId)
+            if result is None or result.status != "completed":
+                return None
+            fragment = result.fragment or self._fragment_from_output(
+                SubagentModelOutput(
+                    resultText=result.resultText,
+                    summary=result.summary,
+                    scenes=result.scenes,
+                    continuityNotes=result.continuityNotes,
+                    warnings=result.warnings,
+                    errorMessage=result.errorMessage,
+                )
+            )
+            if fragment is None:
+                return None
+            summaries.append(fragment.summary or result.summary)
+            tags.extend(fragment.tags)
+            self._append_fragment_commands(merged_commands, list(fragment.commands))
+        if not merged_commands:
+            return None
+        title = chapter_title.strip() or f"第 {chapter_index + 1} 章"
+        return SceneBeat(
+            scene_id=self._stable_chapter_scene_id(job.bookId, chapter_index),
+            scene_display_name=title,
+            title=title,
+            summary=clip_text("\n".join(filter(None, summaries)), CHAPTER_SUMMARY_LIMIT),
+            commands=merged_commands,  # type: ignore[arg-type]
+            tags=list(dict.fromkeys(filter(None, tags))),
+            chapter=chapter_index,
+        )
+
+    def _should_auto_split_chunk(
+        self,
+        chunk: ChunkRecord,
+        failure_category: str,
+        message: str,
+    ) -> bool:
+        if failure_category != "structured_output_truncated":
+            return False
+        if chunk.splitDepth >= MAX_AUTO_SPLIT_DEPTH:
+            return False
+        return len(chunk.chunkText) >= MIN_AUTO_SPLIT_CHARS * 2 and self._looks_like_truncated_structured_output(message)
+
+    @staticmethod
+    def _split_offset(text: str) -> int | None:
+        midpoint = len(text) // 2
+        minimum = MIN_AUTO_SPLIT_CHARS
+        maximum = len(text) - MIN_AUTO_SPLIT_CHARS
+        if minimum >= maximum:
+            return None
+        candidates: list[int] = []
+        for pattern in (r"\n\s*\n", r"(?<=[。！？.!?])\s*", r"\n"):
+            candidates.extend(
+                match.end()
+                for match in re.finditer(pattern, text)
+                if minimum <= match.end() <= maximum
+            )
+            if candidates:
+                break
+        if not candidates:
+            return midpoint if minimum <= midpoint <= maximum else None
+        return min(candidates, key=lambda value: abs(value - midpoint))
+
+    def _split_failed_chunk_unlocked(
+        self,
+        job: NovelProcessJob,
+        chunk: ChunkRecord,
+        task: AgentTask,
+        message: str,
+    ) -> None:
+        split_offset = self._split_offset(chunk.chunkText)
+        if split_offset is None:
+            chunk.status = "failed"
+            chunk.errorMessage = message
+            chunk.nextAttemptAt = None
+            chunk.updatedAt = utc_now()
+            return
+        now = utc_now()
+        left_text = chunk.chunkText[:split_offset]
+        right_text = chunk.chunkText[split_offset:]
+        left = ChunkRecord(
+            chunkId=new_id("chunk"),
+            chapterTitle=chunk.chapterTitle,
+            chapterIndex=chunk.chapterIndex,
+            chunkIndex=chunk.chunkIndex * 2,
+            chunkText=left_text,
+            parentChunkId=chunk.chunkId,
+            splitDepth=chunk.splitDepth + 1,
+            startOffset=chunk.startOffset,
+            endOffset=chunk.startOffset + len(left_text),
+            previousContextSummary=chunk.previousContextSummary,
+            nextContextHint=clip_text(f"Next fragment begins: {right_text[:360]}", NEXT_HINT_LIMIT),
+            contextChars=len(chunk.previousContextSummary) + min(360, len(right_text)),
+            updatedAt=now,
+        )
+        right = ChunkRecord(
+            chunkId=new_id("chunk"),
+            chapterTitle=chunk.chapterTitle,
+            chapterIndex=chunk.chapterIndex,
+            chunkIndex=chunk.chunkIndex * 2 + 1,
+            chunkText=right_text,
+            parentChunkId=chunk.chunkId,
+            splitDepth=chunk.splitDepth + 1,
+            startOffset=left.endOffset,
+            endOffset=chunk.endOffset,
+            previousContextSummary=clip_text(f"Previous fragment ends: {left_text[-360:]}", SUMMARY_LIMIT),
+            nextContextHint=chunk.nextContextHint,
+            contextChars=min(360, len(left_text)) + len(chunk.nextContextHint),
+            updatedAt=now,
+        )
+        chunk.status = "superseded"
+        chunk.errorMessage = clip_text(message, 800)
+        chunk.nextAttemptAt = None
+        chunk.updatedAt = now
+        task.currentStepLabel = "Structured output was truncated; chunk split into smaller checkpoints"
+        task.failureCategory = "structured_output_truncated"
+        job.chunks.extend([left, right])
+        for index, leaf in enumerate(
+            sorted(
+                (
+                    item for item in self._leaf_chunks(job)
+                    if item.chapterIndex == chunk.chapterIndex
+                ),
+                key=lambda item: (item.startOffset, item.endOffset, item.chunkId),
+            )
+        ):
+            leaf.chunkIndex = index
+        self._append_event(
+            job,
+            "chunk_auto_split",
+            f"Truncated structured output split one chunk into {len(left_text)} and {len(right_text)} characters.",
+            task.taskId,
+            chunk.chunkId,
+            {
+                "parentChunkId": chunk.chunkId,
+                "childChunkIds": [left.chunkId, right.chunkId],
+                "splitDepth": left.splitDepth,
+                "failureCategory": "structured_output_truncated",
+            },
+        )
 
     @staticmethod
     def _retry_backoff_seconds(retry_count: int) -> float:

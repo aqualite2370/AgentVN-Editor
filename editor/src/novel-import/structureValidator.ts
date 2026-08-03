@@ -10,6 +10,7 @@ import type {
   SourceDocument,
 } from "./types";
 import { createSourceMapping, updateSourceMappingAfterEdit } from "./sourceMapping";
+import { nextUniqueSceneId, remapSceneSelfTargets, sceneIdBase } from "./sceneIdUniqueness";
 import { assetTypeDisplayLabel, assetTypeMatchesExpected, isImageLikeAssetType } from "../../../shared/cartridge/assetTaxonomy";
 
 const validCommandTypes = new Set([
@@ -56,50 +57,6 @@ export interface NovelBlueprintValidationResult {
 
 function cleanId(value: string | undefined | null): string {
   return (value ?? "").trim();
-}
-
-function sceneIdBase(value: string | undefined | null, fallback: string): string {
-  const normalized = (value?.trim() || fallback).replace(/[^A-Za-z0-9_-]/g, "_").replace(/^_+|_+$/g, "");
-  return normalized.slice(0, 80) || fallback;
-}
-
-function nextUniqueSceneId(preferred: string | undefined | null, usedSceneIds: Set<string>, fallback: string): string {
-  const base = sceneIdBase(preferred, fallback);
-  let candidate = base;
-  let index = 2;
-  while (usedSceneIds.has(candidate)) {
-    const suffix = `_${index}`;
-    candidate = `${base.slice(0, Math.max(1, 96 - suffix.length))}${suffix}`;
-    index += 1;
-  }
-  usedSceneIds.add(candidate);
-  return candidate;
-}
-
-function remapCommandTargets(commands: GameCommand[], fromSceneId: string, toSceneId: string): GameCommand[] {
-  if (!fromSceneId || fromSceneId === toSceneId) return commands;
-  return commands.map((command) => {
-    if (command.type === "conditional_jump") {
-      return {
-        ...command,
-        target_scene_id: command.target_scene_id === fromSceneId ? toSceneId : command.target_scene_id,
-        else_target_scene_id: command.else_target_scene_id === fromSceneId ? toSceneId : command.else_target_scene_id,
-      };
-    }
-    if (command.type === "jump") {
-      return {
-        ...command,
-        target_scene_id: command.target_scene_id === fromSceneId ? toSceneId : command.target_scene_id,
-      };
-    }
-    if (command.type !== "choice") return command;
-    return {
-      ...command,
-      choices: command.choices.map((choice) =>
-        choice.target_scene_id === fromSceneId ? { ...choice, target_scene_id: toSceneId } : choice
-      ),
-    };
-  });
 }
 
 function remapBranchSources(suggestions: BranchSuggestion[], fromSceneId: string, toSceneId: string): BranchSuggestion[] {
@@ -375,7 +332,7 @@ export function validateNovelBlueprintWrite(input: NovelBlueprintValidationInput
       scene_beat: {
         ...adapted.scene_beat,
         scene_id: repairedSceneId,
-        commands: remapCommandTargets(adapted.scene_beat.commands, originalSceneId, repairedSceneId),
+        commands: remapSceneSelfTargets(adapted.scene_beat.commands, originalSceneId, repairedSceneId),
       },
     };
     branchSuggestions = remapBranchSources(branchSuggestions, originalSceneId, repairedSceneId);

@@ -11,6 +11,7 @@ import { evaluateNovelImportQuality, suggestedSceneCountForText } from "../novel
 import { createMockNovelProcessSnapshot, persistNovelProcessTaskSnapshot } from "../novel-import/novelProcessJobAdapter";
 import { updateSourceMappingAfterEdit } from "../novel-import/sourceMapping";
 import { validateNovelBlueprintWrite } from "../novel-import/structureValidator";
+import { ensureUniqueSceneBeatId, nextUniqueSceneId, remapSceneSelfTargets } from "../novel-import/sceneIdUniqueness";
 import { reportFrontendError } from "../../../shared/logging/frontendErrorLogger";
 import { chunkText, normalizeText } from "../novel-import/textChunker";
 import {
@@ -1325,7 +1326,7 @@ function graphBaseForImportMode(mode: GraphImportMode, nodes: EditorNode[], edge
   return mode === "blank_autoconnect" ? removeDefaultOpeningLine(nodes, edges) : { nodes, edges };
 }
 
-function withNovelGraphMetadata(node: EditorNode, input: { mode: GraphImportMode; sourceProcessJobId?: string }): EditorNode {
+function withNovelGraphMetadata(node: EditorNode, input: { mode: GraphImportMode; sourceProcessJobId?: string; sourceProcessChapterIndex?: number }): EditorNode {
   return {
     ...node,
     data: {
@@ -1334,6 +1335,7 @@ function withNovelGraphMetadata(node: EditorNode, input: { mode: GraphImportMode
         ...node.data.editorMeta,
         graphImportMode: input.mode,
         sourceProcessJobId: input.sourceProcessJobId,
+        sourceProcessChapterIndex: input.sourceProcessChapterIndex,
       },
     },
   };
@@ -1371,6 +1373,22 @@ function findExistingProcessJobImport(jobId: string): NovelGraphImportResult | u
     importedNodeIds: importedNodes.map((node) => node.id),
     importLineId: lastNode.data.editorMeta?.importLineId,
   };
+}
+
+function importedProcessChapterIndexes(jobId: string): Set<number> {
+  return new Set(
+    useEditorStore.getState().nodes
+      .filter((node) => node.data.editorMeta?.sourceProcessJobId === jobId)
+      .map((node) => node.data.editorMeta?.sourceProcessChapterIndex)
+      .filter((value): value is number => typeof value === "number" && Number.isInteger(value)),
+  );
+}
+
+function hasLegacyProcessJobImport(jobId: string): boolean {
+  return useEditorStore.getState().nodes.some(
+    (node) => node.data.editorMeta?.sourceProcessJobId === jobId
+      && node.data.editorMeta?.sourceProcessChapterIndex === undefined,
+  );
 }
 
 function characterLookupKey(value?: string | null): string {
@@ -1468,42 +1486,6 @@ function applyCharacterDisplayNames(adapted: AdaptedScene, characters: Character
       }),
     },
   };
-}
-
-function sceneIdBase(value: string | undefined | null, fallback: string): string {
-  const normalized = (value?.trim() || fallback).replace(/[^A-Za-z0-9_-]/g, "_").replace(/^_+|_+$/g, "");
-  return normalized.slice(0, 80) || fallback;
-}
-
-function nextUniqueSceneId(preferred: string | undefined | null, usedSceneIds: Set<string>, fallback: string): string {
-  const base = sceneIdBase(preferred, fallback);
-  let candidate = base;
-  let index = 2;
-  while (usedSceneIds.has(candidate)) {
-    const suffix = `_${index}`;
-    candidate = `${base.slice(0, Math.max(1, 96 - suffix.length))}${suffix}`;
-    index += 1;
-  }
-  usedSceneIds.add(candidate);
-  return candidate;
-}
-
-function remapSceneChoiceTargets(commands: AdaptedScene["scene_beat"]["commands"], fromSceneId: string, toSceneId: string): AdaptedScene["scene_beat"]["commands"] {
-  if (!fromSceneId || fromSceneId === toSceneId) return commands;
-  return commands.map((command) => {
-    if (command.type === "conditional_jump") {
-      return {
-        ...command,
-        target_scene_id: command.target_scene_id === fromSceneId ? toSceneId : command.target_scene_id,
-        else_target_scene_id: command.else_target_scene_id === fromSceneId ? toSceneId : command.else_target_scene_id,
-      };
-    }
-    if (command.type !== "choice") return command;
-    return {
-      ...command,
-      choices: command.choices.map((choice) => choice.target_scene_id === fromSceneId ? { ...choice, target_scene_id: toSceneId } : choice),
-    };
-  });
 }
 
 function collectUsedSceneIds(adaptedScenes: AdaptedScene[] = []): Set<string> {
@@ -1628,7 +1610,7 @@ function ensureUniqueImportedSceneId(adapted: AdaptedScene, usedSceneIds: Set<st
   const scene = {
     ...adapted.scene_beat,
     scene_id: sceneId,
-    commands: remapSceneChoiceTargets(adapted.scene_beat.commands, previousSceneId, sceneId),
+    commands: remapSceneSelfTargets(adapted.scene_beat.commands, previousSceneId, sceneId),
   };
   return {
     ...adapted,
@@ -2542,7 +2524,7 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
         chunks: apiChunks,
         userInstruction: state.processing.userInstruction || "请把小说切片改写为可合并的 AgentVN 视觉小说场景草案。",
         outputFormat: state.processing.outputFormat || "visual_novel_blueprint",
-        promptVersion: state.processing.promptVersion || "novel-process-v1",
+        promptVersion: state.processing.promptVersion || "novel-process-v3",
         maxConcurrency: config.maxConcurrency,
         maxRetries: config.maxRetryCount,
         providerSelection,
@@ -2671,40 +2653,84 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
   }),
   importNovelProcessJobResults: async (jobId) => {
     const providerSelection = getNovelProviderSelectionPayload();
-    const existingImport = findExistingProcessJobImport(jobId);
-    if (existingImport) return existingImport;
     try {
       const results = await backendClient.getNovelProcessJobResults(jobId);
-      const sceneEntries = results.completedResults.flatMap((result) => {
-        const resultScenes = result.scenes && result.scenes.length > 0
-          ? result.scenes
-          : [fallbackSceneFromProcessResult(result)];
-        return resultScenes.map((scene) => ({ scene, result }));
-      });
-      const scenes = sceneEntries.map((entry) => entry.scene);
+      if (hasLegacyProcessJobImport(jobId)) {
+        return findExistingProcessJobImport(jobId);
+      }
+      const importedChapterIndexes = importedProcessChapterIndexes(jobId);
+      const chapterEntries = (results.completedChapterResults ?? [])
+        .filter((result): result is typeof result & { scene: SceneBeat } => Boolean(result.scene))
+        .filter((result) => !importedChapterIndexes.has(result.chapterIndex));
+      const scenes = chapterEntries.map((entry) => entry.scene);
       if (scenes.length === 0) {
-        set((current) => ({ errors: [...current.errors, "真实 subagent job 暂无可写入场景结果。"] }));
+        const existingImport = findExistingProcessJobImport(jobId);
+        if (existingImport) return existingImport;
+        set((current) => ({ errors: [...current.errors, "真实 subagent job 暂无完整章节场景可写入；失败章节需先重试对应切片。"] }));
         return undefined;
       }
-      const polished = await polishProcessScenes(scenes, providerSelection);
-      const adaptedScenes = polished.scenes.map((scene, index) => {
-        const sourceResult = sceneEntries[Math.min(index, sceneEntries.length - 1)].result;
-        return adaptedFromProcessScene(scene, sourceResult);
+      const usedSceneIds = collectUsedSceneIds(get().session.adapted_scenes);
+      for (const node of useEditorStore.getState().nodes) {
+        const sceneId = node.data.scene?.scene_id?.trim();
+        if (sceneId) usedSceneIds.add(sceneId);
+      }
+      const sceneIdWarnings: string[] = [];
+      const uniqueScenes = scenes.map((scene, index) => {
+        const sourceResult = chapterEntries[Math.min(index, chapterEntries.length - 1)];
+        const unique = ensureUniqueSceneBeatId(scene, usedSceneIds, `process_${jobId}_chapter_${sourceResult.chapterIndex + 1}`);
+        if (unique.renamedFrom !== undefined) {
+          sceneIdWarnings.push(
+            `小说导入已将重复或无效 scene_id "${unique.renamedFrom || "(空)"}" 自动改为 "${unique.scene.scene_id}"。`,
+          );
+        }
+        return unique.scene;
       });
-      const existingBeforeWrite = findExistingProcessJobImport(jobId);
-      if (existingBeforeWrite) return existingBeforeWrite;
+      const polished = await polishProcessScenes(uniqueScenes, providerSelection);
+      const processCharacterCandidates = results.completedResults.flatMap((result) => result.characterCandidates ?? []);
+      const mergedProcessCharacters = mergeCharacterCandidateList([
+        ...get().session.characters,
+        ...processCharacterCandidates,
+      ]);
+      const reviewedProcessCharacters = splitReviewedCharacters(
+        mergedProcessCharacters,
+        get().session,
+        get().session.character_candidates_review,
+      );
+      const adaptedScenes = polished.scenes.map((scene, index) => {
+        const chapterResult = chapterEntries[Math.min(index, chapterEntries.length - 1)];
+        const sourceResult = results.completedResults.find((result) => chapterResult.sourceChunkIds.includes(result.chunkId));
+        return adaptedFromProcessScene(scene, {
+          chunkId: `chapter_${chapterResult.chapterIndex}`,
+          resultText: chapterResult.summary,
+          summary: chapterResult.summary,
+          qualityWarnings: chapterResult.qualityWarnings,
+          warnings: sourceResult?.warnings,
+        });
+      });
       const currentState = get();
-      const graphImportMode = resolveNovelGraphImportMode();
+      const existingImport = findExistingProcessJobImport(jobId);
+      const graphImportMode = existingImport?.mode ?? resolveNovelGraphImportMode();
       const layout = buildLayout(currentState.session.session_id);
+      if (existingImport?.importLineId) layout.importLineId = existingImport.importLineId;
       const memoryMode = currentState.session.import_options.memory_mode;
       const editor = useEditorStore.getState();
       const nodes = adaptedScenes.map((adapted, index) =>
         withNovelGraphMetadata(adaptedSceneToNode(adapted, layout, index, memoryMode), {
           mode: graphImportMode,
           sourceProcessJobId: jobId,
+          sourceProcessChapterIndex: chapterEntries[index]?.chapterIndex,
         })
       );
-      const edges = importedNovelLineEdges(layout, nodes, graphImportMode);
+      const existingImportedNodes = useEditorStore.getState().nodes
+        .filter((node) => node.data.editorMeta?.sourceProcessJobId === jobId)
+        .sort((a, b) => (a.data.editorMeta?.sourceProcessChapterIndex ?? 0) - (b.data.editorMeta?.sourceProcessChapterIndex ?? 0));
+      const edges = importedNovelLineEdges(
+        layout,
+        nodes,
+        graphImportMode,
+        existingImportedNodes[existingImportedNodes.length - 1]?.id,
+        existingImportedNodes.length,
+      );
       editor.recordGraphHistory();
       useEditorStore.setState((current) => {
         const base = graphBaseForImportMode(graphImportMode, current.nodes, current.edges);
@@ -2723,19 +2749,26 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
         lastInsertedNodeId,
         mode: graphImportMode,
         reusedExistingImport: false,
-        notice: novelGraphImportNotice(graphImportMode, adaptedScenes.length),
+        notice: existingImportedNodes.length > 0
+          ? `已补写 ${adaptedScenes.length} 个恢复完成的章节场景，已有章节未重复导入。`
+          : novelGraphImportNotice(graphImportMode, adaptedScenes.length),
         importedNodeIds: nodes.map((node) => node.id),
         importLineId: layout.importLineId,
       };
       set((current) => ({
         session: touch({
           ...current.session,
+          characters: mergedProcessCharacters,
+          character_candidates_review: reviewedProcessCharacters.reviews,
+          ai_outline: current.session.ai_outline
+            ? { ...current.session.ai_outline, characters: mergedProcessCharacters }
+            : current.session.ai_outline,
           adapted_scenes: [...current.session.adapted_scenes, ...adaptedScenes],
           ai_stage: "report",
           status: "imported_to_graph",
         }),
         importJob: current.importJob ? { ...current.importJob, status: "completed", generatedCount: adaptedScenes.length, lastInsertedNodeId, completedAt: new Date().toISOString(), graphImportMode } : current.importJob,
-        warnings: [...current.warnings, ...results.warnings, ...polished.warnings, importResult.notice],
+        warnings: [...current.warnings, ...results.warnings, ...sceneIdWarnings, ...polished.warnings, importResult.notice],
       }));
       return importResult;
     } catch (error) {

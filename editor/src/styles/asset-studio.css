@@ -950,6 +950,60 @@
   color: var(--danger);
 }
 
+.asset-studio-left-guide {
+  grid-auto-flow: column;
+  gap: 9px;
+  padding: 10px 14px 10px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--studio-border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--studio-surface-1) 88%, transparent);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--ink-strong) 7%, transparent);
+  backdrop-filter: blur(8px);
+  animation: asset-studio-guide-breathe 2.4s ease-in-out infinite;
+}
+
+.asset-studio-left-guide-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--studio-accent-soft);
+  color: var(--accent);
+}
+
+.asset-studio-left-guide-icon svg {
+  animation: asset-studio-guide-left 1.25s ease-in-out infinite;
+}
+
+@keyframes asset-studio-guide-left {
+  0%,
+  100% {
+    transform: translateX(2px);
+  }
+
+  50% {
+    transform: translateX(-4px);
+  }
+}
+
+@keyframes asset-studio-guide-breathe {
+  0%,
+  100% {
+    opacity: 0.78;
+    transform: translateY(0);
+  }
+
+  50% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
 .asset-studio-failure-actions {
   display: flex;
   justify-content: center;

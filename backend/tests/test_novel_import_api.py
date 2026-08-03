@@ -1,5 +1,6 @@
 import inspect
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.api import routes_novel_import
@@ -1415,33 +1416,30 @@ def test_novel_import_ai_plan_chapter_stream_emits_delta_before_final(monkeypatc
     assert calls == [NovelAiChapterScenePlan, NovelAiConflictAnalysisResponse]
 
 
-def test_novel_import_structured_stream_retries_same_model_once(monkeypatch) -> None:
+def test_novel_import_structured_stream_does_not_duplicate_provider_retry(monkeypatch) -> None:
     service = NovelImportService()
     calls = 0
 
     def fake_stream_with_tools(model, system_prompt, prompt, **kwargs):  # type: ignore[no-untyped-def]
         nonlocal calls
         calls += 1
-        if calls == 1:
-            raise AIProviderError("temporary structured generation failure")
-        yield ("delta", "valid")
-        yield ("final", _chapter_scene_plan())
+        raise AIProviderError("temporary structured generation failure")
+        yield  # pragma: no cover
 
     monkeypatch.setattr(service.provider, "stream_with_tools", fake_stream_with_tools)
-    events = list(
-        service._stream_structured_result(
-            NovelAiChapterScenePlan,
-            "system",
-            "user",
-            temperature=0.2,
-            selection=None,
-            phase="chapter_scene_plan",
+    with pytest.raises(AIProviderError, match="temporary structured generation failure"):
+        list(
+            service._stream_structured_result(
+                NovelAiChapterScenePlan,
+                "system",
+                "user",
+                temperature=0.2,
+                selection=None,
+                phase="chapter_scene_plan",
+            )
         )
-    )
 
-    assert calls == 2
-    assert any(event == "trace" and payload["phase"] == "chapter_scene_plan_provider_retry" for event, payload in events)
-    assert any(event == "delta" and payload == "valid" for event, payload in events)
+    assert calls == 1
 
 
 def test_novel_import_ai_adapt_scene_stream_emits_delta_before_final(monkeypatch) -> None:

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 
 export type RuntimePlatform = "android" | "ios" | "desktop" | "web";
 export type RuntimeFormFactor = "handheld" | "desktop";
@@ -78,10 +78,11 @@ export function resolveRuntimeViewportState(
   previous?: RuntimeViewportState,
   nativeInsets: RuntimeSafeInsets = previous?.safeInsets ?? EMPTY_INSETS,
   revision = previous?.revision ?? 0,
+  measuredSize?: { width: number; height: number },
 ): RuntimeViewportState {
   const visualViewport = window.visualViewport;
-  const width = Math.max(1, Math.round(visualViewport?.width ?? window.innerWidth));
-  const height = Math.max(1, Math.round(visualViewport?.height ?? window.innerHeight));
+  const width = Math.max(1, Math.round(measuredSize?.width ?? visualViewport?.width ?? window.innerWidth));
+  const height = Math.max(1, Math.round(measuredSize?.height ?? visualViewport?.height ?? window.innerHeight));
   const platform = detectRuntimePlatform();
   const orientation = width >= height ? "landscape" : "portrait";
   const shortSide = Math.min(width, height);
@@ -109,13 +110,29 @@ export function resolveRuntimeViewportState(
   };
 }
 
-export function useRuntimeViewport(): RuntimeViewportState {
-  const [state, setState] = useState(() => resolveRuntimeViewportState());
+export function useRuntimeViewport(containerRef?: RefObject<HTMLElement>): RuntimeViewportState {
+  const measure = useCallback(() => {
+    const rect = containerRef?.current?.getBoundingClientRect();
+    if (rect?.width && rect?.height) {
+      return { width: rect.width, height: rect.height };
+    }
+    const rootRect = document.documentElement.getBoundingClientRect();
+    if (rootRect.width && rootRect.height) {
+      return { width: rootRect.width, height: rootRect.height };
+    }
+    return undefined;
+  }, [containerRef]);
+  const measuredSizeRef = useRef<{ width: number; height: number } | undefined>(undefined);
+  const [state, setState] = useState(() => resolveRuntimeViewportState(undefined, EMPTY_INSETS, 0, measure()));
 
   useEffect(() => {
     let insets = state.safeInsets;
     let revision = state.revision;
-    const update = () => setState((previous) => resolveRuntimeViewportState(previous, insets, revision));
+    let resizeObserver: ResizeObserver | undefined;
+    const update = () => {
+      measuredSizeRef.current = measure();
+      setState((previous) => resolveRuntimeViewportState(previous, insets, revision, measuredSizeRef.current));
+    };
     const handleInsets = (event: Event) => {
       const detail = (event as CustomEvent<AndroidInsetsEventDetail>).detail ?? {};
       const nextRevision = Number.isFinite(detail.revision) ? Number(detail.revision) : revision + 1;
@@ -136,6 +153,23 @@ export function useRuntimeViewport(): RuntimeViewportState {
     window.addEventListener("orientationchange", update);
     document.addEventListener("fullscreenchange", update);
     window.addEventListener("agentvn:android-insets", handleInsets);
+    const observed = containerRef?.current ?? document.documentElement;
+    if (typeof ResizeObserver !== "undefined" && observed) {
+      resizeObserver = new ResizeObserver(update);
+      resizeObserver.observe(observed);
+    }
+    let unlistenScaleFactor: (() => void) | undefined;
+    if ("__TAURI_INTERNALS__" in window) {
+      void import("@tauri-apps/api/window")
+        .then(({ getCurrentWindow }) => getCurrentWindow().onScaleChanged(update))
+        .then((unlisten) => {
+          unlistenScaleFactor = unlisten;
+        })
+        .catch(() => {
+          // Browser previews do not expose Tauri window events.
+        });
+    }
+    update();
     return () => {
       window.removeEventListener("resize", update);
       window.visualViewport?.removeEventListener("resize", update);
@@ -143,8 +177,10 @@ export function useRuntimeViewport(): RuntimeViewportState {
       window.removeEventListener("orientationchange", update);
       document.removeEventListener("fullscreenchange", update);
       window.removeEventListener("agentvn:android-insets", handleInsets);
+      resizeObserver?.disconnect();
+      unlistenScaleFactor?.();
     };
-  }, []);
+  }, [containerRef, measure]);
 
   return state;
 }

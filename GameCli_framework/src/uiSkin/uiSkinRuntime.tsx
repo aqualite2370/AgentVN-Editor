@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { getDefaultUISkinLayout, SAFE_DIALOG_PLAYER_RECTS, type UILayoutBreakpoint, type UILayoutComponent, type UILayoutComponentStyle, type UILayoutComponentType, type UILayoutRect, type UILayoutScreenId, type UISkinLayout } from "../../../shared/cartridge/uiSkin";
 import { reportFrontendError } from "../../../shared/logging/frontendErrorLogger";
 import { useRuntimeStore } from "../store/runtimeStore";
@@ -20,6 +20,7 @@ interface UISkinContextValue {
   safeInsets: RuntimeSafeInsets;
   safeBounds: UILayoutRect;
   textScale: RuntimeTextScale;
+  scopeRef: RefObject<HTMLDivElement>;
 }
 
 const UISkinContext = createContext<UISkinContextValue>({
@@ -34,6 +35,7 @@ const UISkinContext = createContext<UISkinContextValue>({
   safeInsets: { top: 0, right: 0, bottom: 0, left: 0 },
   safeBounds: { x: 0, y: 0, width: 100, height: 100 },
   textScale: { platform: "web", uiScale: 1, fontScale: 1, dialogFontScale: 1.15, choiceFontScale: 1.1, fontSource: "desktop_viewport" },
+  scopeRef: { current: null },
 });
 
 const runtimeFontFallback = `Inter, "Segoe UI", system-ui, sans-serif`;
@@ -509,7 +511,8 @@ function buildUILayoutStyle(
 export function UISkinProvider({ children }: { children: ReactNode }) {
   const currentGame = useRuntimeStore((state) => state.currentGame);
   const runtimeScreen = useRuntimeStore((state) => state.screen);
-  const viewport = useRuntimeViewport();
+  const scopeRef = useRef<HTMLDivElement>(null);
+  const viewport = useRuntimeViewport(scopeRef);
   const { breakpoint, orientation, platform, formFactor, safeInsets } = viewport;
   const skin = useMemo(() => currentGame?.uiSkin ?? getDefaultUISkinLayout(), [currentGame?.uiSkin]);
   const scale = layoutScale(breakpoint, formFactor, viewport.width, viewport.height);
@@ -551,13 +554,14 @@ export function UISkinProvider({ children }: { children: ReactNode }) {
     return () => node.remove();
   }, [currentGame]);
   useLandscapeLock(runtimeScreen === "playing" && breakpoint === "mobile");
-  return <UISkinContext.Provider value={{ skin, breakpoint, orientation, scale, fontScale, touchScale, platform, formFactor, safeInsets, safeBounds, textScale }}>{children}</UISkinContext.Provider>;
+  return <UISkinContext.Provider value={{ skin, breakpoint, orientation, scale, fontScale, touchScale, platform, formFactor, safeInsets, safeBounds, textScale, scopeRef }}>{children}</UISkinContext.Provider>;
 }
 
 export function UISkinScreen({ screen, children }: { screen: UILayoutScreenId; children: ReactNode }) {
-  const { skin, breakpoint, orientation, scale, fontScale, touchScale, platform, formFactor, safeInsets, textScale } = useContext(UISkinContext);
+  const { skin, breakpoint, orientation, scale, fontScale, touchScale, platform, formFactor, safeInsets, textScale, scopeRef } = useContext(UISkinContext);
   return (
     <div
+      ref={scopeRef}
       className="ui-skin-scope"
       data-ui-screen={screen}
       data-ui-breakpoint={breakpoint}

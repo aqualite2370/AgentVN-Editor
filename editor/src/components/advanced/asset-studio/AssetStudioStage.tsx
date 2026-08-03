@@ -1,5 +1,6 @@
 import { useState } from "react";
 import {
+  ArrowLeft,
   ArrowUpRight,
   CheckCircle2,
   Columns2,
@@ -198,16 +199,11 @@ export function AssetStudioStage({
             </div>
           </div>
         ) : (
-          <div className="asset-studio-empty-state">
-            <ImageIcon size={40} aria-hidden="true" />
-            <strong>从一张真正能用的素材开始</strong>
-            <p>左侧完成提示词和用途设置，生成结果会在这里保持稳定画幅展示。</p>
-            <div className="asset-studio-empty-presets">
-              <span>背景 16:9</span>
-              <span>立绘 3:4</span>
-              <span>头像 1:1</span>
-              <span>剧情 CG</span>
-            </div>
+          <div className="asset-studio-empty-state asset-studio-left-guide" role="status">
+            <span className="asset-studio-left-guide-icon" aria-hidden="true">
+              <ArrowLeft size={22} />
+            </span>
+            <span>请在左侧操作与编辑</span>
           </div>
         )}
       </div>

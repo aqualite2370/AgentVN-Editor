@@ -41,6 +41,7 @@ export interface EditorMeta {
   importLineId?: string;
   importIndex?: number;
   sourceProcessJobId?: string;
+  sourceProcessChapterIndex?: number;
   graphImportMode?: GraphImportMode;
   needsReview?: boolean;
   qualityRisk?: "low" | "medium" | "high";

@@ -121,6 +121,17 @@ export interface NovelProcessAgentProgress {
   inputChunkChars?: number;
   contextChars?: number;
   schemaRepairCount?: number;
+  semanticRepairCount?: number;
+  semanticValidationStatus?: "passed" | "repaired" | "blocked";
+  characterCandidates?: Array<{
+    character_id: string;
+    name: string;
+    aliases: string[];
+    first_seen_offset: number;
+    description: string;
+    speaking_style_hint?: string;
+    confidence: number;
+  }>;
   failureCategory?: string | null;
   retryBackoffMs?: number;
   sceneCount?: number;
@@ -170,6 +181,7 @@ export interface NovelProcessJob {
   maxConcurrency?: number;
   queueDepth?: number;
   activePhase?: string;
+  promptVersion?: string;
   phaseProgress?: NovelProcessPhaseProgress[];
   progressPercent: number;
   qualityDimensions?: NovelProcessQualityDimension[];

@@ -224,43 +224,19 @@ class NovelImportService:
     ) -> Iterator[tuple[str, object]]:
         final_payload: T | None = None
         saw_delta = False
-        for attempt in range(2):
-            final_payload = None
-            try:
-                for event, payload in self.provider.stream_with_tools(
-                    response_model,
-                    system_prompt,
-                    user_prompt,
-                    temperature=temperature,
-                    selection=selection,
-                ):
-                    if event == "final":
-                        final_payload = payload  # type: ignore[assignment]
-                        continue
-                    if event == "delta":
-                        saw_delta = True
-                    yield (event, payload)
-                if final_payload is None:
-                    raise AIProviderError(f"{response_model.__name__} stream finished without a final structured payload.")
-                break
-            except AIProviderError as exc:
-                if attempt == 1:
-                    raise
-                yield ("status", "Retrying the same model after a structured generation failure...")
-                yield (
-                    "trace",
-                    {
-                        "phase": f"{phase}_provider_retry",
-                        "level": "warning",
-                        "title": "Structured generation retry",
-                        "message": "The same configured provider and model will be called again after a structured generation failure.",
-                        "details": {
-                            "attempt": attempt + 2,
-                            "response_model": response_model.__name__,
-                            "exception_type": type(exc).__name__,
-                        },
-                    },
-                )
+        for event, payload in self.provider.stream_with_tools(
+            response_model,
+            system_prompt,
+            user_prompt,
+            temperature=temperature,
+            selection=selection,
+        ):
+            if event == "final":
+                final_payload = payload  # type: ignore[assignment]
+                continue
+            if event == "delta":
+                saw_delta = True
+            yield (event, payload)
         if final_payload is None:
             raise AIProviderError(f"{response_model.__name__} stream finished without a final structured payload.")
         if not saw_delta:

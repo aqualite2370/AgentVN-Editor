@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import re
 from typing import Any
 
 from pydantic import BaseModel
@@ -722,8 +723,63 @@ def _normalize_subagent_scene(value: Any, index: int) -> Any:
     scene.setdefault("scene_id", f"scene_{index + 1}")
     scene.setdefault("title", scene.get("scene_display_name") or f"Scene {index + 1}")
     scene.setdefault("summary", str(scene.get("title") or ""))
-    scene.setdefault("chapter", 1)
+    chapter = scene.get("chapter")
+    if not isinstance(chapter, int):
+        chapter_text = str(chapter or "")
+        digit_match = re.search(r"\d+", chapter_text)
+        if digit_match:
+            scene["chapter"] = max(1, int(digit_match.group()))
+        else:
+            chinese_digits = {
+                "一": 1,
+                "二": 2,
+                "三": 3,
+                "四": 4,
+                "五": 5,
+                "六": 6,
+                "七": 7,
+                "八": 8,
+                "九": 9,
+                "十": 10,
+            }
+            chinese_match = re.search(r"第([一二三四五六七八九十]+)章", chapter_text)
+            chinese_value = chinese_match.group(1) if chinese_match else ""
+            if chinese_value == "十":
+                scene["chapter"] = 10
+            elif chinese_value.startswith("十") and len(chinese_value) == 2:
+                scene["chapter"] = 10 + chinese_digits.get(chinese_value[1], 0)
+            elif chinese_value.endswith("十") and len(chinese_value) == 2:
+                scene["chapter"] = chinese_digits.get(chinese_value[0], 1) * 10
+            elif "十" in chinese_value and len(chinese_value) == 3:
+                scene["chapter"] = (
+                    chinese_digits.get(chinese_value[0], 1) * 10
+                    + chinese_digits.get(chinese_value[2], 0)
+                )
+            else:
+                scene["chapter"] = chinese_digits.get(chinese_value, index + 1)
+    scene.setdefault("chapter", index + 1)
     return _normalize_scene_beat_payload(scene)
+
+
+def _normalize_subagent_fragment(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    fragment = deepcopy(value)
+    _rename_first(fragment, "continuityNotes", ("continuity_notes", "continuity"))
+    _rename_first(fragment, "errorMessage", ("error_message", "error"))
+    for key in ("tags", "commands", "continuityNotes", "warnings"):
+        _ensure_list(fragment, key)
+    fragment["tags"] = _normalize_string_list(fragment["tags"])
+    fragment["continuityNotes"] = _normalize_string_list(fragment["continuityNotes"])
+    fragment["warnings"] = _normalize_string_list(fragment["warnings"])
+    command_holder = _normalize_scene_beat_payload({"commands": fragment["commands"]})
+    fragment["commands"] = command_holder.get("commands", fragment["commands"])
+    fragment.setdefault("summary", "")
+    fragment.setdefault("errorMessage", None)
+    for key in list(fragment.keys()):
+        if key not in {"summary", "tags", "commands", "continuityNotes", "warnings", "errorMessage"}:
+            fragment.pop(key, None)
+    return fragment
 
 
 def _normalize_subagent_model_output(payload: Any) -> Any:
@@ -742,6 +798,8 @@ def _normalize_subagent_model_output(payload: Any) -> Any:
     _ensure_list(normalized, "warnings")
     normalized["continuityNotes"] = _normalize_string_list(normalized["continuityNotes"])
     normalized["warnings"] = _normalize_string_list(normalized["warnings"])
+    if normalized.get("fragment") is not None:
+        normalized["fragment"] = _normalize_subagent_fragment(normalized["fragment"])
     normalized["scenes"] = [_normalize_subagent_scene(scene, index) for index, scene in enumerate(normalized["scenes"])]
     normalized.setdefault("status", "completed")
     normalized.setdefault("resultText", "")
@@ -754,6 +812,7 @@ def _normalize_subagent_model_output(payload: Any) -> Any:
             "status",
             "resultText",
             "summary",
+            "fragment",
             "scenes",
             "continuityNotes",
             "inputTokens",
@@ -934,12 +993,23 @@ def _normalize_command(command: dict[str, Any]) -> None:
                 command.setdefault("type", wrapped_type)
                 break
     _rename_first(command, "type", ("command", "action", "command_type"))
-    if command.get("type") == "set_background":
-        command["type"] = "background"
+    command_type = str(command.get("type") or "").strip().lower()
+    hides_character = command_type in {"hide_character", "remove_character"}
+    command["type"] = {
+        "set_background": "background",
+        "show_background": "background",
+        "display_background": "background",
+        "show_character": "sprite",
+        "display_character": "sprite",
+        "show_sprite": "sprite",
+        "hide_character": "sprite",
+        "remove_character": "sprite",
+        "dialogue": "dialog",
+        "speech": "dialog",
+        "say": "dialog",
+    }.get(command_type, command_type)
     if command.get("type") in {"focus_image", "display_image", "item_image"}:
         command["type"] = "show_image"
-    if command.get("type") == "say":
-        command["type"] = "dialog"
     if command.get("type") == "narration":
         _rename_first(command, "text", ("content", "line", "narration"))
         command.setdefault("text", "")
@@ -970,7 +1040,7 @@ def _normalize_command(command: dict[str, Any]) -> None:
         _rename_first(command, "video_id", ("asset_id", "id", "video"))
         command.setdefault("video_id", "video_unknown")
     if command.get("type") == "sprite" and "sprite_id" not in command:
-        for alias in ("sprite", "asset_id", "portrait", "character_id"):
+        for alias in ("sprite", "asset_id", "portrait", "character_id", "character"):
             value = command.get(alias)
             if value not in (None, ""):
                 command["sprite_id"] = str(value)
@@ -978,7 +1048,13 @@ def _normalize_command(command: dict[str, Any]) -> None:
         else:
             command["sprite_id"] = "unknown_sprite"
     if command.get("type") == "sprite":
+        _rename_first(command, "character_id", ("character", "name", "speaker"))
         command.setdefault("character_id", str(command.get("sprite_id") or "unknown_character"))
+        if hides_character:
+            command["visible"] = False
+        animation = command.get("animation")
+        if isinstance(animation, dict):
+            command["animation_config"] = command.pop("animation")
     if command.get("type") == "wait" and "duration_ms" not in command and "duration" in command:
         value = command.pop("duration")
         try:

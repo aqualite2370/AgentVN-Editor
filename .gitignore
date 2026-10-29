@@ -43,11 +43,12 @@ backend/data/
 *.agentvn
 
 # Build, release, test, and packaging output
+# Keep regression source scripts versioned; only their generated evidence is local.
+# Full QA/checkpoints live under F:/AgentVN, outside this repository.
 output/
 releases/
 releases_test_contract/
 test_AgentVN/
-scripts/
 dist/
 **/dist/
 target/
@@ -61,6 +62,17 @@ editor/src-tauri/bundle-workspace/
 editor/src-tauri/gen/
 GameCli_framework/src-tauri/gen/
 editor/public/agentvn-qq-qrcode.jpg
+# Accidental installer/APK extraction roots and their generated inspection files.
+/$out/
+/--help/
+/--help.inspection.json
+/--apk.inspection.json
+/artifacts/
+/backend/build/
+/backend/creator-backend.spec
+/GameCli_framework/public/release-package.json
+/GameCli_framework/src-tauri/resources/embedded-cartridge/*
+!/GameCli_framework/src-tauri/resources/embedded-cartridge/.gitkeep
 
 # Local launch and packaging helpers
 start-dev.bat
@@ -70,6 +82,7 @@ AgentVN Dev.exe
 manual-five-character.vnproj
 
 # Internal planning and agent-oriented documents
+agent.md
 FILE_FORMAT_ANALYSIS.md
 docs/task-history/
 docs/architecture-inventory.md
@@ -92,6 +105,14 @@ GameCli_framework/docs/BUILD_WINDOWS.md
 *.aab
 *.zip
 *.7z
+*.dll
+*.so
+*.dylib
+*.pdb
+
+# The editor's Windows environment repair must ship its tiny offline NSIS toolset.
+!windows-offline-tools/**/*.exe
+!windows-offline-tools/**/*.dll
 
 # Logs and temporary files
 *.log
@@ -104,6 +125,12 @@ error_log/
 .env
 .env.*
 !**/.env.example
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.key
+*.pem
 
 # IDE and operating-system files
 .vscode/
@@ -113,3 +140,9 @@ Thumbs.db
 
 # Preserve incomplete Git metadata backups locally
 .git-incomplete-backup*/
+# Android build dependencies are distributed separately from the editor.
+# Never commit expanded SDK/NDK/Gradle/Cargo/Rust payloads or generated packs.
+*.avnenv
+releases/android-environment-pack/
+output/android-offline-pack-partial/
+editor/src-tauri/android-offline-pack/

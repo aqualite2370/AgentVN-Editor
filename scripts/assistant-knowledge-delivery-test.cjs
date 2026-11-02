@@ -53,12 +53,14 @@ try {
   const source = path.join(out, "Git源码 中文 空格");
   check("actual-git-archive-has-no-worktree-or-ignored-source-fallback", () => {
     const archive = path.join(out, "knowledge-source.tar");
-    assert.equal(command("git", ["archive", "--format=tar", `--output=${archive}`, "HEAD", "--", ...files]).status, 0);
+    assert.equal(command("git", ["-c", "core.autocrlf=false", "archive", "--format=tar",
+      `--output=${archive}`, "HEAD", "--", ...files]).status, 0);
     fs.mkdirSync(source);
     assert.equal(command("tar.exe", ["-xf", archive, "-C", source]).status, 0);
     assert(!fs.existsSync(path.join(source, ".git")));
     for (const file of files)
-      assert.equal(hash(fs.readFileSync(path.join(source, file))), report.inputs.find(row => row.file === file).committedSHA256);
+      assert.equal(hash(fs.readFileSync(path.join(source, file))),
+        report.inputs.find(row => row.file === file).committedSHA256, file);
     for (const file of ["GameCli_framework/docs/BUILD_ANDROID.md", "GameCli_framework/docs/BUILD_WINDOWS.md"])
       assert(!fs.existsSync(path.join(source, file)), "Private build documents are not implicit inputs");
     return { archive, sha256: hash(fs.readFileSync(archive)), source };

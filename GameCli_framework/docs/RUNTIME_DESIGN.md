@@ -23,6 +23,8 @@ The loading screen uses `script.loading_animation`:
 - `video`: plays a packed video asset.
 - `image_sequence`: cycles packed UI image assets, defaulting to 1000 ms per frame.
 
+After the built-in line loader completes, an optional `script.opening_audio` queue starts. Tracks play in order, with `once` advancing on `ended` and `loop` repeating the final track. The queue continues through the title menu and is stopped before story playback begins.
+
 If a custom loading animation is invalid, cartridge validation should report the missing or mismatched asset instead of silently switching to another authored configuration.
 
 ## Story State
@@ -60,6 +62,12 @@ GameCLI expects player-facing data to be validated before playback:
 - valid `sprite:selected`, `sprite:all`, or traceable `sprite:<character_id>` animation targets.
 
 Validation errors should be shown clearly. Runtime code should not hide data errors with silent story fallbacks.
+
+## Rollback And Preferences
+
+GameCLI keeps an in-memory interaction timeline. Dialog, narration, choices, and focused images create hard checkpoints; automatic BGM, camera, visual, state, and jump commands are restored as part of the surrounding checkpoint instead of consuming separate rollback steps. The default timeline retains 128 records and exposes at most 100 hard rollback steps. Loading a save or starting a new playthrough clears the timeline.
+
+Runtime preferences are stored per installed game. They cover text and auto-forward speed, skip policy, transitions, rollback input regions, channel/master audio, voice behavior, display mode, and text accessibility. Preferences are independent from saves and rollback state.
 ## Video And Launch Transitions
 
 - Title screens may use `manifest.shell.background_video`; failed unmuted autoplay falls back to the title image.

@@ -64,7 +64,8 @@ This document explains the runtime fields GameCLI reads from `script.json`, `man
 - `animation.params`: runtime animation parameters.
 - `animation.blocking`: whether story playback waits.
 - `bgm.bgm_id`: BGM asset ID.
-- `bgm.action`: `play`, `stop`, or `fade`.
+- `bgm.action`: `play` or `stop`; legacy `fade` is normalized to `stop`.
+- `bgm.fade_ms`: `0` or omitted means immediate; positive values fade in on `play` and fade out on `stop`.
 - `sfx.sfx_id`: sound effect asset ID.
 - `wait.duration_ms`: wait duration.
 

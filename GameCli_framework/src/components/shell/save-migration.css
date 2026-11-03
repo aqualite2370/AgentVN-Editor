@@ -11,4 +11,9 @@
 .save-migration-details dt { font-weight: 600; }
 .save-migration-details dd { margin: 0.3em 0 0.8em; overflow-wrap: anywhere; }
 .save-migration-error { color: var(--danger, var(--ink)); }
+.save-migration-claims { min-width: 0; border: 1px solid currentColor; border-radius: 4px; padding: 0.75em; }
+.save-migration-claim { display: flex; gap: 0.75em; align-items: flex-start; padding-block: 0.65em; cursor: pointer; }
+.save-migration-claim > span { display: grid; gap: 0.25em; min-width: 0; }
+.save-migration-claim input { accent-color: var(--accent, currentColor); flex: none; margin-top: 0.25em; }
+.save-migration-claim:has(input:disabled) { opacity: 0.7; cursor: default; }
 .save-storage-location { justify-self: end; max-width: 100%; }

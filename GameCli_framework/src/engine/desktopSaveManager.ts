@@ -11,6 +11,21 @@ export interface SaveStorageInfo {
   conflictFiles: string[];
   skippedFiles: string[];
   copiedFiles: string[];
+  unverifiedFiles?: UnverifiedSave[];
+}
+
+export interface LegacySaveClaim {
+  fileName: string;
+  sourceSha256: string;
+}
+
+export interface UnverifiedSave extends LegacySaveClaim {
+  slot: number;
+  saveKind: SaveKind;
+  createdAt?: string | null;
+  sceneId: string;
+  summary?: string | null;
+  conflict: boolean;
 }
 
 export async function getSaveStorageInfo(installId: string): Promise<SaveStorageInfo | undefined> {
@@ -18,9 +33,10 @@ export async function getSaveStorageInfo(installId: string): Promise<SaveStorage
   return invoke<SaveStorageInfo>("get_save_storage_info", { installId });
 }
 
-export async function migrateLegacySaves(installId: string, gameId: string): Promise<SaveStorageInfo> {
+export async function migrateLegacySaves(installId: string, gameId: string,
+  legacyClaims: LegacySaveClaim[] = []): Promise<SaveStorageInfo> {
   if (!isTauriRuntime()) throw new Error("旧存档迁移仅适用于Windows独立游戏。");
-  return invoke<SaveStorageInfo>("migrate_legacy_saves", { installId, gameId, confirmed: true });
+  return invoke<SaveStorageInfo>("migrate_legacy_saves", { installId, gameId, confirmed: true, legacyClaims });
 }
 
 function saveKey(installId: string): string {

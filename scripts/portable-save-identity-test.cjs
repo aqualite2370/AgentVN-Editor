@@ -2,7 +2,9 @@
 // Real snapshot/queue/serializer; only native IPC and raster preview are controlled.
 const assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path");
 const root = path.resolve(__dirname, "..");
-const out = path.join(root, "output/portable-save-identity", new Date().toISOString().replace(/[:.]/g, "-"));
+const out = process.env.AGENTVN_SAVE_TEST_OUTPUT
+  || path.join(root, "output/portable-save-identity", new Date().toISOString().replace(/[:.]/g, "-"));
+assert(!fs.existsSync(out), "Never overwrite previous evidence");
 fs.mkdirSync(out, { recursive: true });
 const report = { status: "RUNNING", cases: [] }, records = new Map(), preferences = new Map();
 let portable = true, scanFails = false, expectedGame;

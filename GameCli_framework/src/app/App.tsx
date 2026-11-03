@@ -266,10 +266,14 @@ export function App() {
   const loadGame = useRuntimeStore((state) => state.loadGame);
   const hideBootOverlay = useCallback(() => setBootOverlayVisible(false), []);
   const bootBlocking = bootOverlayVisible || Boolean(bootError);
+  const [bootInputReleased, setBootInputReleased] = useState(false);
   useLayoutEffect(() => {
     const content = bootContentRef.current;
     if (!content) return;
     content.toggleAttribute("inert", bootBlocking);
+    // Modal layout effects run before their parent's effects. A separate
+    // commit acknowledges the actual DOM unlock before a modal snapshots it.
+    setBootInputReleased(!bootBlocking);
     if (!bootBlocking) {
       const target = content.querySelector<HTMLElement>(".runtime-screen-transition-current");
       (target ?? content).focus({ preventScroll: true });
@@ -892,9 +896,13 @@ export function App() {
           renderScreen={renderRuntimeScreen} fallback={<RuntimeScreenLoading />} />
       </div>
       <RuntimeAudio />
-      {exitConfirmationOpen && <ExitGameDialog />}
-      <QuickLoadDialog />
-      <SaveMigrationDialog />
+      {/* Startup owns background input until its overlay releases it. Mounting
+          a modal earlier would later restore the boot's obsolete inert state. */}
+      {!bootBlocking && bootInputReleased && <>
+        {exitConfirmationOpen && <ExitGameDialog />}
+        <QuickLoadDialog />
+        <SaveMigrationDialog />
+      </>}
       <OpeningAudioPlayer
         game={currentGame}
         tracks={currentGame?.script.opening_audio}

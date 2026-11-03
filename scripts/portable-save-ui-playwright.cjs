@@ -5,8 +5,9 @@ const { chromium } = require("../editor/node_modules/playwright");
 const { startOwnedViteServer } = require("./lib/owned-vite-server.cjs");
 const { currentAcceptanceViewports } = require("./lib/current-acceptance-viewports.cjs");
 const { settleRuntime } = require("./lib/installed-acceptance.cjs");
-const root = path.resolve(__dirname, ".."), out = path.join(root, "output/playwright/portable-save-ui",
-  new Date().toISOString().replace(/[:.]/g, "-"));
+const root = path.resolve(__dirname, ".."), out = process.env.AGENTVN_SAVE_TEST_OUTPUT
+  || path.join(root, "output/playwright/portable-save-ui", new Date().toISOString().replace(/[:.]/g, "-"));
+assert(!fs.existsSync(out), "Never overwrite previous evidence");
 fs.mkdirSync(out, { recursive: true });
 const report = { status: "RUNNING", scope: "Runtime actual modal/save screen, controlled native storage boundary; not native installed acceptance", cases: [], errors: [] };
 let server, browser;

@@ -62,6 +62,23 @@ check("editor-canvas-question-still-finds-editor-canvas-not-game-control-guide",
   item.ids = hits.map(chunk => chunk.id);
   assert(hits[0]?.id.startsWith("help-settings.editorAppearance."), JSON.stringify(item.ids));
 });
+check("gui-application-retrieves-the-dialog-selection-workflow-not-canvas-selection", item => {
+  const question = "GUI资源包入库后只给一个按钮的悬停状态设置背景图，应该在哪里选择目标？";
+  const hits = api.retrieveAssistantDocs(question, 12);
+  item.ids = hits.map(chunk => chunk.id);
+  const guide = hits.filter(chunk => chunk.id.startsWith("guide-gui-pack-")).map(chunk => chunk.text).join("");
+  assert(guide, "The actual retrieved payload must include the application guide");
+  const workbench = fs.readFileSync(path.join(root,
+    "editor/src/components/advanced/RenpyGuiImportWorkbench.tsx"), "utf8");
+  for (const name of ["资源包应用范围", "目标页面", "目标控件", "目标控件状态"]) {
+    assert(workbench.includes(`ariaLabel="${name}"`), `Real UI no longer exposes ${name}; review its instructions`);
+    assert(guide.includes(`“${name}”`), `Retrieved application guide omits the actual selector: ${name}`);
+  }
+  assert(guide.includes("应用对话框"), "Do not substitute canvas picking for the dialog's own selectors");
+  assert(guide.includes("“当前控件背景”") && guide.includes("“确认应用到当前工程”"));
+  item.actualDialogSelectors = ["资源包应用范围", "目标页面", "目标控件", "目标控件状态"];
+  item.scope = "RETRIEVED_SOURCE_INSTRUCTIONS_NOT_REAL_MODEL_QUALITY";
+});
 check("index-covers-real-controls-and-has-source-freshness-manifest", () => {
   assert(api.agentvnDocIndex.length > 100, "Four stale summaries are not a project knowledge base");
   assert(api.agentvnDocIndexMetadata?.sources.length > 20);

@@ -1709,12 +1709,14 @@ fn get_save_storage_info(app: AppHandle, install_id: String) -> Result<portable_
 }
 
 #[tauri::command]
-fn migrate_legacy_saves(app: AppHandle, install_id: String, game_id: String, confirmed: bool) -> Result<portable_save_migration::MigrationStatus, String> {
+fn migrate_legacy_saves(app: AppHandle, install_id: String, game_id: String, confirmed: bool,
+    legacy_claims: Option<Vec<portable_save_migration::LegacyClaim>>) -> Result<portable_save_migration::MigrationStatus, String> {
     let _guard = PLAYER_SAVE_IO_LOCK.lock().map_err(|_| "Cannot lock save storage.".to_string())?;
     if standalone_save_game_id(&app, &install_id)?.as_deref() != Some(&game_id) {
         return Err("存档迁移归属已变化或当前不是Windows独立游戏，请重新打开当前游戏。".to_string());
     }
-    portable_save_migration::migrate(&game_save_location(&app, &install_id)?, &game_id, confirmed)
+    portable_save_migration::migrate_with_claims(&game_save_location(&app, &install_id)?,
+        &game_id, confirmed, &legacy_claims.unwrap_or_default())
 }
 fn gallery_dir(app: &AppHandle, install_id: &str) -> Result<PathBuf, String> {
     Ok(data_dir(app)?.join("gallery").join(install_id))

@@ -1,7 +1,7 @@
 param(
   [Parameter(Mandatory=$true)][string]$ResourceReport,
   [Parameter(Mandatory=$true)][string]$RunRoot,
-  [ValidateSet('1.9.36','1.9.37','1.9.38','1.9.39','1.9.40','1.9.41')][string]$ExpectedVersion='1.9.36',
+  [ValidateSet('1.9.36','1.9.37','1.9.38','1.9.39','1.9.40','1.9.41','1.9.42')][string]$ExpectedVersion='1.9.36',
   [string]$AllowedRunRoot='F:\AgentVN\QA\Player-Aspect-20261102-01'
 )
 $ErrorActionPreference='Stop'
@@ -12,7 +12,8 @@ if($allowed -notin @('F:\AgentVN\QA\Player-Aspect-20261102-01',
     'F:\AgentVN\QA\Credential-Boundaries-20261102-01',
     'F:\AgentVN\QA\Novel-Branch-Completion-20261103-01',
     'F:\AgentVN\QA\Original-Component-Replay-20261103-01',
-    'F:\AgentVN\QA\Dialog-Pointer-Sequence-20261103-01')){
+    'F:\AgentVN\QA\Dialog-Pointer-Sequence-20261103-01',
+    'F:\AgentVN\QA\Legacy-Save-Claim-20261103-01')){
   throw 'Unexpected installation evidence root'
 }
 if([IO.Path]::GetDirectoryName($run) -cne $allowed -or

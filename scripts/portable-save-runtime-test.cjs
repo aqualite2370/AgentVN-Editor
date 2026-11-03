@@ -1,7 +1,9 @@
 "use strict";
 const assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path");
 const root = path.resolve(__dirname, "..");
-const out = path.join(root, "output/portable-save-runtime", new Date().toISOString().replace(/[:.]/g, "-"));
+const out = process.env.AGENTVN_SAVE_TEST_OUTPUT
+  || path.join(root, "output/portable-save-runtime", new Date().toISOString().replace(/[:.]/g, "-"));
+assert(!fs.existsSync(out), "Never overwrite previous evidence");
 fs.mkdirSync(out, { recursive: true });
 const report = { status: "RUNNING", cases: [] };
 const data = new Map();
@@ -10,13 +12,17 @@ global.window = { location: { search: "" }, localStorage: { getItem: k => data.g
   setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask, dispatchEvent() {} };
 window.parent = window; global.localStorage = window.localStorage;
 global.document = { visibilityState: "visible", addEventListener() {} };
-let resolveMigration, rejectMigration, migrateCalls = 0, copyError;
+let resolveMigration, rejectMigration, migrateCalls = 0, copyError, unverifiedOnly = false, lastMigration;
+const claim = { fileName: "slot-03.json", sourceSha256: "a".repeat(64) };
 global.__saveInvoke = async (command, args) => {
   if (command === "get_save_storage_info") return {
     portable: true, sourceDirectory: "旧数据/saves/preview_gamecli", targetDirectory: `安装/saves/${args.installId}`,
-    availableFiles: ["slot-01.json"], conflictFiles: ["slot-02.json"], skippedFiles: [], copiedFiles: [],
+    availableFiles: unverifiedOnly ? [] : ["slot-01.json"],
+    unverifiedFiles: unverifiedOnly ? [{ ...claim, slot: 3, saveKind: "manual", sceneId: "main", conflict: false }] : [],
+    conflictFiles: ["slot-02.json"], skippedFiles: [], copiedFiles: [],
   };
   if (command === "migrate_legacy_saves") {
+    lastMigration = structuredClone(args);
     migrateCalls++;
     if (copyError) throw new Error(copyError);
     return new Promise((resolve, reject) => { resolveMigration = resolve; rejectMigration = reject; });
@@ -96,6 +102,22 @@ const game = id => ({ install_id: id, game_id: id, title: id, gallery: [], asset
     assert.equal(store.getState().saveMigrationOpen, true);
   }
   report.cases.push("A-B-A-stale-success-and-failure-ownership");
+  unverifiedOnly = true;
+  await store.getState().loadGame(game("game-a"));
+  assert.equal(store.getState().saveMigrationOpen, true, "ambiguous saves must be visible for manual review");
+  const beforeClaims = migrateCalls;
+  store.getState().closeSaveMigration();
+  assert.equal(migrateCalls, beforeClaims, "review and cancellation cannot copy an ambiguous save");
+  await store.getState().openSaveMigration();
+  const claimed = store.getState().confirmSaveMigration([claim]);
+  const repeated = store.getState().confirmSaveMigration([claim]);
+  await Promise.resolve();
+  assert.equal(migrateCalls, beforeClaims + 1, "claimed migration remains single-flight");
+  assert.deepEqual(lastMigration, { installId: "game-a", gameId: "game-a", confirmed: true, legacyClaims: [claim] });
+  resolveMigration({ ...store.getState().saveStorageInfo, unverifiedFiles: [], copiedFiles: ["slot-03.json"] });
+  await Promise.all([claimed, repeated]);
+  assert.equal(store.getState().saveMigrationOpen, false);
+  report.cases.push("explicit-ambiguous-save-claims-reach-native-boundary-once");
   await store.getState().loadLivePreview(game("preview"));
   assert.equal(store.getState().saveStorageInfo, undefined);
   assert.equal(store.getState().saveMigrationOpen, false);

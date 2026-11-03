@@ -71,6 +71,18 @@ pub fn copy_new_save(
     destination: &Path,
     validate: impl FnOnce(&[u8]) -> Result<(), String>,
 ) -> Result<bool, String> {
+    copy_new_save_mapped(source, destination, |bytes| {
+        validate(bytes)?;
+        Ok(bytes.to_vec())
+    })
+}
+
+/// Only the new copy may be adapted. Read and validate before creating a target.
+pub fn copy_new_save_mapped(
+    source: &Path,
+    destination: &Path,
+    prepare: impl FnOnce(&[u8]) -> Result<Vec<u8>, String>,
+) -> Result<bool, String> {
     use std::io::{Read, Write};
     reject_link(source)?;
     reject_link(destination)?;
@@ -81,7 +93,7 @@ pub fn copy_new_save(
     if bytes.len() > 32 * 1024 * 1024 {
         return Err(format!("旧存档 {} 超过32MiB安全上限，未迁移。", source.display()));
     }
-    validate(&bytes)?;
+    let bytes = prepare(&bytes)?;
     let mut file = match std::fs::OpenOptions::new().write(true).create_new(true).open(destination) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),

@@ -7,7 +7,7 @@ import {
   type AssetPreparationProgress,
 } from "../engine/progressiveAssetLoader";
 import { deleteDesktopSave, getSaveStorageInfo, listDesktopSaves, migrateLegacySaves, readDesktopSave, writeDesktopSave,
-  type SaveStorageInfo } from "../engine/desktopSaveManager";
+  type LegacySaveClaim, type SaveStorageInfo } from "../engine/desktopSaveManager";
 import {
   SAVE_PREVIEW_VERSION,
   cacheCurrentSavePreview,
@@ -88,7 +88,7 @@ interface RuntimeStore {
   saveMigrationError?: string;
   openSaveMigration: () => Promise<void>;
   closeSaveMigration: () => void;
-  confirmSaveMigration: () => Promise<void>;
+  confirmSaveMigration: (legacyClaims?: LegacySaveClaim[]) => Promise<void>;
   quickLoadCandidate?: SaveData;
   saveNotice?: { status: "saving" | "saved" | "error"; kind: SaveKind; message: string; at: number };
   isVoicePlaying: boolean;
@@ -774,7 +774,8 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
         engineState: snapshotEngineState(engine.state),
         saves,
         saveStorageInfo: storage.info,
-        saveMigrationOpen: Boolean(storage.info?.portable && storage.info.availableFiles.length),
+        saveMigrationOpen: Boolean(storage.info?.portable
+          && (storage.info.availableFiles.length || storage.info.unverifiedFiles?.length)),
         saveMigrationError: storage.error,
         galleryUnlocks,
         screen: "title_menu",
@@ -855,13 +856,13 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
     closeSaveMigration() {
       if (!get().saveMigrationPending) set({ saveMigrationOpen: false });
     },
-    async confirmSaveMigration() {
+    async confirmSaveMigration(legacyClaims = []) {
       const game = get().currentGame;
       if (!game || !get().saveMigrationOpen || get().saveMigrationPending || !get().saveStorageInfo?.portable) return;
       const owner = saveOwner;
       set({ saveMigrationPending: true, saveMigrationError: undefined });
       try {
-        const info = await saveWrites.track(() => migrateLegacySaves(game.install_id, game.game_id));
+        const info = await saveWrites.track(() => migrateLegacySaves(game.install_id, game.game_id, legacyClaims));
         if (owner !== saveOwner) return;
         const saves = await listDesktopSaves(game.install_id);
         if (owner !== saveOwner) return;

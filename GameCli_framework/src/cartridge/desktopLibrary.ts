@@ -326,9 +326,9 @@ export async function loadInstalledGame(index: InstalledCartridgeIndex): Promise
     const { cartridge } = await importRuntimeCartridgeFromArrayBuffer(buffer, record.sourceFileName);
     return packageToGame(cartridge, record);
   }
-  const bytes = await invoke<number[]>("load_installed_cartridge", { installId: index.installId });
+  const buffer = await invoke<ArrayBuffer>("load_installed_cartridge", { installId: index.installId });
   const { cartridge } = await importRuntimeCartridgeFromArrayBuffer(
-    bytesToArrayBuffer(bytes),
+    buffer,
     index.sourceFileName,
   );
   return packageToGame(cartridge, index);
@@ -395,9 +395,11 @@ export async function loadGameFromEmbeddedDirectory(): Promise<LibraryGame> {
 }
 
 export async function loadGameFromPath(sourcePath: string, installId: string): Promise<LibraryGame> {
-  const bytes = await invoke<number[]>("read_cartridge_from_path", { sourcePath });
+  // Native raw IPC returns an ArrayBuffer. Serializing a large archive as a
+  // JSON number[] expands it several times before ZIP validation even starts.
+  const buffer = await invoke<ArrayBuffer>("read_cartridge_from_path", { sourcePath });
   const { cartridge } = await importRuntimeCartridgeFromArrayBuffer(
-    bytesToArrayBuffer(bytes),
+    buffer,
     fileNameFromPath(sourcePath),
   );
   return packageToGame(cartridge, recordForPackage(cartridge, fileNameFromPath(sourcePath), installId, sourcePath));

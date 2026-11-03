@@ -442,13 +442,14 @@ fn import_cartridge_from_path(
 }
 
 #[tauri::command]
-fn load_installed_cartridge(app: AppHandle, install_id: String) -> Result<Vec<u8>, String> {
+async fn load_installed_cartridge(app: AppHandle, install_id: String) -> Result<tauri::ipc::Response, String> {
     let records = read_library(&app)?;
     let record = records
         .iter()
         .find(|item| item.install_id == install_id)
         .ok_or_else(|| "Cartridge is not installed.".to_string())?;
     fs::read(&record.cartridge_path)
+        .map(tauri::ipc::Response::new)
         .map_err(|error| format!("Cannot read installed cartridge: {error}"))
 }
 
@@ -465,13 +466,63 @@ fn get_launch_config() -> Result<LaunchConfig, String> {
 }
 
 #[tauri::command]
-fn read_cartridge_from_path(source_path: String) -> Result<Vec<u8>, String> {
+async fn read_cartridge_from_path(source_path: String) -> Result<tauri::ipc::Response, String> {
     let source = PathBuf::from(&source_path);
     if !source.exists() {
         return Err("Cartridge file does not exist.".into());
     }
     eprintln!("[AgentVN Player] Reading cartridge: {}", source.display());
-    fs::read(&source).map_err(|error| format!("Cannot read cartridge file: {error}"))
+    // A raw response avoids constructing a JSON integer array in the host and
+    // WebView. Keep the existing archive validation on the frontend.
+    fs::read(&source)
+        .map(tauri::ipc::Response::new)
+        .map_err(|error| format!("Cannot read cartridge file: {error}"))
+}
+
+#[cfg(test)]
+mod cartridge_binary_transport_tests {
+    use super::*;
+    use tauri::ipc::{InvokeResponseBody, IpcResponse};
+
+    #[test]
+    fn disk_cartridge_response_preserves_binary_bytes_and_source() {
+        let root = std::env::temp_dir().join(format!(
+            "agentvn-binary-{}-{}", std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        fs::create_dir(&root).unwrap();
+        let source = root.join("中文 卡带.vncart");
+        let bytes: Vec<u8> = (0..65536).map(|i| (i % 256) as u8).collect();
+        fs::write(&source, &bytes).unwrap();
+        let response = tauri::async_runtime::block_on(
+            read_cartridge_from_path(source.to_string_lossy().into_owned())
+        ).unwrap();
+        match response.body().unwrap() {
+            InvokeResponseBody::Raw(actual) => assert_eq!(actual, bytes),
+            InvokeResponseBody::Json(_) => panic!("cartridge bytes must not be JSON"),
+        }
+        assert_eq!(fs::read(&source).unwrap(), bytes);
+        // A directory is present but unreadable as an archive file.
+        let result = tauri::async_runtime::block_on(
+            read_cartridge_from_path(root.to_string_lossy().into_owned())
+        );
+        assert!(matches!(result, Err(error) if error.contains("Cannot read cartridge file")));
+        fs::remove_file(source).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn missing_cartridge_is_an_error_without_creation() {
+        let source = std::env::temp_dir().join(format!(
+            "agentvn-missing-{}-{}.vncart", std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let result = tauri::async_runtime::block_on(
+            read_cartridge_from_path(source.to_string_lossy().into_owned())
+        );
+        assert!(matches!(result, Err(error) if error == "Cartridge file does not exist."));
+        assert!(!source.exists());
+    }
 }
 
 fn is_dangerous_preview_extension(path: &str) -> bool {

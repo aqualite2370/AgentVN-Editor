@@ -70,7 +70,7 @@ function main() {
   const config = JSON.parse(fs.readFileSync(configFile, "utf8"));
   assert.equal(config.closeMode, "repository-wm-close-natural-exit");
   assert.equal(config.profileUpgrade, true);
-  assert(["1.9.34->1.9.35", "1.9.39->1.9.40"].includes(`${config.oldVersion}->${config.version}`),
+  assert(["1.9.34->1.9.35", "1.9.39->1.9.40", "1.9.41->1.9.42"].includes(`${config.oldVersion}->${config.version}`),
     "Only reviewed, provenance-bound upgrade pairs are supported");
   if (action === "profile-audit") return profileAudit(configFile, output);
   if (action === "--self-test") console.log(JSON.stringify(close.selfTest()));

@@ -1,0 +1,91 @@
+.toolbar-popover.workspace-task-panel.preview {
+  padding: 0;
+  border-radius: var(--editor-panel-radius);
+  background: var(--editor-panel-surface), var(--bg);
+  overflow: hidden;
+  bottom: auto;
+  height: min(660px, calc(100dvh - var(--workspace-task-top, 100px) - 16px));
+}
+
+.preview-launch-panel {
+  --preview-content-inset: 16px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 0;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  box-sizing: border-box;
+}
+
+.preview-launch-header,
+.preview-launch-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px var(--preview-content-inset);
+  box-sizing: border-box;
+}
+
+.preview-launch-header { border-bottom: 1px solid var(--line); }
+
+.preview-launch-header h3 { margin: 0; font-size: 17px; }
+.preview-launch-header p,
+.preview-launch-hint { margin: 4px 0; color: var(--muted); font-size: 12px; }
+.preview-launch-header > div { min-width: 0; }
+.preview-launch-header button { flex-shrink: 0; }
+.preview-launch-body {
+  min-height: 0;
+  padding: 16px var(--preview-content-inset);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  box-sizing: border-box;
+}
+.preview-launch-summary { display: grid; grid-template-columns: 1fr 1fr auto; gap: 12px; margin: 4px 0 16px; }
+.preview-launch-summary > div { min-width: 0; }
+.preview-launch-summary dt { color: var(--muted); font-size: 12px; }
+.preview-launch-summary dd { margin: 5px 0 0; overflow-wrap: anywhere; font-weight: 600; }
+.preview-launch-panel .gamecli-preview-log ol { height: 190px; max-height: none; overflow: auto; }
+.preview-launch-panel .gamecli-preview-log { margin-top: 12px; }
+.preview-launch-panel .gamecli-preview-log li { overflow-wrap: anywhere; }
+.preview-launch-panel .gamecli-preview-detail p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.preview-launch-panel button { min-height: 44px; padding: 8px 12px; font-size: 13px; }
+.preview-launch-panel .preview-launch-primary {
+  background: color-mix(in srgb, var(--accent) 25%, var(--surface-2));
+  border-color: var(--accent);
+  color: var(--ink-strong);
+  font-weight: 650;
+}
+.preview-launch-actions { justify-content: flex-start; border-top: 1px solid var(--line); }
+.preview-launch-maintenance { margin: 12px 0; color: var(--muted); font-size: 12px; }
+.preview-launch-maintenance summary { cursor: pointer; padding: 10px 0; }
+
+@media (max-width: 640px) {
+  .preview-launch-panel { --preview-content-inset: 12px; }
+  .preview-launch-summary { grid-template-columns: 1fr; gap: 8px; }
+  .preview-launch-header p { display: none; }
+  .preview-launch-actions button { flex: 1; }
+}
+
+/* A short window cannot fit a fixed header, footer and useful log viewport.
+   Scroll the whole task instead of shrinking its middle track to zero. */
+@media (max-height: 520px) {
+  .toolbar-popover.workspace-task-panel.preview { overflow-y: auto; }
+  .preview-launch-panel {
+    height: auto;
+    min-height: 100%;
+    grid-template-rows: auto auto auto;
+    align-content: start;
+    overflow: visible;
+  }
+  .preview-launch-body { overflow: visible; }
+}

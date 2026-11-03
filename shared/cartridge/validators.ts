@@ -3,10 +3,19 @@ import { isCartridgeFormatCompatible, isRuntimeCompatible } from "./compatibilit
 import { assetTypeDisplayLabel, assetTypeMatchesExpected, isImageLikeAssetType } from "./assetTaxonomy";
 import type { AssetType, CartridgeValidationResult, ChecksumManifest, GalleryManifest, GameCommand, GameManifest, RuntimeScript, ValidationIssue } from "./types";
 import { validateCharacterAnimationConfig } from "../animation/characterAnimation";
+import { isBubblePositionConfig, isDialogPresentationMode } from "./dialogPresentation";
 import { validateVisualTransitionConfig } from "../animation/visualTransition";
 import { validateCameraCommand } from "../camera/cameraMotion";
 import { MAX_SPRITE_SCALE, MIN_SPRITE_SCALE } from "./spriteScale";
 import { MAX_SPRITE_LAYER, MIN_SPRITE_LAYER, isValidSpriteLayer } from "./spriteLayer";
+import {
+  MAX_SPRITE_OFFSET_X,
+  MAX_SPRITE_OFFSET_Y,
+  MIN_SPRITE_OFFSET_X,
+  MIN_SPRITE_OFFSET_Y,
+  isValidSpriteOffsetX,
+  isValidSpriteOffsetY,
+} from "./spritePlacement";
 
 const MIN_SPEAKER_FOCUS_SCALE = 1;
 const MAX_SPEAKER_FOCUS_SCALE = 1.15;
@@ -26,6 +35,10 @@ function issue(code: string, message: string, severity: "error" | "warning" = "e
 
 function scenesOf(script: RuntimeScript): RuntimeScript["scenes"] {
   return Array.isArray(script.scenes) ? script.scenes : [];
+}
+
+function isValidNarrationStyle(value: unknown): boolean {
+  return value === undefined || value === null || value === "dialog" || value === "centered";
 }
 
 function collectCharacterIds(script: RuntimeScript): Set<string> {
@@ -176,6 +189,13 @@ export function validateRuntimeScript(script: RuntimeScript, manifest?: GameMani
   const commandCount = scenes.reduce((total, scene) => total + (Array.isArray(scene.commands) ? scene.commands.length : 0), 0);
   if (commandCount > CARTRIDGE_LIMITS.maxCommandCount) issues.push(issue("command_limit", `事件数量超过限制（commands）：当前 ${commandCount} 条，限制为 ${CARTRIDGE_LIMITS.maxCommandCount} 条。原因：卡带事件过多。影响：GameCLI 可能加载缓慢或失败。解决方案：请拆分工程或精简场景事件。`, "error", "script.scenes"));
   const characterIds = collectCharacterIds(script);
+  if (script.default_dialog_presentation !== undefined && !isDialogPresentationMode(script.default_dialog_presentation))
+    issues.push(issue("dialog_presentation_mode", "工程默认对白呈现模式无效。", "error", "script.default_dialog_presentation"));
+  for (const character of script.characters ?? []) {
+    if (character.dialog_presentation !== undefined && !isDialogPresentationMode(character.dialog_presentation))
+      issues.push(issue("dialog_presentation_mode", "角色默认对白呈现模式无效。", "error",
+        `script.characters.${character.character_id}.dialog_presentation`));
+  }
   if (script.speaker_focus) {
     const focus = script.speaker_focus;
     if (typeof focus.enabled !== "boolean") {
@@ -188,8 +208,51 @@ export function validateRuntimeScript(script: RuntimeScript, manifest?: GameMani
       issues.push(issue("speaker_focus_duration", `speaker_focus.duration_ms 必须在 ${MIN_SPEAKER_FOCUS_DURATION_MS} 到 ${MAX_SPEAKER_FOCUS_DURATION_MS} 毫秒之间。`, "error", "script.speaker_focus.duration_ms"));
     }
   }
+  if (script.rollback) {
+    const rollback = script.rollback;
+    if (rollback.enabled !== undefined && typeof rollback.enabled !== "boolean") {
+      issues.push(issue("rollback_enabled", "rollback.enabled 必须是布尔值。", "error", "script.rollback.enabled"));
+    }
+    if (rollback.log_length !== undefined && (!Number.isInteger(rollback.log_length) || rollback.log_length < 2 || rollback.log_length > 512)) {
+      issues.push(issue("rollback_log_length", "rollback.log_length 必须是 2 到 512 之间的整数。", "error", "script.rollback.log_length"));
+    }
+    if (rollback.hard_limit !== undefined && (!Number.isInteger(rollback.hard_limit) || rollback.hard_limit < 0 || rollback.hard_limit > (rollback.log_length ?? 512))) {
+      issues.push(issue("rollback_hard_limit", "rollback.hard_limit 必须是不超过日志长度的非负整数。", "error", "script.rollback.hard_limit"));
+    }
+  }
   for (const scene of scenes) {
     for (const command of Array.isArray(scene.commands) ? scene.commands : []) {
+      if ((command.type === "dialog" || command.type === "narration")
+        && command.bubble_position !== undefined && !isBubblePositionConfig(command.bubble_position)) {
+        issues.push(issue("dialog_bubble_position", "气泡定位须为安全的角色偏移或0–100%的固定画面坐标。",
+          "error", `scene.${scene.scene_id}.bubble_position`));
+      }
+      if (
+        (command.type === "dialog" || command.type === "narration")
+        && command.presentation_mode !== undefined
+        && command.presentation_mode !== "dialog"
+        && command.presentation_mode !== "nvl"
+        && command.presentation_mode !== "bubble"
+      ) {
+        issues.push(issue(
+          "dialog_presentation_mode",
+          `对白呈现模式无效：${String(command.presentation_mode)}。支持 dialog、nvl 或 bubble。`,
+          "error",
+          `scene.${scene.scene_id}.presentation_mode`,
+        ));
+      }
+      if (
+        (command.type === "dialog" || command.type === "narration")
+        && command.clear_nvl_page_before !== undefined
+        && typeof command.clear_nvl_page_before !== "boolean"
+      ) {
+        issues.push(issue(
+          "dialog_nvl_clear_page",
+          "clear_nvl_page_before 必须是布尔值。",
+          "error",
+          `scene.${scene.scene_id}.clear_nvl_page_before`,
+        ));
+      }
       if (command.type === "background") {
         for (const transitionIssue of validateVisualTransitionConfig(
           command.transition_config,
@@ -199,6 +262,22 @@ export function validateRuntimeScript(script: RuntimeScript, manifest?: GameMani
         }
       }
       if (command.type === "sprite") {
+        if (command.offset_x !== null && command.offset_x !== undefined && !isValidSpriteOffsetX(command.offset_x)) {
+          issues.push(issue(
+            "sprite_offset_x_range",
+            `角色立绘 X 偏移必须在 ${MIN_SPRITE_OFFSET_X}% 到 ${MAX_SPRITE_OFFSET_X}% 之间。`,
+            "error",
+            `scene.${scene.scene_id}.sprite.${command.character_id}.offset_x`,
+          ));
+        }
+        if (command.offset_y !== null && command.offset_y !== undefined && !isValidSpriteOffsetY(command.offset_y)) {
+          issues.push(issue(
+            "sprite_offset_y_range",
+            `角色立绘 Y 偏移必须在 ${MIN_SPRITE_OFFSET_Y}% 到 ${MAX_SPRITE_OFFSET_Y}% 之间。`,
+            "error",
+            `scene.${scene.scene_id}.sprite.${command.character_id}.offset_y`,
+          ));
+        }
         if (
           command.layer !== null
           && command.layer !== undefined
@@ -265,6 +344,14 @@ export function validateRuntimeScript(script: RuntimeScript, manifest?: GameMani
           issues.push(issue(cameraIssue.code, cameraIssue.message, cameraIssue.severity, cameraIssue.path));
         }
       }
+      if (command.type === "rollback" && command.action !== "checkpoint" && "hard" in command && command.hard !== undefined) {
+        issues.push(issue(
+          "rollback_hard_field",
+          "hard 只适用于 checkpoint 回退控制事件。",
+          "error",
+          `scene.${scene.scene_id}.rollback.hard`,
+        ));
+      }
     }
   }
   const sceneValidation = validateScenes(script);
@@ -286,6 +373,18 @@ export function validateGallery(gallery: GalleryManifest): CartridgeValidationRe
   const issues: ValidationIssue[] = [];
   if (!gallery.gallery_version) issues.push(issue("gallery_version", "画廊版本缺失（gallery_version）：原因：gallery.json 没有声明版本。影响：GameCLI 可能无法读取画廊数据。解决方案：请重新导出卡带。", "error", "gallery.gallery_version"));
   if (!Array.isArray(gallery.items)) issues.push(issue("gallery_items", "画廊条目格式错误（items）：原因：gallery.json 中 items 必须是数组。影响：GameCLI 无法读取画廊。解决方案：请重新导出卡带，或把 items 修正为数组。", "error", "gallery.items"));
+  const ids = new Set<string>();
+  for (const [index, item] of (gallery.items ?? []).entries()) {
+    if (!item.item_id?.trim()) issues.push(issue("gallery_item_id", "画廊条目缺少唯一 ID。", "error", `gallery.items.${index}.item_id`));
+    if (ids.has(item.item_id)) issues.push(issue("gallery_duplicate_id", `画廊锚点 ID 重复：${item.item_id}`, "error", `gallery.items.${index}.item_id`));
+    ids.add(item.item_id);
+    if (!item.title?.trim()) issues.push(issue("gallery_title", "画廊锚点名称不能为空。", "error", `gallery.items.${index}.title`));
+    if (!item.asset_id?.trim()) issues.push(issue("gallery_asset", "画廊锚点必须指定展示素材。", "error", `gallery.items.${index}.asset_id`));
+    if (item.scene_id !== undefined && !item.scene_id.trim()) issues.push(issue("gallery_scene", "画廊锚点场景 ID 不能为空。", "error", `gallery.items.${index}.scene_id`));
+    if (item.command_index !== undefined && (!Number.isInteger(item.command_index) || item.command_index < 0)) {
+      issues.push(issue("gallery_command", "画廊锚点事件索引无效。", "error", `gallery.items.${index}.command_index`));
+    }
+  }
   return splitIssues(issues);
 }
 
@@ -330,6 +429,7 @@ function collectCommandAssetReferences(command: GameCommand): Array<{ asset_id: 
   }
   if (command.type === "bgm" && command.bgm_id) return [{ asset_id: command.bgm_id, asset_type: "bgm" }];
   if (command.type === "sfx") return command.sfx_id ? [{ asset_id: command.sfx_id, asset_type: "sfx" }] : [];
+  if (command.type === "gallery_anchor") return command.asset_id ? [{ asset_id: command.asset_id, asset_type: "ui", image_like: true }] : [];
   if (command.type === "animation") return [];
   return [];
 }
@@ -345,6 +445,12 @@ function collectLoadingAnimationAssetReferences(script: RuntimeScript): Array<{ 
       .map((asset_id) => ({ asset_id, asset_type: "ui" as const }));
   }
   return [];
+}
+
+function collectOpeningAudioAssetReferences(script: RuntimeScript): Array<{ asset_id: string; asset_type: AssetType }> {
+  return (script.opening_audio ?? [])
+    .filter((track) => Boolean(track.asset_id))
+    .map((track) => ({ asset_id: track.asset_id, asset_type: track.asset_type }));
 }
 
 function isCompatibleLoadingAnimationAsset(asset: GameManifest["assets"][number], expected: AssetType): boolean {
@@ -409,6 +515,27 @@ export function validateAssetReferences(script: RuntimeScript, manifest: GameMan
       issues.push(issue("asset_type_mismatch", `Loading animation asset type mismatch: ${ref.asset_id} is used as ${expectedLabel}, but manifest marks it as ${asset.asset_type}.`, "error", "script.loading_animation"));
     }
   }
+  for (const [index, ref] of collectOpeningAudioAssetReferences(script).entries()) {
+    const asset = assets.get(ref.asset_id);
+    const path = `script.opening_audio.${index}.asset_id`;
+    if (!asset) {
+      issues.push(issue("missing_asset", `Opening audio asset is not packed: ${ref.asset_id}. Re-select the audio in the project settings and export again.`, "error", path));
+    } else if (!["bgm", "sfx", "voice"].includes(asset.asset_type) || asset.asset_type !== ref.asset_type || !asset.mime_type?.startsWith("audio/")) {
+      issues.push(issue("asset_type_mismatch", `Opening audio asset type mismatch: ${ref.asset_id} must be a playable ${ref.asset_type} audio asset, but manifest marks it as ${asset.asset_type} (${asset.mime_type ?? "unknown MIME"}).`, "error", path));
+    }
+  }
+  for (const [index, track] of (script.opening_audio ?? []).entries()) {
+    if (!track || typeof track !== "object" || !track.asset_id) {
+      issues.push(issue("opening_audio_invalid", "Opening audio track must include a non-empty asset_id.", "error", `script.opening_audio.${index}`));
+      continue;
+    }
+    if (!["bgm", "sfx", "voice"].includes(track.asset_type)) {
+      issues.push(issue("opening_audio_asset_type", `Opening audio track type is invalid: ${String(track.asset_type)}.`, "error", `script.opening_audio.${index}.asset_type`));
+    }
+    if (track.playback !== "once" && track.playback !== "loop") {
+      issues.push(issue("opening_audio_playback", `Opening audio playback mode is invalid: ${String(track.playback)}.`, "error", `script.opening_audio.${index}.playback`));
+    }
+  }
   for (const scene of scenesOf(script)) {
     for (const command of scene.commands) {
       if (command.type === "background" && !isValidBackgroundFit(command.background_fit)) {
@@ -416,6 +543,9 @@ export function validateAssetReferences(script: RuntimeScript, manifest: GameMan
       }
       if ((command.type === "dialog" || command.type === "narration") && !isValidBackgroundFit(command.dialog_style?.background_fit)) {
         issues.push(issue("dialog_background_fit", `Dialog background display mode is invalid: ${String(command.dialog_style?.background_fit)}. GameCLI supports stretch, contain, and cover; invalid values fall back to cover.`, "warning", `scene.${scene.scene_id}.dialog_style.background_fit`));
+      }
+      if (command.type === "narration" && !isValidNarrationStyle(command.narration_style)) {
+        issues.push(issue("narration_style", `Narration display style is invalid: ${String(command.narration_style)}. GameCLI supports dialog and centered; invalid values fall back to dialog.`, "warning", `scene.${scene.scene_id}.narration_style`));
       }
       for (const ref of collectCommandAssetReferences(command)) {
         const asset = assets.get(ref.asset_id);

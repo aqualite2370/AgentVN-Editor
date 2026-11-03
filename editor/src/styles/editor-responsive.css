@@ -1,0 +1,426 @@
+/* Editor only: a geometry snapshot preserves the old page at its old width.
+   Do not reflow that same inert page at the new desktop workbench width.
+   The Toolbar releases the marker with its owning snapshot, including
+   cancellation/supersession. Narrow/short and same-size fades remain intact. */
+@media (min-width: 901px) and (min-height: 481px) {
+  .toolbar-popover.workspace-task-panel.advanced.is-layout-mode:not(.toolbar-popover-morph-ghost)
+    .advanced-tab-content.is-leaving[data-geometry-snapshot-owner="true"] {
+    display: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .editor-shell {
+    overflow: hidden;
+  }
+
+  .editor-workspace-body {
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+
+  .editor-workspace {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(300px, 1fr) minmax(0, auto);
+    height: auto;
+    min-height: 100%;
+    overflow: visible;
+  }
+
+  .editor-workspace-body {
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+
+  .editor-workspace > .node-palette {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .editor-workspace > .flow-surface {
+    grid-column: 1;
+    grid-row: 2;
+    min-height: 360px;
+  }
+
+  .editor-workspace > .panel-resizer {
+    display: none;
+  }
+
+  .editor-workspace > .scene-editor-pane {
+    grid-column: 1;
+    grid-row: 3;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  .node-palette {
+    display: flex;
+    flex-direction: row;
+    align-items: stretch;
+    max-height: 104px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scroll-snap-type: x mandatory;
+    scroll-padding-inline: 10px;
+  }
+
+  .node-palette strong {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    display: grid;
+    place-items: center;
+    min-width: 52px;
+    padding: 4px;
+    border-right: 1px solid color-mix(in srgb, var(--line) 62%, transparent);
+    background: var(--panel-bg);
+  }
+
+  .node-palette button {
+    flex: 0 0 156px;
+    min-height: 52px;
+    scroll-snap-align: start;
+  }
+
+  .scene-editor-pane {
+    height: 720px;
+    grid-template-rows: minmax(240px, var(--preview-split-ratio, 40%)) 10px minmax(0, 1fr);
+  }
+
+  .scene-editor-pane > .inspector-panel {
+    min-height: 0;
+  }
+}
+
+@media (max-width: 640px) {
+  .editor-shell {
+    padding: 6px;
+  }
+
+  .editor-workspace-shell {
+    gap: 8px;
+  }
+
+  .editor-workspace {
+    gap: 8px;
+    grid-template-rows: auto minmax(280px, 1fr) minmax(0, auto);
+  }
+
+  .editor-workspace > .flow-surface {
+    min-height: 320px;
+  }
+
+  .editor-workspace > .scene-editor-pane {
+    min-height: 0;
+  }
+
+  .node-palette {
+    padding: 10px;
+  }
+
+  .node-palette button {
+    flex-basis: 140px;
+  }
+}
+/* Compact Options pages share a readable task-panel footprint. The layout
+   designer opts into the wide workbench below, with the editor toolbar's
+   FLIP transition carrying the panel between these two geometries. */
+.toolbar-popover.workspace-task-panel.advanced:not(.is-layout-mode) {
+  top: var(--workspace-task-top, 100px) !important;
+  right: var(--workspace-task-right, 16px) !important;
+  bottom: 16px !important;
+  left: auto !important;
+  width: min(980px, var(--workspace-task-width, calc(100vw - 32px))) !important;
+  height: auto !important;
+  max-height: none !important;
+  padding: 14px !important;
+}
+
+.toolbar-popover.workspace-task-panel.advanced.is-layout-mode {
+  top: var(--workspace-task-top, 100px) !important;
+  right: var(--workspace-wide-task-right, var(--workspace-task-right, 16px)) !important;
+  bottom: 16px !important;
+  left: var(--workspace-task-left, calc(var(--editor-shell-padding) + clamp(196px, 10.5vw, 252px) + var(--editor-gap))) !important;
+  /* Complex desks need the complete editing area, not only the canvas track.
+     Measured bounds keep the node rail visible without reflowing the workspace. */
+  width: var(--workspace-wide-task-width, var(--workspace-task-width, auto)) !important;
+  height: auto !important;
+  max-height: none !important;
+  padding: 8px !important;
+  /* Each workbench pane owns its scrolling; the fixed shell is not a scroller. */
+  overflow: hidden;
+}
+
+/* Header and columns shrink against the actual desk, including desktop DPI
+   scaling. The editor and Runtime keep their existing transition owners. */
+.workspace-task-panel.advanced.is-layout-mode .runtime-layout-designer {
+  min-width: 0;
+}
+.workspace-task-panel.advanced.is-layout-mode .runtime-layout-header {
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+.workspace-task-panel.advanced.is-layout-mode .runtime-layout-header > div:first-child {
+  flex: 0 0 auto;
+}
+.workspace-task-panel.advanced.is-layout-mode .runtime-layout-header h3 {
+  white-space: nowrap;
+}
+.workspace-task-panel.advanced.is-layout-mode .runtime-layout-header .row-actions {
+  flex: 1 1 800px;
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.workspace-task-panel.advanced.is-layout-mode .runtime-layout-grid {
+  min-width: 0;
+  grid-template-columns: minmax(224px, 0.85fr) minmax(360px, 2fr) minmax(286px, 1fr);
+}
+
+.toolbar-popover.advanced .advanced-tools-panel > nav.glass-selection-group .glass-selection-track > button {
+  flex: 0 0 104px !important;
+  width: 104px !important;
+  min-width: 104px !important;
+  height: 44px !important;
+  min-height: 44px !important;
+  padding: 6px 9px !important;
+  box-sizing: border-box;
+  white-space: nowrap;
+}
+
+.toolbar-popover.advanced .advanced-tools-panel > nav.glass-selection-group .glass-selection-track {
+  gap: 8px;
+}
+
+/* Keep the shared Advanced Tools navigation frame geometrically stable while
+   the panel morphs into or out of the layout workbench. */
+.toolbar-popover.advanced .advanced-tools-panel > nav.glass-selection-group {
+  block-size: 80px !important;
+  min-block-size: 80px !important;
+  max-block-size: 80px !important;
+  box-sizing: border-box;
+}
+
+/* Asset controls live in a narrow inspector even on a wide viewport. Let
+   their actions wrap and their grid tracks shrink, rather than clipping
+   reachable controls behind a max-content width. */
+.runtime-layout-inspector .asset-picker-heading,
+.runtime-layout-inspector .asset-picker {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.runtime-layout-inspector .asset-picker-actions {
+  min-width: 0;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+
+/* A short editor window must scroll its workbench, not compress the canvas
+   and property controls into an unusable strip beneath the navigation. */
+@media (min-width: 641px) and (max-height: 480px) {
+  .workspace-task-panel.advanced.is-layout-mode .advanced-tab-scroll {
+    display: block !important;
+    overflow: auto !important;
+  }
+
+  .workspace-task-panel.advanced .runtime-layout-designer {
+    height: auto !important;
+    min-height: 480px !important;
+    grid-template-rows: auto auto minmax(280px, 1fr) auto !important;
+    overflow: visible !important;
+  }
+
+  .workspace-task-panel.advanced .runtime-layout-toolbar {
+    display: flex !important;
+    flex-wrap: wrap;
+  }
+
+  .workspace-task-panel.advanced .runtime-layout-grid {
+    height: 320px !important;
+    min-height: 280px !important;
+    grid-template-columns: minmax(128px, .8fr) minmax(0, 2fr) minmax(170px, 1fr) !important;
+  }
+
+  .workspace-task-panel.advanced .runtime-layout-screen-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workspace-task-panel.advanced .runtime-layout-sidebar.glass-selection-group {
+    overflow: auto !important;
+  }
+
+  .workspace-task-panel.advanced .runtime-layout-component-list {
+    flex: 0 0 auto;
+    max-height: none;
+    overflow: visible;
+    grid-auto-rows: max-content;
+  }
+
+  .workspace-task-panel.advanced .runtime-layout-component-list label {
+    grid-template-columns: 24px minmax(0, 1fr);
+    gap: 4px;
+  }
+
+  .workspace-task-panel.advanced .runtime-layout-component-list input {
+    width: 24px;
+  }
+
+  .workspace-task-panel.advanced .runtime-layout-component-list button {
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 4px;
+  }
+
+  .workspace-task-panel.advanced .runtime-layout-component-heading,
+  .workspace-task-panel.advanced .runtime-layout-add-component-actions {
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+
+  .workspace-task-panel.advanced .runtime-layout-add-component {
+    min-width: 0;
+    max-width: 100%;
+    flex: 1 1 100%;
+  }
+}
+
+/* Options and AI are right-side workbenches, not full-screen replacements.
+   Keep the vertical node palette beside them on compact desktop widths, and
+   place the workbench below the horizontal palette on narrow screens. */
+@media (min-width: 901px) and (max-width: 1300px) {
+  .toolbar-popover.workspace-task-panel:is(.advanced, .assistant):not(.is-layout-mode) {
+    right: var(--workspace-task-right, 16px) !important;
+    left: auto !important;
+    width: min(980px, var(--workspace-task-width, calc(100vw - 340px))) !important;
+  }
+}
+
+@media (max-width: 900px) {
+  .toolbar-popover.workspace-task-panel:is(.advanced, .assistant):not(.is-layout-mode),
+  .toolbar-popover.workspace-task-panel.advanced.is-layout-mode {
+    top: calc(var(--workspace-task-top, 100px) + 90px) !important;
+    right: 6px !important;
+    bottom: 8px !important;
+    left: 6px !important;
+    width: auto !important;
+    height: auto !important;
+    max-height: none !important;
+  }
+}
+
+/* In short landscape windows keep the global workspace navigation above a
+   compact right-side workbench, while the node tools retain their own left rail. */
+@media (min-width: 641px) and (max-width: 900px) and (max-height: 480px) {
+  .editor-workspace-body {
+    overflow: hidden;
+  }
+
+  .editor-workspace {
+    grid-template-columns: 116px minmax(180px, 1fr) 8px minmax(220px, 36vw);
+    grid-template-rows: minmax(0, 1fr);
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .editor-workspace > .node-palette {
+    grid-column: 1;
+    grid-row: 1;
+    flex-direction: column;
+    min-height: 0;
+    max-height: none;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  .editor-workspace > .flow-surface {
+    grid-column: 2;
+    grid-row: 1;
+    min-height: 0;
+  }
+
+  .editor-workspace > .panel-resizer {
+    display: block;
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .editor-workspace > .scene-editor-pane {
+    grid-column: 4;
+    grid-row: 1;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .toolbar-popover.workspace-task-panel:is(.advanced, .assistant):not(.is-layout-mode),
+  .toolbar-popover.workspace-task-panel.advanced.is-layout-mode {
+    top: var(--workspace-task-top, 100px) !important;
+    right: 8px !important;
+    bottom: 8px !important;
+    left: calc(var(--editor-shell-padding) + 116px + var(--editor-gap)) !important;
+    width: auto !important;
+    height: auto !important;
+    max-height: none !important;
+  }
+
+  /* The compact pages remain below the global workspace navigation, while
+     the layout workbench needs the full short-landscape height to expose its
+     three-column editor. Keep the left node rail in the original grid track;
+     the height change is the real FLIP/morph geometry between the two modes. */
+  .toolbar-popover.workspace-task-panel.advanced.is-layout-mode {
+    top: 8px !important;
+    bottom: 8px !important;
+  }
+
+  .toolbar-popover.advanced .advanced-tools-panel > nav.glass-selection-group {
+    block-size: 52px !important;
+    min-block-size: 52px !important;
+    max-block-size: 52px !important;
+    padding-block: 0 !important;
+  }
+
+  .toolbar-popover.advanced .advanced-tools-panel > nav.glass-selection-group > .glass-selection-viewport {
+    padding-block: 4px !important;
+  }
+}
+
+/* Narrow workbenches keep navigation fixed and scroll their content beneath
+   the original horizontal node rail. No viewport-sized intrinsic min-height. */
+@media (max-width: 640px) {
+  .toolbar-popover.workspace-task-panel.advanced.is-layout-mode {
+    inline-size: auto;
+    max-inline-size: none;
+  }
+  .toolbar-popover.workspace-task-panel.advanced.is-layout-mode > .advanced-tools-panel {
+    min-height: 0;
+    height: 100%;
+    overflow: hidden;
+  }
+  .workspace-task-panel.advanced.is-layout-mode .advanced-tab-scroll {
+    display: block;
+    height: 100%;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+  .workspace-task-panel.advanced.is-layout-mode .advanced-tab-viewport,
+  .workspace-task-panel.advanced.is-layout-mode .advanced-tab-content {
+    min-height: 0;
+    height: 100%;
+    overflow: hidden;
+  }
+  .workspace-task-panel.advanced .runtime-layout-header .runtime-layout-type-control {
+    grid-column: 1 / -1;
+    width: 100%;
+    min-width: 0;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+  .workspace-task-panel.advanced .runtime-layout-header .runtime-layout-type-description {
+    width: 100%;
+    min-height: 28px;
+  }
+}

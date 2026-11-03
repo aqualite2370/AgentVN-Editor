@@ -1,8 +1,13 @@
 import type { EditorEdge, EditorNode } from "../types/nodes";
 import type { GameCommand } from "../types/commands";
+import type { AssetRef } from "../types/assets";
 import type { MemoryMode } from "../types/memory";
 import type { ProviderSelectionPayload } from "../api/types";
 import { packPrioritizedContext, type ContextBudgetReport, type PrioritizedContextItem } from "./contextBudget";
+import {
+  buildGenerationAssetContextText,
+  buildGenerationAssetSummaryText,
+} from "./generatedAssetReferences";
 
 const MAX_SCENES = 80;
 const MAX_TEXT_LENGTH = 220;
@@ -195,6 +200,7 @@ function buildEditorGenerationContextItems(options: {
   contextNodeId: string;
   nodes: EditorNode[];
   edges: EditorEdge[];
+  assetManifest?: AssetRef[];
   memoryMode: MemoryMode;
 }): PrioritizedContextItem[] {
   const { currentNodeId, contextNodeId, nodes, edges, memoryMode } = options;
@@ -253,6 +259,18 @@ function buildEditorGenerationContextItems(options: {
       text: fullNodeContext(contextNode),
       summary: sceneSummary(contextNode),
       tags: ["context-node", contextNode.data.nodeKind],
+    });
+  }
+
+  if (options.assetManifest) {
+    const assetContextText = buildGenerationAssetContextText(options.assetManifest);
+    items.push({
+      id: "visual-asset-whitelist",
+      priority: "P1",
+      title: "Available project visual assets",
+      text: assetContextText,
+      summary: buildGenerationAssetSummaryText(options.assetManifest),
+      tags: ["assets", "visual-assets", "strict-whitelist"],
     });
   }
 
@@ -340,6 +358,7 @@ export function buildEditorGenerationContext(options: {
   contextNodeId: string;
   nodes: EditorNode[];
   edges: EditorEdge[];
+  assetManifest?: AssetRef[];
   memoryMode: MemoryMode;
   providerSelection?: ProviderSelectionPayload | null;
 }): string {
@@ -351,6 +370,7 @@ export function buildEditorGenerationContextPackage(options: {
   contextNodeId: string;
   nodes: EditorNode[];
   edges: EditorEdge[];
+  assetManifest?: AssetRef[];
   memoryMode: MemoryMode;
   providerSelection?: ProviderSelectionPayload | null;
 }): { context: string; report: ContextBudgetReport } {

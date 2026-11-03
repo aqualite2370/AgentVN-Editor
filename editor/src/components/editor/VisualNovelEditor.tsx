@@ -1,4 +1,4 @@
-import { Background, BaseEdge, ConnectionLineType, Controls, ReactFlow, ReactFlowProvider, useReactFlow, type DefaultEdgeOptions, type EdgeProps, type Viewport } from "@xyflow/react";
+import { Background, BaseEdge, ConnectionLineType, Controls, ReactFlow, ReactFlowProvider, useNodesInitialized, useReactFlow, type DefaultEdgeOptions, type EdgeProps, type Viewport } from "@xyflow/react";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { backendClient } from "../../api/backendClient";
 import type { SharedEditorState } from "../../api/types";
@@ -21,6 +21,10 @@ import { InspectorPanel } from "./InspectorPanel";
 import { NodePalette } from "./NodePalette";
 import { PreviewPanel } from "./PreviewPanel";
 import { reportFrontendError } from "../../../../shared/logging/frontendErrorLogger";
+import { EditorWorkspace } from "../workspace/EditorWorkspace";
+import { openWorkspaceSurface, requestBack, requestGeneration, workspaceSurfaceChangedEventName, type WorkspaceController, type SaveResult, type WorkspaceSurface } from "../workspace/workspaceContracts";
+import { WorkspaceStatusBar } from "../workspace/WorkspaceStatusBar";
+import { AssistantProjectCreationLockGate } from "../assistant/AssistantProjectCreationLockGate";
 
 const dynamicFlowNodeClasses = new Set(["is-new-node", "is-new-ai-node", "is-decluttered-node"]);
 const orthogonalCornerRadius = 12;
@@ -62,6 +66,65 @@ const storyMiniMapNodeColors: Record<string, string> = {
   animation: "#c06b4b",
   end: "#9c3d52",
 };
+
+function EditorPrerenderReadiness() {
+  const nodesInitialized = useNodesInitialized();
+  const nodeCount = useEditorStore((state) => state.nodes.length);
+
+  useEffect(() => {
+    if (nodeCount > 0 && !nodesInitialized) return;
+    const surface = document.querySelector<HTMLElement>(".flow-surface");
+    if (!surface) return;
+
+    let active = true;
+    let frame = 0;
+    let previousGeometry: string | undefined;
+    const verifyCommittedGeometry = () => {
+      if (!active) return;
+      const surfaceRect = surface.getBoundingClientRect();
+      const nodes = [...surface.querySelectorAll<HTMLElement>(".react-flow__node")]
+        .filter((node) => node.getClientRects().length > 0);
+      const nodesHaveGeometry = nodes.every((node) => {
+        const rect = node.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      });
+      if (surfaceRect.width <= 0 || surfaceRect.height <= 0 || !nodesHaveGeometry) {
+        previousGeometry = undefined;
+        frame = window.requestAnimationFrame(verifyCommittedGeometry);
+        return;
+      }
+
+      const geometry = [
+        Math.round(surfaceRect.width),
+        Math.round(surfaceRect.height),
+        ...nodes.flatMap((node) => {
+          const rect = node.getBoundingClientRect();
+          return [
+            node.dataset.id,
+            Math.round(rect.width),
+            Math.round(rect.height),
+          ];
+        }),
+      ].join(":");
+      if (geometry !== previousGeometry) {
+        previousGeometry = geometry;
+        frame = window.requestAnimationFrame(verifyCommittedGeometry);
+        return;
+      }
+
+      surface.dataset.editorPrerenderReady = "true";
+    };
+
+    frame = window.requestAnimationFrame(verifyCommittedGeometry);
+    return () => {
+      active = false;
+      window.cancelAnimationFrame(frame);
+      delete surface.dataset.editorPrerenderReady;
+    };
+  }, [nodeCount, nodesInitialized]);
+
+  return null;
+}
 
 function stableNodeClassName(value?: string): string | undefined {
   const classes = value?.split(/\s+/).filter((item) => item && !dynamicFlowNodeClasses.has(item)) ?? [];
@@ -125,6 +188,7 @@ function shouldApplyPersistedAssetManifest(current: AssetRef[], incoming: AssetR
 function applyPersistedProjectMetadata(state: SharedEditorState): void {
   const incomingAssets = state.project_metadata.assetManifest;
   const current = useProjectStore.getState();
+  if (state.project_metadata.projectId && state.project_metadata.projectId !== current.projectId) return;
   const shouldApplyAssets = Array.isArray(incomingAssets) && shouldApplyPersistedAssetManifest(current.assetManifest, incomingAssets as AssetRef[]);
   const shouldApplySettings = Boolean(state.project_metadata.settings) && countEmbeddedAssetPayloads(current.settings).count > 0;
   if (shouldApplyAssets || shouldApplySettings) {
@@ -622,16 +686,34 @@ function DistributionMiniMap({
   );
 }
 
-export function VisualNovelEditor({ onReturnHome }: { onReturnHome: () => void }) {
+export function VisualNovelEditor({
+  onReturnHome,
+  deferRuntimePreview = false,
+}: {
+  onReturnHome: () => void;
+  deferRuntimePreview?: boolean;
+}) {
   const [isDeclutteringNodes, setIsDeclutteringNodes] = useState(false);
   const [miniMapReady, setMiniMapReady] = useState(true);
+  const [viewportRevision, setViewportRevision] = useState(0);
   const [inspectorWidth, setInspectorWidth] = useState(() => {
-    const saved = window.localStorage.getItem("agentvn.inspectorWidth");
-    return saved ? Number(saved) : 440;
+    const saved = Number(window.localStorage.getItem("agentvn.inspectorWidth"));
+    return Number.isFinite(saved) && saved >= 320 ? Math.min(1120, saved) : 440;
   });
   const [previewCollapsed, setPreviewCollapsed] = useState(false);
+  const [activeSurface, setActiveSurface] = useState<WorkspaceSurface>("edit");
   const [previewResizing, setPreviewResizing] = useState(false);
   const [previewSplitRatio, setPreviewSplitRatio] = useState(loadPreviewSplitRatio);
+  useEffect(() => {
+    const handleSurfaceChanged = (event: Event) => {
+      const surface = (event as CustomEvent<{ surface?: WorkspaceSurface }>).detail?.surface;
+      if (surface) {
+        setActiveSurface(surface);
+      }
+    };
+    window.addEventListener(workspaceSurfaceChangedEventName, handleSurfaceChanged);
+    return () => window.removeEventListener(workspaceSurfaceChangedEventName, handleSurfaceChanged);
+  }, []);
   const nodes = useEditorStore((state) => state.nodes);
   const edges = useEditorStore((state) => state.edges);
   const selectedNodeId = useEditorStore((state) => state.selectedNodeId);
@@ -709,8 +791,9 @@ export function VisualNovelEditor({ onReturnHome }: { onReturnHome: () => void }
     [edges, nodes],
   );
   const flowSurfaceRef = useRef<HTMLElement>(null);
+  const shellRef = useRef<HTMLDivElement>(null);
   const previewStackRef = useRef<HTMLElement>(null);
-  const previewKeyboardResizeTimerRef = useRef<number>();
+  const previewKeyboardResizeTimerRef = useRef<number | undefined>(undefined);
   const reactFlowInstanceRef = useRef<CanvasViewportController | null>(null);
   const nodeDragRef = useRef({ dragging: false, endedAt: 0 });
   const flowNodes = useMemo(
@@ -731,6 +814,7 @@ export function VisualNovelEditor({ onReturnHome }: { onReturnHome: () => void }
     [nodes, recentNodeEffects, selectedNodeId]
   );
   const project = useProjectStore();
+  const saveRequestIdRef = useRef(0);
   const editorAppearance = project.settings.editorAppearance;
   const canvasBackgroundImage = editorAppearance.canvasBackgroundImage;
   const canvasBackgroundFit = editorAppearance.canvasBackgroundFit ?? "cover";
@@ -757,6 +841,52 @@ export function VisualNovelEditor({ onReturnHome }: { onReturnHome: () => void }
       opacity: canvasBackgroundOpacity,
     };
   }, [canvasBackgroundFit, canvasBackgroundImage?.dataUrl, canvasBackgroundImage?.url, canvasBackgroundOpacity]);
+
+  const requestSave = useCallback(async (): Promise<SaveResult> => {
+    const requestId = ++saveRequestIdRef.current;
+    const state = useEditorStore.getState();
+    const currentProject = useProjectStore.getState();
+    try {
+      const saved = await backendClient.saveProjectState({
+        project_graph: {
+          nodes: state.nodes,
+          edges: state.edges,
+          viewport: state.viewport,
+          memoryMode: state.memoryMode,
+        },
+        project_metadata: {
+          projectId: currentProject.projectId,
+          title: currentProject.title,
+          author: currentProject.author,
+          createdAt: currentProject.createdAt,
+          updatedAt: new Date().toISOString(),
+          assetManifest: currentProject.assetManifest,
+          settings: { ...currentProject.settings },
+        },
+      });
+      if (requestId === saveRequestIdRef.current) {
+        applyPersistedProjectMetadata(saved);
+        const latest = useEditorStore.getState();
+        if (
+          latest.nodes === state.nodes &&
+          latest.edges === state.edges &&
+          latest.viewport === state.viewport
+        ) {
+          useEditorStore.setState({ dirty: false });
+        }
+      }
+      return { ok: true, message: "已保存。" };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : "保存失败。" };
+    }
+  }, []);
+
+  const workspaceController = useMemo<WorkspaceController>(() => ({
+    openSurface: openWorkspaceSurface,
+    requestBack,
+    requestSave,
+    requestGeneration,
+  }), [requestSave]);
 
   useEffect(() => {
     let timeoutId: number | undefined;
@@ -794,7 +924,9 @@ export function VisualNovelEditor({ onReturnHome }: { onReturnHome: () => void }
         return;
       }
       showMiniMap();
-    }, 900);
+    // Do not compete with the route import's first render. The minimap is
+    // auxiliary UI and can appear after the graph has settled.
+    }, 1800);
     return () => {
       if (timeoutId !== undefined) window.clearTimeout(timeoutId);
       if (idleId !== undefined) {
@@ -855,21 +987,40 @@ export function VisualNovelEditor({ onReturnHome }: { onReturnHome: () => void }
 
   const resizeInspector = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
+    const handle = event.currentTarget;
+    const pointerId = event.pointerId;
+    handle.setPointerCapture(pointerId);
     const startX = event.clientX;
-    const startWidth = inspectorWidth;
+    const startWidth = previewStackRef.current?.getBoundingClientRect().width ?? inspectorWidth;
+    const maxWidth = Math.min(1120, (handle.parentElement?.clientWidth ?? window.innerWidth) * 0.6);
     const onMove = (moveEvent: PointerEvent) => {
-      const nextWidth = Math.min(1120, Math.max(360, startWidth + startX - moveEvent.clientX));
+      if (moveEvent.pointerId !== pointerId) return;
+      const nextWidth = Math.min(maxWidth, Math.max(320, startWidth + startX - moveEvent.clientX));
       setInspectorWidth(nextWidth);
       window.localStorage.setItem("agentvn.inspectorWidth", String(nextWidth));
     };
-    const onUp = () => {
+    const cleanup = () => {
       document.removeEventListener("pointermove", onMove);
       document.removeEventListener("pointerup", onUp);
+      document.removeEventListener("pointercancel", onUp);
+      handle.removeEventListener("lostpointercapture", onLostPointerCapture);
       document.body.classList.remove("is-resizing-panel");
+      setPreviewResizing(false);
+    };
+    const onUp = (upEvent: PointerEvent) => {
+      if (upEvent.pointerId !== pointerId) return;
+      cleanup();
+    };
+    const onLostPointerCapture = (lostEvent: PointerEvent) => {
+      if (lostEvent.pointerId !== pointerId) return;
+      cleanup();
     };
     document.body.classList.add("is-resizing-panel");
+    setPreviewResizing(true);
     document.addEventListener("pointermove", onMove);
     document.addEventListener("pointerup", onUp);
+    document.addEventListener("pointercancel", onUp);
+    handle.addEventListener("lostpointercapture", onLostPointerCapture);
   }, [inspectorWidth]);
 
   const resizePreview = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
@@ -939,6 +1090,51 @@ export function VisualNovelEditor({ onReturnHome }: { onReturnHome: () => void }
   }, [previewCollapsed]);
 
   useEffect(() => {
+    let frameId: number | undefined;
+    let timeoutId: number | undefined;
+    let active = true;
+    const recoverViewport = () => {
+      if (!active || document.visibilityState === "hidden") return;
+      if (frameId !== undefined) window.cancelAnimationFrame(frameId);
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+      frameId = window.requestAnimationFrame(() => {
+        frameId = window.requestAnimationFrame(() => {
+          if (!active) return;
+          setViewportRevision((current) => current + 1);
+          frameId = undefined;
+          const surface = flowSurfaceRef.current;
+          const rect = surface?.getBoundingClientRect();
+          if (!rect || rect.width <= 0 || rect.height <= 0) {
+            timeoutId = window.setTimeout(() => {
+              if (!active) return;
+              setViewportRevision((current) => current + 1);
+              timeoutId = undefined;
+            }, 180);
+          }
+        });
+      });
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") recoverViewport();
+    };
+    const onPageShow = () => recoverViewport();
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", recoverViewport);
+    window.addEventListener("pageshow", onPageShow);
+    window.addEventListener("resize", recoverViewport);
+    recoverViewport();
+    return () => {
+      active = false;
+      if (frameId !== undefined) window.cancelAnimationFrame(frameId);
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", recoverViewport);
+      window.removeEventListener("pageshow", onPageShow);
+      window.removeEventListener("resize", recoverViewport);
+    };
+  }, []);
+
+  useEffect(() => {
     const workspace = previewStackRef.current;
     if (!workspace) return;
     const clampToWorkspace = () => {
@@ -949,7 +1145,7 @@ export function VisualNovelEditor({ onReturnHome }: { onReturnHome: () => void }
     const observer = new ResizeObserver(clampToWorkspace);
     observer.observe(workspace);
     return () => observer.disconnect();
-  }, []);
+  }, [viewportRevision]);
 
   useEffect(() => {
     return;
@@ -989,27 +1185,45 @@ export function VisualNovelEditor({ onReturnHome }: { onReturnHome: () => void }
     const syncActualViewport = () => {
       const viewportNode = surface.querySelector<HTMLElement>(".react-flow__viewport");
       const transform = viewportNode ? window.getComputedStyle(viewportNode).transform : "";
-      if (!transform || transform === "none") return;
+      if (!transform || transform === "none") return false;
       const matrix = new DOMMatrixReadOnly(transform);
-      if (!Number.isFinite(matrix.a) || matrix.a <= 0) return;
-      setViewport({ x: matrix.e, y: matrix.f, zoom: matrix.a });
+      if (!Number.isFinite(matrix.a) || matrix.a <= 0) return false;
+      const current = useEditorStore.getState().viewport;
+      const changed = Math.abs(current.x - matrix.e) > 0.001
+        || Math.abs(current.y - matrix.f) > 0.001
+        || Math.abs(current.zoom - matrix.a) > 0.001;
+      if (changed) setViewport({ x: matrix.e, y: matrix.f, zoom: matrix.a });
+      return changed;
     };
     const measure = () => {
       const rect = surface.getBoundingClientRect();
-      setFlowSurfaceSize({ width: Math.round(rect.width), height: Math.round(rect.height) });
-      syncActualViewport();
+      const width = Math.round(rect.width);
+      const height = Math.round(rect.height);
+      const currentSize = useEditorStore.getState().flowSurfaceSize;
+      if (currentSize.width !== width || currentSize.height !== height) {
+        setFlowSurfaceSize({ width, height });
+      }
+      if (width > 0 && height > 0) {
+        syncActualViewport();
+      }
+      return width > 0 && height > 0;
     };
-    measure();
-    const timeoutId = window.setTimeout(measure, 250);
-    const observer = new ResizeObserver(measure);
+    const scheduleMeasure = () => {
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(measure);
+      });
+    };
+    const hasInitialMeasurement = measure();
+    const timeoutId = hasInitialMeasurement ? undefined : window.setTimeout(measure, 250);
+    const observer = new ResizeObserver(scheduleMeasure);
     observer.observe(surface);
-    window.addEventListener("resize", measure);
+    window.addEventListener("resize", scheduleMeasure);
     return () => {
-      window.clearTimeout(timeoutId);
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
       observer.disconnect();
-      window.removeEventListener("resize", measure);
+      window.removeEventListener("resize", scheduleMeasure);
     };
-  }, [setFlowSurfaceSize, setViewport]);
+  }, [setFlowSurfaceSize, setViewport, viewportRevision]);
 
   useEffect(() => {
     const current = useEditorStore.getState();
@@ -1017,25 +1231,37 @@ export function VisualNovelEditor({ onReturnHome }: { onReturnHome: () => void }
     const saveTimer = window.setTimeout(() => {
       const next = useEditorStore.getState();
       if (!next.dirty) return;
-      void backendClient.saveProjectState({
-        project_graph: {
-          nodes: next.nodes,
-          edges: next.edges,
-          viewport: next.viewport,
-          memoryMode: next.memoryMode,
-        },
-        project_metadata: {
-          projectId: project.projectId,
-          title: project.title,
-          author: project.author,
-          createdAt: project.createdAt,
-          updatedAt: new Date().toISOString(),
-          assetManifest: project.assetManifest,
-          settings: { ...project.settings },
-        },
+      let submittedGraph: Pick<typeof next, "nodes" | "edges" | "viewport"> | undefined;
+      void backendClient.saveProjectState(() => {
+        const latestProject = useProjectStore.getState();
+        if (latestProject.projectId !== project.projectId) return {};
+        const latestGraph = useEditorStore.getState();
+        submittedGraph = latestGraph;
+        return {
+          project_graph: {
+            nodes: latestGraph.nodes,
+            edges: latestGraph.edges,
+            viewport: latestGraph.viewport,
+            memoryMode: latestGraph.memoryMode,
+          },
+          project_metadata: {
+            projectId: latestProject.projectId,
+            title: latestProject.title,
+            author: latestProject.author,
+            createdAt: latestProject.createdAt,
+            updatedAt: new Date().toISOString(),
+            assetManifest: latestProject.assetManifest,
+            settings: { ...latestProject.settings },
+          },
+        };
       }).then((state) => {
+        if (useProjectStore.getState().projectId !== project.projectId) return;
         applyPersistedProjectMetadata(state);
-        useEditorStore.setState({ dirty: false });
+        const latest = useEditorStore.getState();
+        if (submittedGraph && latest.nodes === submittedGraph.nodes
+          && latest.edges === submittedGraph.edges && latest.viewport === submittedGraph.viewport) {
+          useEditorStore.setState({ dirty: false });
+        }
       }).catch((error) => {
         reportFrontendError("editor.project", error, {
           operation: "autosave-graph",
@@ -1048,16 +1274,20 @@ export function VisualNovelEditor({ onReturnHome }: { onReturnHome: () => void }
 
   useEffect(() => {
     const saveTimer = window.setTimeout(() => {
-      void backendClient.saveProjectState({
-        project_metadata: {
-          projectId: project.projectId,
-          title: project.title,
-          author: project.author,
-          createdAt: project.createdAt,
-          updatedAt: new Date().toISOString(),
-          assetManifest: project.assetManifest,
-          settings: { ...project.settings },
-        },
+      void backendClient.saveProjectState(() => {
+        const latestProject = useProjectStore.getState();
+        if (latestProject.projectId !== project.projectId) return {};
+        return {
+          project_metadata: {
+            projectId: latestProject.projectId,
+            title: latestProject.title,
+            author: latestProject.author,
+            createdAt: latestProject.createdAt,
+            updatedAt: new Date().toISOString(),
+            assetManifest: latestProject.assetManifest,
+            settings: { ...latestProject.settings },
+          },
+        };
       }).then((state) => {
         applyPersistedProjectMetadata(state);
       }).catch((error) => {
@@ -1153,24 +1383,39 @@ export function VisualNovelEditor({ onReturnHome }: { onReturnHome: () => void }
     };
   }, [nodes.length]);
 
+
   return (
     <ReactFlowProvider>
-      <div className={`editor-shell${shellBackgroundLayerStyle ? " has-editor-canvas-background" : ""}`}>
-        {shellBackgroundLayerStyle && (
-          <div
-            className="editor-canvas-background-layer is-shell"
-            aria-hidden="true"
-            style={shellBackgroundLayerStyle}
-          />
-        )}
-        <EditorToolbar onReturnHome={onReturnHome} />
-        <main
-          className="editor-workspace"
-          style={{
-            "--inspector-width": `${inspectorWidth}px`,
-            "--preview-split-ratio": `${previewSplitRatio * 100}%`,
-          } as CSSProperties}
+      <EditorPrerenderReadiness />
+      <AssistantProjectCreationLockGate
+        projectId={project.projectId}
+        projectTitle={project.title}
+        onReturnHome={onReturnHome}
+      >
+        <div
+          ref={shellRef}
+          className={`editor-shell${shellBackgroundLayerStyle ? " has-editor-canvas-background" : ""}`}
+          data-viewport-revision={viewportRevision}
         >
+          {shellBackgroundLayerStyle && (
+            <div
+              className="editor-canvas-background-layer is-shell"
+              aria-hidden="true"
+              style={shellBackgroundLayerStyle}
+            />
+          )}
+          <EditorWorkspace
+            toolbar={<EditorToolbar onReturnHome={onReturnHome} />}
+            statusBar={<WorkspaceStatusBar />}
+            controller={workspaceController}
+          >
+            <main
+              className="editor-workspace"
+              style={{
+                "--inspector-width": `${inspectorWidth}px`,
+                "--preview-split-ratio": `${previewSplitRatio * 100}%`,
+              } as CSSProperties}
+            >
           <NodePalette />
           <section
             className={`flow-surface${isDeclutteringNodes ? " is-decluttering-nodes" : ""}`}
@@ -1211,6 +1456,7 @@ export function VisualNovelEditor({ onReturnHome }: { onReturnHome: () => void }
                 selectNode(node.id);
                 const drag = nodeDragRef.current;
                 if (drag.dragging || Date.now() - drag.endedAt < 220) return;
+                if (node.data.nodeKind === "scene") setPreviewCollapsed(false);
                 window.dispatchEvent(new CustomEvent("agentvn:node-card-click", { detail: { nodeId: node.id } }));
               }}
               onPaneClick={() => {
@@ -1255,31 +1501,33 @@ export function VisualNovelEditor({ onReturnHome }: { onReturnHome: () => void }
           />
           <section
             ref={previewStackRef}
-            className={`scene-editor-pane${previewCollapsed ? " is-preview-collapsed" : ""}`}
+            className={`scene-editor-pane${previewCollapsed || activeSurface !== "edit" ? " is-preview-collapsed" : ""}`}
           >
             <PreviewPanel
-              collapsed={previewCollapsed}
+              collapsed={previewCollapsed || activeSurface !== "edit"}
               resizing={previewResizing}
+              deferRuntimeMount={deferRuntimePreview}
               onCollapsedChange={setPreviewCollapsed}
             />
             <div
               className="preview-splitter"
               role="separator"
-              tabIndex={previewCollapsed ? -1 : 0}
-              aria-label="调整场景预览区和场景编辑区高度"
+              tabIndex={0}
+              aria-label="调整节点预览高度"
               aria-orientation="horizontal"
               aria-valuemin={35}
               aria-valuemax={65}
               aria-valuenow={Math.round(previewSplitRatio * 100)}
-              title="拖动或使用 ArrowUp / ArrowDown 调整场景预览区高度"
-              data-testid="preview-splitter"
+              data-help-key="canvas.resizer"
               onPointerDown={resizePreview}
               onKeyDown={resizePreviewWithKeyboard}
             />
             <InspectorPanel />
           </section>
-        </main>
-      </div>
+            </main>
+          </EditorWorkspace>
+        </div>
+      </AssistantProjectCreationLockGate>
     </ReactFlowProvider>
   );
 }

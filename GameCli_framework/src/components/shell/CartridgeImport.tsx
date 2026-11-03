@@ -41,7 +41,7 @@ export function CartridgeImport() {
     <section className="cartridge-import" aria-label="导入卡带">
       <div>
         <strong>导入新卡带</strong>
-        <span>选择 `.vncart` 后会先校验脚本、资源和元数据，再加入本地卡带库。</span>
+        <span>选择 `.vncart` 文件，检查通过后会加入作品库。</span>
       </div>
       <input
         ref={inputRef}

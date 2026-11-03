@@ -8,6 +8,7 @@ from app.models.common import MemoryMode, StrictBaseModel
 class HealthResponse(StrictBaseModel):
     status: str = "ok"
     service: str = "agentvn-backend"
+    project_container_protocol: int = 2
 
 
 class ApplyMemoryUpdateResponse(StrictBaseModel):

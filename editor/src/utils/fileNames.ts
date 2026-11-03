@@ -27,7 +27,3 @@ export function formatLocalDateTimeForFile(date = new Date()): string {
 export function buildProjectExportFileName(projectTitle: string, date = new Date()): string {
   return `${sanitizeFileNamePart(projectTitle)}_${formatLocalDateTimeForFile(date)}.vnproj`;
 }
-
-export function buildRuntimeScriptFileName(projectTitle: string, date = new Date()): string {
-  return `${sanitizeFileNamePart(projectTitle)}_${formatLocalDateTimeForFile(date)}_script.json`;
-}

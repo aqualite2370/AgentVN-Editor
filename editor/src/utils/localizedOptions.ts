@@ -63,7 +63,6 @@ export const stateOperationOptions: Array<{ value: StateOperation; label: string
 export const bgmActionOptions: Array<{ value: BgmAction; label: string }> = [
   { value: "play", label: "播放" },
   { value: "stop", label: "停止" },
-  { value: "fade", label: "淡入淡出" },
 ];
 
 export const cameraActionOptions = [

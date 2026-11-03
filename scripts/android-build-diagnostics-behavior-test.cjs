@@ -1,0 +1,346 @@
+const assert = require("node:assert/strict");
+const childProcess = require("node:child_process");
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+
+const root = path.resolve(__dirname, "..");
+const helper = path.join(root, "scripts", "capture-android-build-diagnostics.ps1");
+const generatedProjectHelper = path.join(root, "scripts", "ensure-android-generated-project.cjs");
+
+function writeUtf8(filePath, contents) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, contents, "utf8");
+}
+
+function runCapture(runtimeRoot, diagnosticsDir, releaseIdentity, phase) {
+  const releaseIdentityBase64 = Buffer.from(JSON.stringify(releaseIdentity), "utf8").toString("base64");
+  return childProcess.spawnSync(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      helper,
+      "-RuntimeRoot",
+      runtimeRoot,
+      "-DiagnosticsDir",
+      diagnosticsDir,
+      "-ReleaseIdentityBase64",
+      releaseIdentityBase64,
+      "-Phase",
+      phase,
+    ],
+    {
+      cwd: root,
+      encoding: "utf8",
+      windowsHide: true,
+    },
+  );
+}
+
+function readStrictUtf8Json(filePath) {
+  const bytes = fs.readFileSync(filePath);
+  assert.notDeepEqual([...bytes.subarray(0, 2)], [0xff, 0xfe], "report must not be UTF-16LE");
+  assert.notDeepEqual([...bytes.subarray(0, 3)], [0xef, 0xbb, 0xbf], "report must not contain a UTF-8 BOM");
+  const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  assert.equal(text.includes("\uFFFD"), false, "report must not contain replacement characters");
+  return JSON.parse(text);
+}
+
+function runGeneratedProjectRepair(runtimeRoot, diagnosticsDir, initScript, applicationId) {
+  const initArgs = Buffer.from(
+    JSON.stringify([initScript, runtimeRoot, applicationId]),
+    "utf8",
+  ).toString("base64");
+  return childProcess.spawnSync(
+    process.execPath,
+    [
+      generatedProjectHelper,
+      "--runtime-root",
+      runtimeRoot,
+      "--report",
+      path.join(diagnosticsDir, "android-generated-project-health.json"),
+      "--init-command",
+      process.execPath,
+      "--init-args-base64",
+      initArgs,
+    ],
+    {
+      cwd: root,
+      encoding: "utf8",
+      windowsHide: true,
+    },
+  );
+}
+
+function main() {
+  assert.equal(fs.existsSync(helper), true, `missing Android diagnostics helper: ${helper}`);
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "agentvn-android-diagnostics-"));
+  const runtimeRoot = path.join(fixtureRoot, "构建 工作区", "GameCli_framework");
+  const diagnosticsDir = path.join(fixtureRoot, "诊断 输出");
+  const manifestPath = path.join(
+    runtimeRoot,
+    "src-tauri",
+    "gen",
+    "android",
+    "app",
+    "src",
+    "main",
+    "AndroidManifest.xml",
+  );
+  const stringsPath = path.join(
+    runtimeRoot,
+    "src-tauri",
+    "gen",
+    "android",
+    "app",
+    "src",
+    "main",
+    "res",
+    "values",
+    "strings.xml",
+  );
+  const gradlePath = path.join(runtimeRoot, "src-tauri", "gen", "android", "app", "build.gradle.kts");
+  const activityPath = path.join(
+    runtimeRoot,
+    "src-tauri",
+    "gen",
+    "android",
+    "app",
+    "src",
+    "main",
+    "java",
+    "com",
+    "agentvn",
+    "game",
+    "projectunicode",
+    "MainActivity.kt",
+  );
+  const tauriActivityPath = path.join(
+    runtimeRoot,
+    "src-tauri",
+    "gen",
+    "android",
+    "app",
+    "src",
+    "main",
+    "java",
+    "com",
+    "agentvn",
+    "game",
+    "projectunicode",
+    "generated",
+    "TauriActivity.kt",
+  );
+  const propertiesPath = path.join(runtimeRoot, "src-tauri", "gen", "android", "app", "tauri.properties");
+  const androidRoot = path.join(runtimeRoot, "src-tauri", "gen", "android");
+  const tauriConfigPath = path.join(runtimeRoot, "src-tauri", "tauri.conf.json");
+  const releaseIdentity = {
+    schemaVersion: 1,
+    title: "隐忍的成长",
+    gameId: "project_unicode",
+    versionName: "0.1.0",
+    versionCode: 1000,
+    androidApplicationId: "com.agentvn.game.projectunicode",
+  };
+
+  try {
+    writeUtf8(path.join(androidRoot, "settings.gradle"), `apply from: "tauri.settings.gradle"\n`);
+    writeUtf8(path.join(androidRoot, "tauri.settings.gradle"), `include(":app")\n`);
+    writeUtf8(path.join(androidRoot, "build.gradle.kts"), `plugins {}\n`);
+    writeUtf8(
+      manifestPath,
+      `<?xml version="1.0" encoding="utf-8"?>\n<manifest xmlns:android="http://schemas.android.com/apk/res/android"><application android:label="@string/app_name" /></manifest>\n`,
+    );
+    writeUtf8(
+      stringsPath,
+      `<?xml version="1.0" encoding="utf-8"?>\n<resources><string name="app_name">隐忍的成长</string></resources>\n`,
+    );
+    writeUtf8(gradlePath, `android { namespace = "com.agentvn.game.projectunicode" }\n`);
+    writeUtf8(path.join(androidRoot, "app", "tauri.build.gradle.kts"), `// generated by Tauri\n`);
+    writeUtf8(
+      activityPath,
+      `package com.agentvn.game.projectunicode\n\nclass MainActivity : TauriActivity()\n`,
+    );
+    writeUtf8(
+      tauriActivityPath,
+      `package com.agentvn.game.projectunicode.generated\n\nimport app.tauri.plugin.PluginManager\nabstract class TauriActivity { fun getPluginManager(): PluginManager { return PluginManager } }\n`,
+    );
+    writeUtf8(propertiesPath, "tauri.android.versionName=0.1.0\ntauri.android.versionCode=1000\n");
+    writeUtf8(path.join(androidRoot, "gradlew"), "#!/bin/sh\n");
+    writeUtf8(path.join(androidRoot, "gradlew.bat"), "@echo off\r\n");
+    writeUtf8(
+      path.join(androidRoot, "gradle", "wrapper", "gradle-wrapper.properties"),
+      "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.14.3-bin.zip\n",
+    );
+    fs.writeFileSync(
+      path.join(androidRoot, "gradle", "wrapper", "gradle-wrapper.jar"),
+      Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+    );
+    writeUtf8(tauriConfigPath, `${JSON.stringify({ productName: "隐忍的成长" }, null, 2)}\n`);
+
+    const valid = runCapture(runtimeRoot, diagnosticsDir, releaseIdentity, "prebuild");
+    assert.equal(valid.status, 0, `valid generated project should pass:\n${valid.stdout}\n${valid.stderr}`);
+    const validReport = readStrictUtf8Json(
+      path.join(diagnosticsDir, "android-generated-project-diagnostics.json"),
+    );
+    assert.equal(validReport.status, "PASS");
+    assert.equal(validReport.phase, "prebuild");
+    assert.equal(validReport.requiredStage, "bootstrap");
+    assert.equal(validReport.releaseIdentity.title, "隐忍的成长");
+    assert.equal(validReport.xmlValidation.manifest.ok, true);
+    assert.equal(validReport.xmlValidation.strings.ok, true);
+    assert.equal(validReport.files.length, 14);
+    const copiedManifest = path.join(diagnosticsDir, "android-generated-AndroidManifest.xml");
+    const copiedActivity = path.join(diagnosticsDir, "android-generated-MainActivity.kt");
+    assert.equal(fs.readFileSync(copiedManifest, "utf8"), fs.readFileSync(manifestPath, "utf8"));
+    assert.equal(fs.readFileSync(copiedActivity, "utf8"), fs.readFileSync(activityPath, "utf8"));
+    assert.equal(
+      validReport.files.find((entry) => entry.name === "AndroidManifest.xml").sha256,
+      crypto.createHash("sha256").update(fs.readFileSync(manifestPath)).digest("hex"),
+    );
+    assert.equal(
+      validReport.files.find((entry) => entry.name === "MainActivity.kt").sha256,
+      crypto.createHash("sha256").update(fs.readFileSync(activityPath)).digest("hex"),
+    );
+
+    fs.unlinkSync(path.join(androidRoot, "tauri.settings.gradle"));
+    fs.unlinkSync(path.join(androidRoot, "app", "tauri.build.gradle.kts"));
+    assert.equal(fs.existsSync(path.join(androidRoot, "tauri.settings.gradle")), false);
+    assert.equal(fs.existsSync(path.join(androidRoot, "app", "tauri.build.gradle.kts")), false);
+    const bootstrapOnly = runCapture(runtimeRoot, diagnosticsDir, releaseIdentity, "prebuild");
+    assert.equal(
+      bootstrapOnly.status,
+      0,
+      `prebuild diagnostics must allow Tauri-delayed files to be absent:\n${bootstrapOnly.stdout}\n${bootstrapOnly.stderr}`,
+    );
+    const bootstrapReport = readStrictUtf8Json(
+      path.join(diagnosticsDir, "android-generated-project-diagnostics.json"),
+    );
+    assert.equal(bootstrapReport.requiredStage, "bootstrap");
+    assert.deepEqual(
+      bootstrapReport.missingRequiredFiles,
+      [],
+      "prebuild diagnostics must not treat Tauri-delayed files as required",
+    );
+    assert.deepEqual(
+      bootstrapReport.deferredFilesMissing,
+      ["tauri.settings.gradle", "tauri.build.gradle.kts"],
+    );
+
+    const initScript = path.join(fixtureRoot, "fake-tauri-android-init.cjs");
+    writeUtf8(
+      initScript,
+      [
+        'const fs = require("node:fs");',
+        'const path = require("node:path");',
+        'const [runtimeRoot, applicationId] = process.argv.slice(2);',
+        'const androidRoot = path.join(runtimeRoot, "src-tauri", "gen", "android");',
+        'const write = (relativePath, value) => {',
+        '  const target = path.join(androidRoot, relativePath);',
+        '  fs.mkdirSync(path.dirname(target), { recursive: true });',
+        '  fs.writeFileSync(target, value);',
+        '};',
+        'write("settings.gradle", \'apply from: "tauri.settings.gradle"\\n\');',
+        'write("tauri.settings.gradle", \'include(":app")\\n\');',
+        'write("build.gradle.kts", "plugins {}\\n");',
+        'write("app/build.gradle.kts", `android { namespace = "${applicationId}" }\\n`);',
+        'write("app/tauri.build.gradle.kts", "// generated by Tauri\\n");',
+        'write("app/tauri.properties", "tauri.android.versionName=0.1.0\\ntauri.android.versionCode=1000\\n");',
+        'write("app/src/main/AndroidManifest.xml", \'<?xml version="1.0" encoding="utf-8"?><manifest xmlns:android="http://schemas.android.com/apk/res/android"><application android:label="@string/app_name" /></manifest>\\n\');',
+        'write("app/src/main/res/values/strings.xml", \'<?xml version="1.0" encoding="utf-8"?><resources><string name="app_name">隐忍的成长</string></resources>\\n\');',
+        'write(`app/src/main/java/${applicationId.replaceAll(".", "/")}/MainActivity.kt`, `package ${applicationId}\\nclass MainActivity : TauriActivity()\\n`);',
+        'write(`app/src/main/java/${applicationId.replaceAll(".", "/")}/generated/TauriActivity.kt`, `package ${applicationId}.generated\\nimport app.tauri.plugin.PluginManager\\nabstract class TauriActivity { fun getPluginManager(): PluginManager { return PluginManager } }\\n`);',
+        'write("gradlew", "#!/bin/sh\\n");',
+        'write("gradlew.bat", "@echo off\\r\\n");',
+        'write("gradle/wrapper/gradle-wrapper.jar", Buffer.from([0x50, 0x4b, 0x03, 0x04]));',
+        'write("gradle/wrapper/gradle-wrapper.properties", "distributionUrl=https\\\\://services.gradle.org/distributions/gradle-8.14.3-bin.zip\\n");',
+      ].join("\n"),
+    );
+    const repair = runGeneratedProjectRepair(
+      runtimeRoot,
+      diagnosticsDir,
+      initScript,
+      releaseIdentity.androidApplicationId,
+    );
+    assert.equal(
+      repair.status,
+      0,
+      `half-generated Android project should be repaired:\n${repair.stdout}\n${repair.stderr}`,
+    );
+    const healthReport = readStrictUtf8Json(
+      path.join(diagnosticsDir, "android-generated-project-health.json"),
+    );
+    assert.deepEqual(
+      healthReport.missingFilesBefore,
+      ["tauri.settings.gradle", "app/tauri.build.gradle.kts"],
+    );
+    assert.equal(healthReport.reinitialized, true);
+    assert.equal(healthReport.finalProjectComplete, true);
+    assert.deepEqual(healthReport.missingFilesAfter, []);
+    assert.equal(fs.existsSync(path.join(androidRoot, "tauri.settings.gradle")), true);
+
+    const repairedDiagnostics = runCapture(runtimeRoot, diagnosticsDir, releaseIdentity, "prebuild");
+    assert.equal(
+      repairedDiagnostics.status,
+      0,
+      `repaired generated project should pass diagnostics:\n${repairedDiagnostics.stdout}\n${repairedDiagnostics.stderr}`,
+    );
+    const repairedReport = readStrictUtf8Json(
+      path.join(diagnosticsDir, "android-generated-project-diagnostics.json"),
+    );
+    assert.equal(repairedReport.generatedProjectHealth.reinitialized, true);
+    assert.equal(repairedReport.generatedProjectHealth.finalProjectComplete, true);
+
+    fs.unlinkSync(path.join(androidRoot, "app", "tauri.build.gradle.kts"));
+    const incompletePostbuild = runCapture(runtimeRoot, diagnosticsDir, releaseIdentity, "postbuild");
+    assert.equal(
+      incompletePostbuild.status,
+      2,
+      `postbuild diagnostics must reject missing Tauri-generated files:\n${incompletePostbuild.stdout}\n${incompletePostbuild.stderr}`,
+    );
+    const incompletePostbuildReport = readStrictUtf8Json(
+      path.join(diagnosticsDir, "android-generated-project-diagnostics.json"),
+    );
+    assert.equal(incompletePostbuildReport.requiredStage, "full");
+    assert.deepEqual(incompletePostbuildReport.missingRequiredFiles, ["tauri.build.gradle.kts"]);
+    writeUtf8(path.join(androidRoot, "app", "tauri.build.gradle.kts"), "// generated by Tauri\n");
+    const completePostbuild = runCapture(runtimeRoot, diagnosticsDir, releaseIdentity, "postbuild");
+    assert.equal(
+      completePostbuild.status,
+      0,
+      `complete postbuild diagnostics should pass:\n${completePostbuild.stdout}\n${completePostbuild.stderr}`,
+    );
+    const completePostbuildReport = readStrictUtf8Json(
+      path.join(diagnosticsDir, "android-generated-project-diagnostics.json"),
+    );
+    assert.equal(completePostbuildReport.requiredStage, "full");
+    assert.deepEqual(completePostbuildReport.missingRequiredFiles, []);
+
+    writeUtf8(
+      manifestPath,
+      `<?xml version="1.0" encoding="utf-8"?>\n<manifest xmlns:android="http://schemas.android.com/apk/res/android"><application android:label="坏 & 标题" /></manifest>\n`,
+    );
+    const invalid = runCapture(runtimeRoot, diagnosticsDir, releaseIdentity, "failure");
+    assert.equal(invalid.status, 2, `invalid generated manifest must fail:\n${invalid.stdout}\n${invalid.stderr}`);
+    const invalidReport = readStrictUtf8Json(
+      path.join(diagnosticsDir, "android-generated-project-diagnostics.json"),
+    );
+    assert.equal(invalidReport.status, "FAIL");
+    assert.equal(invalidReport.failureCode, "ANDROID_MANIFEST_INVALID");
+    assert.equal(invalidReport.phase, "failure");
+    assert.equal(invalidReport.xmlValidation.manifest.ok, false);
+    assert.match(invalidReport.xmlValidation.manifest.error, /entity|实体|reference|引用/i);
+    assert.ok(invalidReport.xmlValidation.manifest.line >= 1);
+    assert.equal(fs.readFileSync(copiedManifest, "utf8").includes("坏 & 标题"), true);
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+
+  console.log("PASS Android generated-project diagnostics capture and invalid XML preservation");
+}
+
+main();

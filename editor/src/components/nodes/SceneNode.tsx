@@ -6,6 +6,7 @@ import { requestAdvancedTools } from "../advanced/advancedToolsBridge";
 import { getProviderSelectionPayload } from "../../providers/providerRegistry";
 import type { ProviderSelectionPayload } from "../../providers/types";
 import { useEditorStore } from "../../store/editorStore";
+import { useProjectStore } from "../../store/projectStore";
 import type { Choice } from "../../types/commands";
 import type { EditorEdge, EditorNode } from "../../types/nodes";
 import type { SceneBeat } from "../../types/scene";
@@ -14,6 +15,10 @@ import { buildEditorGenerationContextPackage } from "../../utils/generationConte
 import { commandsToText } from "../../utils/commandPreview";
 import type { MemoryMode } from "../../types/memory";
 import { choiceDisplayLabel, sceneDisplayLabel } from "../../utils/displayNames";
+import {
+  sanitizeGeneratedSceneAssetReferences,
+  type RemovedGeneratedAssetReference,
+} from "../../utils/generatedAssetReferences";
 import { reportFrontendError } from "../../../../shared/logging/frontendErrorLogger";
 
 const memoryModeLabels: Record<MemoryMode, string> = {
@@ -169,6 +174,11 @@ function memoryExtractionSelection(selection: ProviderSelectionPayload): Provide
   };
 }
 
+function filteredVisualAssetDetail(references: RemovedGeneratedAssetReference[]): string {
+  const assetIds = [...new Set(references.map((reference) => reference.asset_id))];
+  return `模型引用了素材库中不存在或不可用的视觉素材：${assetIds.join("、")}。剧情、对白和其他合法命令已保留。`;
+}
+
 export function SceneNode({ id, data, selected }: NodeProps<EditorNode>) {
   const nodes = useEditorStore((state) => state.nodes);
   const edges = useEditorStore((state) => state.edges);
@@ -295,6 +305,7 @@ export function SceneNode({ id, data, selected }: NodeProps<EditorNode>) {
     setStreamStatus("准备连接模型...");
     try {
       const memoryMode = data.memoryMode ?? globalMemoryMode;
+      const generationAssetManifest = useProjectStore.getState().assetManifest;
       const shouldReplaceCurrentNode = isBlankScene(scene);
       const incomingContext = shouldReplaceCurrentNode ? findIncomingSceneContext(id, nodes, edges) : undefined;
       const contextScene = incomingContext?.scene ?? scene;
@@ -305,6 +316,7 @@ export function SceneNode({ id, data, selected }: NodeProps<EditorNode>) {
         contextNodeId,
         nodes,
         edges,
+        assetManifest: generationAssetManifest,
         memoryMode,
         providerSelection: selectedProvider,
       });
@@ -394,6 +406,7 @@ export function SceneNode({ id, data, selected }: NodeProps<EditorNode>) {
       }
       if (branchChoices.length > 0) {
         const createdScenes: string[] = [];
+        const removedAssetReferences: RemovedGeneratedAssetReference[] = [];
         let memoryWarningCount = 0;
         for (const [branchIndex, choice] of branchChoices.entries()) {
           const branchLabel = choiceDisplayLabel(choice);
@@ -403,6 +416,7 @@ export function SceneNode({ id, data, selected }: NodeProps<EditorNode>) {
             contextNodeId,
             nodes: latestState.nodes,
             edges: latestState.edges,
+            assetManifest: generationAssetManifest,
             memoryMode,
             providerSelection: selectedProvider,
           });
@@ -465,6 +479,9 @@ export function SceneNode({ id, data, selected }: NodeProps<EditorNode>) {
             return;
           }
 
+          const sanitizedBranch = sanitizeGeneratedSceneAssetReferences(branchGenerated, generationAssetManifest);
+          branchGenerated = sanitizedBranch.scene;
+          removedAssetReferences.push(...sanitizedBranch.removed);
           const appliedBranch = applyGeneratedBranchScene(branchEntry?.sourceNodeId ?? id, choice.choice_id, branchGenerated, {
             branchIndex,
             branchCount: branchChoices.length,
@@ -481,9 +498,35 @@ export function SceneNode({ id, data, selected }: NodeProps<EditorNode>) {
             reportable: false,
             source: "AI Generation / Branch Generation",
             message: `已生成并链接 ${createdScenes.length} 条分支后续，但 ${memoryWarningCount} 条分支记忆抽取未完成。`,
-            detail: `已写入的分支场景：${createdScenes.join("、")}。剧情节点已保留，记忆可稍后重新抽取。`,
+            detail: [
+              `已写入的分支场景：${createdScenes.join("、")}。剧情节点已保留，记忆可稍后重新抽取。`,
+              removedAssetReferences.length > 0 ? filteredVisualAssetDetail(removedAssetReferences) : "",
+            ].filter(Boolean).join("\n"),
             action: "如频繁出现记忆抽取失败，请检查模型结构化输出模式、超时和 Token 预算。",
-            context: { nodeId: id, sceneId: scene.scene_id, generatedSceneIds: createdScenes, memoryWarningCount },
+            context: {
+              nodeId: id,
+              sceneId: scene.scene_id,
+              generatedSceneIds: createdScenes,
+              memoryWarningCount,
+              ignoredVisualAssetReferences: removedAssetReferences,
+            },
+          });
+          return;
+        }
+        if (removedAssetReferences.length > 0) {
+          setNotice({
+            tone: "warning",
+            reportable: false,
+            source: "AI Generation / Asset Guard",
+            message: `已生成并链接 ${createdScenes.length} 条分支后续；已忽略 ${removedAssetReferences.length} 处不存在的视觉素材引用。`,
+            detail: filteredVisualAssetDetail(removedAssetReferences),
+            action: "如需对应画面，请先把素材导入素材库，再重新选择或生成该视觉命令。",
+            context: {
+              nodeId: id,
+              sceneId: scene.scene_id,
+              generatedSceneIds: createdScenes,
+              ignoredVisualAssetReferences: removedAssetReferences,
+            },
           });
           return;
         }
@@ -533,6 +576,8 @@ export function SceneNode({ id, data, selected }: NodeProps<EditorNode>) {
         return;
       }
 
+      const sanitizedGenerated = sanitizeGeneratedSceneAssetReferences(generated, generationAssetManifest);
+      generated = sanitizedGenerated.scene;
       const applied = shouldReplaceCurrentNode
         ? applyGeneratedSceneToNode(id, generated, { preserveSceneId: true, preserveChapter: true, generatedFromNodeId: contextNodeId })
         : applyGeneratedScene(id, generated);
@@ -540,6 +585,23 @@ export function SceneNode({ id, data, selected }: NodeProps<EditorNode>) {
 
       const memoryOk = await extractGeneratedMemory(generatedScene);
       if (!memoryOk) return;
+
+      if (sanitizedGenerated.removed.length > 0) {
+        setNotice({
+          tone: "warning",
+          reportable: false,
+          source: "AI Generation / Asset Guard",
+          message: `剧情生成完成；已忽略 ${sanitizedGenerated.removed.length} 处不存在的视觉素材引用。`,
+          detail: filteredVisualAssetDetail(sanitizedGenerated.removed),
+          action: "如需对应画面，请先把素材导入素材库，再重新选择或生成该视觉命令。",
+          context: {
+            nodeId: id,
+            sceneId: generatedScene.scene_id,
+            ignoredVisualAssetReferences: sanitizedGenerated.removed,
+          },
+        });
+        return;
+      }
 
       if ("replaced" in applied) {
         setNotice(applied.replaced ? "已填充当前空白场景节点" : "生成完成，但未能写入当前节点，请检查节点状态。", applied.replaced ? "success" : "warning");

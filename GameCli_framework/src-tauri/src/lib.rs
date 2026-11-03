@@ -7,8 +7,14 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tauri::{http, AppHandle, Manager};
+mod save_location;
+mod portable_save_migration;
+#[cfg(any(target_os = "android", test))]
+mod android_activity_state;
 #[cfg(target_os = "android")]
-use tauri_plugin_fs::{FsExt, OpenOptions};
+mod android_activity;
+#[cfg(target_os = "android")]
+use tauri_plugin_fs::FsExt;
 
 const MAX_ERROR_LOG_BYTES: u64 = 10 * 1024 * 1024;
 const ERROR_LOG_BACKUP_COUNT: usize = 10;
@@ -16,6 +22,7 @@ const MAX_ERROR_LOG_LINE_BYTES: usize = 64 * 1024;
 static ERROR_LOG_WRITE_LOCK: Mutex<()> = Mutex::new(());
 static ERROR_LOG_RECENT: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
 static PLAYER_ERROR_LOG_DIR: OnceLock<PathBuf> = OnceLock::new();
+static PLAYER_SAVE_IO_LOCK: Mutex<()> = Mutex::new(());
 
 fn default_player_error_log_dir() -> PathBuf {
     std::env::current_exe()
@@ -280,6 +287,8 @@ struct EmbeddedResourceContext {
 }
 
 struct EmbeddedResourceState(Mutex<Option<EmbeddedResourceContext>>);
+// Set only after successfully loading an actual embedded game, not by UI mode/CLI defaults.
+struct StandaloneSaveState(Mutex<Option<String>>);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -356,6 +365,25 @@ fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_data_dir()
         .map_err(|error| format!("Cannot resolve app data directory: {error}"))
+}
+
+fn standalone_save_game_id(app: &AppHandle, install_id: &str) -> Result<Option<String>, String> {
+    if cfg!(target_os = "windows") && install_id == "preview_gamecli" {
+        app.state::<StandaloneSaveState>().0.lock()
+            .map(|state| state.clone()).map_err(|_| "Cannot lock standalone save identity.".to_string())
+    } else {
+        Ok(None)
+    }
+}
+
+fn game_save_location(app: &AppHandle, install_id: &str) -> Result<save_location::SaveLocation, String> {
+    let game_id = standalone_save_game_id(app, install_id)?;
+    let exe = if game_id.is_some() {
+        std::env::current_exe().map_err(|e| format!("无法确定游戏安装目录：{e}；不会回退存档位置。"))?
+    } else {
+        PathBuf::new()
+    };
+    save_location::resolve(&data_dir(app)?, &exe, game_id.as_deref(), install_id)
 }
 
 fn library_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -549,7 +577,7 @@ fn read_embedded_text(
     validate_preview_relative_path(relative_path)?;
     match app.fs().read_to_string(root.join(relative_path)) {
         Ok(value) => Ok(Some(value)),
-        Err(error) if !required => Ok(None),
+        Err(_error) if !required => Ok(None),
         Err(error) => Err(format!("Cannot read packaged {relative_path}: {error}")),
     }
 }
@@ -1086,6 +1114,16 @@ fn load_embedded_game(
             content_id: content_id.clone(),
             files,
         });
+    if cfg!(target_os = "windows") {
+        let game_id = manifest.get("game_id").and_then(Value::as_str)
+            .ok_or("Embedded game is missing game_id.")?;
+        // Validate before exposing the game; the old install_id is retained under the game identity.
+        save_location::resolve(&data_dir(&app)?, &std::env::current_exe()
+            .map_err(|e| format!("Cannot resolve game executable: {e}"))?,
+            Some(game_id), "preview_gamecli")?;
+        *app.state::<StandaloneSaveState>().0.lock()
+            .map_err(|_| "Cannot lock standalone save identity.".to_string())? = Some(game_id.to_string());
+    }
     eprintln!(
         "[AgentVN Player] Embedded bootstrap ready in {} ms; indexed {} files / {} bytes from {}",
         started_at.elapsed().as_millis(),
@@ -1184,7 +1222,7 @@ fn parse_resource_ranges(value: &str, total: u64) -> Result<Vec<(u64, u64)>, Str
             .trim()
             .split_once('-')
             .ok_or_else(|| "Invalid byte range.".to_string())?;
-        let (start, mut end) = if start_text.is_empty() {
+        let (start, end) = if start_text.is_empty() {
             let suffix = end_text
                 .parse::<u64>()
                 .map_err(|_| "Invalid suffix byte range.".to_string())?;
@@ -1211,9 +1249,11 @@ fn parse_resource_ranges(value: &str, total: u64) -> Result<Vec<(u64, u64)>, Str
             if requested_end < start {
                 return Err("Byte range end precedes start.".to_string());
             }
-            (start, requested_end)
+            (
+                start,
+                requested_end.min(start.saturating_add(RESOURCE_RANGE_MAX_BYTES - 1)),
+            )
         };
-        end = start + (end - start).min(RESOURCE_RANGE_MAX_BYTES - 1);
         ranges.push((start, end));
     }
     if ranges.is_empty() {
@@ -1240,7 +1280,7 @@ fn open_embedded_resource(
         EmbeddedResourceSource::Packaged(root) => {
             #[cfg(target_os = "android")]
             {
-                let mut options = OpenOptions::new();
+                let mut options = tauri_plugin_fs::OpenOptions::new();
                 options.read(true);
                 _app.fs()
                     .open(root.join(relative_path), options)
@@ -1293,6 +1333,16 @@ fn handle_resource_protocol(
     context: EmbeddedResourceContext,
     request: http::Request<Vec<u8>>,
 ) -> http::Response<Vec<u8>> {
+    handle_resource_protocol_with_opener(context, request, |source, relative_path| {
+        open_embedded_resource(app, source, relative_path)
+    })
+}
+
+fn handle_resource_protocol_with_opener(
+    context: EmbeddedResourceContext,
+    request: http::Request<Vec<u8>>,
+    mut open_resource: impl FnMut(&EmbeddedResourceSource, &str) -> Result<fs::File, String>,
+) -> http::Response<Vec<u8>> {
     let result = (|| -> Result<http::Response<Vec<u8>>, String> {
         let path = request.uri().path().trim_start_matches('/');
         let (request_content_id, encoded_path) = path
@@ -1324,7 +1374,7 @@ fn handle_resource_protocol(
                 .map_err(|error| format!("Cannot build resource cache response: {error}"));
         }
 
-        let mut file = open_embedded_resource(app, &context.source, &relative_path)?;
+        let mut file = open_resource(&context.source, &relative_path)?;
         let base_offset = file.stream_position().unwrap_or(0);
         let total = if metadata.size_bytes > 0 {
             metadata.size_bytes
@@ -1363,6 +1413,12 @@ fn handle_resource_protocol(
             if ranges.len() == 1 {
                 let (start, end) = ranges[0];
                 let length = end + 1 - start;
+                if length > RESOURCE_RANGE_MAX_BYTES {
+                    return Err(format!(
+                        "Requested resource range exceeds the {} byte limit.",
+                        RESOURCE_RANGE_MAX_BYTES
+                    ));
+                }
                 let body = read_resource_slice(&mut file, base_offset, start, length)?;
                 return builder
                     .status(http::StatusCode::PARTIAL_CONTENT)
@@ -1383,6 +1439,12 @@ fn handle_resource_protocol(
             let mut body = Vec::new();
             for (start, end) in ranges {
                 let length = end + 1 - start;
+                if length > RESOURCE_RANGE_MAX_BYTES {
+                    return Err(format!(
+                        "Requested resource range exceeds the {} byte limit.",
+                        RESOURCE_RANGE_MAX_BYTES
+                    ));
+                }
                 write!(
                     body,
                     "--{boundary}\r\nContent-Type: {}\r\nContent-Range: bytes {start}-{end}/{total}\r\n\r\n",
@@ -1463,13 +1525,20 @@ fn remove_installed_cartridge(
                 .map_err(|error| format!("Cannot remove save files: {error}"))?;
         }
     }
+    let gallery_dir = data_dir(&app)?.join("gallery").join(&install_id);
+    if gallery_dir.exists() {
+        fs::remove_dir_all(&gallery_dir)
+            .map_err(|error| format!("Cannot remove gallery files: {error}"))?;
+    }
     write_library(&app, &records)?;
     Ok(records)
 }
 
 #[tauri::command]
 fn list_saves(app: AppHandle, install_id: String) -> Result<Vec<Value>, String> {
-    let dir = data_dir(&app)?.join("saves").join(install_id);
+    let _guard = PLAYER_SAVE_IO_LOCK.lock().map_err(|_| "Cannot lock save storage.".to_string())?;
+    let dir = game_save_location(&app, &install_id)?.target;
+    let game_id = standalone_save_game_id(&app, &install_id)?;
     if !dir.exists() {
         return Ok(Vec::new());
     }
@@ -1483,17 +1552,20 @@ fn list_saves(app: AppHandle, install_id: String) -> Result<Vec<Value>, String> 
         if path.extension().and_then(|value| value.to_str()) != Some("json") {
             continue;
         }
+        save_location::reject_link(&path)?;
         let text =
             fs::read_to_string(&path).map_err(|error| format!("Cannot read save file: {error}"))?;
         if let Ok(value) = serde_json::from_str::<Value>(&text) {
-            saves.push(value);
+            if game_id.as_ref().is_none_or(|id| value.get("game_id").and_then(Value::as_str) == Some(id)) {
+                saves.push(value);
+            }
         }
     }
     saves.sort_by_key(|save| {
-        let kind_rank = if save.get("save_kind").and_then(Value::as_str) == Some("auto") {
-            1
-        } else {
-            0
+        let kind_rank = match save.get("save_kind").and_then(Value::as_str) {
+            Some("auto") => 1,
+            Some("quick") => 2,
+            _ => 0,
         };
         let slot = save.get("slot").and_then(Value::as_i64).unwrap_or(0);
         (kind_rank, slot)
@@ -1523,8 +1595,49 @@ fn save_file_name(kind: &str, slot: u8) -> Result<String, String> {
     match kind {
         "manual" => Ok(format!("slot-{slot:02}.json")),
         "auto" => Ok(format!("auto-{slot:02}.json")),
+        "quick" => Ok(format!("quick-{slot:02}.json")),
         _ => Err(format!("Unsupported save kind: {kind}")),
     }
+}
+
+fn finalize_save_file(temporary_path: &Path, path: &Path) -> Result<(), String> {
+    fs::rename(temporary_path, path).map_err(|error| format!("Cannot finalize save file: {error}"))
+}
+
+fn write_save_file(path: &Path, save: &Value) -> Result<(), String> {
+    use std::io::Write;
+    // Windows redirected profiles can accept file creation through an alias but
+    // fail rename through that same alias. Resolve the existing parent once so
+    // staging and commit use the same physical directory, including first saves.
+    #[cfg(windows)]
+    let resolved_path = {
+        let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let name = path.file_name().ok_or_else(|| "Invalid save file name.".to_string())?;
+        parent.canonicalize()
+            .map_err(|error| format!("Cannot resolve save directory {}: {error}", parent.display()))?
+            .join(name)
+    };
+    #[cfg(windows)]
+    let path = resolved_path.as_path();
+    static SAVE_WRITE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let write_id = SAVE_WRITE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temporary_path = path.with_extension(format!("json.{}.{write_id}.tmp", std::process::id()));
+    let text = serde_json::to_vec_pretty(save)
+        .map_err(|error| format!("Cannot serialize save data: {error}"))?;
+    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&temporary_path)
+        .map_err(|error| format!("Cannot create temporary save file: {error}"))?;
+    let result = (|| {
+        file.write_all(&text).map_err(|error| format!("Cannot write temporary save file: {error}"))?;
+        file.sync_all().map_err(|error| format!("Cannot flush temporary save file: {error}"))?;
+        drop(file);
+        finalize_save_file(&temporary_path, path)
+    })();
+    if result.is_err() {
+        // Remove only this write's staging file; never remove the previous valid save.
+        let _ = fs::remove_file(&temporary_path);
+    }
+    result
 }
 
 #[tauri::command]
@@ -1535,18 +1648,19 @@ fn write_save(
     slot: u8,
     save: Value,
 ) -> Result<(), String> {
-    let dir = data_dir(&app)?.join("saves").join(install_id);
-    fs::create_dir_all(&dir).map_err(|error| format!("Cannot create save directory: {error}"))?;
-    let path = dir.join(save_file_name(&kind, slot)?);
-    let temporary_path = path.with_extension("json.tmp");
-    let text = serde_json::to_string_pretty(&save)
-        .map_err(|error| format!("Cannot serialize save data: {error}"))?;
-    fs::write(&temporary_path, text)
-        .map_err(|error| format!("Cannot write temporary save file: {error}"))?;
-    if path.exists() {
-        fs::remove_file(&path).map_err(|error| format!("Cannot replace save file: {error}"))?;
+    let _guard = PLAYER_SAVE_IO_LOCK.lock().map_err(|_| "Cannot lock save storage.".to_string())?;
+    let dir = game_save_location(&app, &install_id)?.target;
+    if let Some(game_id) = standalone_save_game_id(&app, &install_id)? {
+        if save.get("game_id").and_then(Value::as_str) != Some(game_id.as_str()) {
+            return Err("存档不属于当前独立游戏，拒绝写入。".to_string());
+        }
     }
-    fs::rename(temporary_path, path).map_err(|error| format!("Cannot finalize save file: {error}"))
+    fs::create_dir_all(&dir).map_err(|error|
+        format!("无法创建存档目录 {}：{error}。请将游戏移至可写目录；不会回退到其他位置。", dir.display()))?;
+    let path = dir.join(save_file_name(&kind, slot)?);
+    save_location::reject_link(&path)?;
+    write_save_file(&path, &save).map_err(|error|
+        format!("无法保存到 {}：{error}。请检查安装目录写入权限；不会回退到其他位置。", path.display()))
 }
 
 #[tauri::command]
@@ -1556,30 +1670,136 @@ fn read_save(
     kind: String,
     slot: u8,
 ) -> Result<Option<Value>, String> {
-    let path = data_dir(&app)?
-        .join("saves")
-        .join(install_id)
+    let _guard = PLAYER_SAVE_IO_LOCK.lock().map_err(|_| "Cannot lock save storage.".to_string())?;
+    let path = game_save_location(&app, &install_id)?.target
         .join(save_file_name(&kind, slot)?);
+    save_location::reject_link(&path)?;
     if !path.exists() {
         return Ok(None);
     }
     let text =
         fs::read_to_string(path).map_err(|error| format!("Cannot read save file: {error}"))?;
-    serde_json::from_str(&text)
-        .map(Some)
-        .map_err(|error| format!("Cannot parse save file: {error}"))
+    let value: Value = serde_json::from_str(&text).map_err(|error| format!("Cannot parse save file: {error}"))?;
+    if let Some(game_id) = standalone_save_game_id(&app, &install_id)? {
+        if value.get("game_id").and_then(Value::as_str) != Some(game_id.as_str()) {
+            return Err("存档不属于当前独立游戏。".to_string());
+        }
+    }
+    Ok(Some(value))
 }
 
 #[tauri::command]
 fn delete_save(app: AppHandle, install_id: String, kind: String, slot: u8) -> Result<(), String> {
-    let path = data_dir(&app)?
-        .join("saves")
-        .join(install_id)
+    let _guard = PLAYER_SAVE_IO_LOCK.lock().map_err(|_| "Cannot lock save storage.".to_string())?;
+    let path = game_save_location(&app, &install_id)?.target
         .join(save_file_name(&kind, slot)?);
+    save_location::reject_link(&path)?;
     if path.exists() {
         fs::remove_file(path).map_err(|error| format!("Cannot delete save file: {error}"))?;
     }
     Ok(())
+}
+
+#[tauri::command]
+fn get_save_storage_info(app: AppHandle, install_id: String) -> Result<portable_save_migration::MigrationStatus, String> {
+    let _guard = PLAYER_SAVE_IO_LOCK.lock().map_err(|_| "Cannot lock save storage.".to_string())?;
+    let location = game_save_location(&app, &install_id)?;
+    let game_id = standalone_save_game_id(&app, &install_id)?.unwrap_or_default();
+    portable_save_migration::inspect(&location, &game_id)
+}
+
+#[tauri::command]
+fn migrate_legacy_saves(app: AppHandle, install_id: String, game_id: String, confirmed: bool) -> Result<portable_save_migration::MigrationStatus, String> {
+    let _guard = PLAYER_SAVE_IO_LOCK.lock().map_err(|_| "Cannot lock save storage.".to_string())?;
+    if standalone_save_game_id(&app, &install_id)?.as_deref() != Some(&game_id) {
+        return Err("存档迁移归属已变化或当前不是Windows独立游戏，请重新打开当前游戏。".to_string());
+    }
+    portable_save_migration::migrate(&game_save_location(&app, &install_id)?, &game_id, confirmed)
+}
+fn gallery_dir(app: &AppHandle, install_id: &str) -> Result<PathBuf, String> {
+    Ok(data_dir(app)?.join("gallery").join(install_id))
+}
+
+fn gallery_file_name(anchor_id: &str) -> Result<String, String> {
+    let safe = anchor_id.trim();
+    if safe.is_empty() || safe.chars().any(|c| !c.is_ascii_alphanumeric() && c != '-' && c != '_') {
+        return Err("Invalid gallery anchor id".to_string());
+    }
+    Ok(format!("{safe}.json"))
+}
+
+#[tauri::command]
+fn list_gallery_unlocks(app: AppHandle, install_id: String) -> Result<Vec<String>, String> {
+    let dir = gallery_dir(&app, &install_id)?;
+    if !dir.exists() { return Ok(Vec::new()); }
+    let mut ids = Vec::new();
+    for entry in fs::read_dir(dir).map_err(|error| format!("Cannot read gallery directory: {error}"))? {
+        let path = entry.map_err(|error| format!("Cannot read gallery entry: {error}"))?.path();
+        if path.extension().and_then(|value| value.to_str()) == Some("json") {
+            if let Some(stem) = path.file_stem().and_then(|value| value.to_str()) { ids.push(stem.to_string()); }
+        }
+    }
+    ids.sort();
+    Ok(ids)
+}
+
+#[tauri::command]
+fn write_gallery_anchor(app: AppHandle, install_id: String, anchor_id: String, save: Value) -> Result<(), String> {
+    let dir = gallery_dir(&app, &install_id)?;
+    fs::create_dir_all(&dir).map_err(|error| format!("Cannot create gallery directory: {error}"))?;
+    let path = dir.join(gallery_file_name(&anchor_id)?);
+    if path.exists() { return Ok(()); }
+    fs::write(path, serde_json::to_string_pretty(&save).map_err(|error| format!("Cannot serialize gallery save: {error}"))?)
+        .map_err(|error| format!("Cannot write gallery save: {error}"))
+}
+
+#[tauri::command]
+fn read_gallery_anchor(app: AppHandle, install_id: String, anchor_id: String) -> Result<Option<Value>, String> {
+    let path = gallery_dir(&app, &install_id)?.join(gallery_file_name(&anchor_id)?);
+    if !path.exists() { return Ok(None); }
+    let text = fs::read_to_string(path).map_err(|error| format!("Cannot read gallery save: {error}"))?;
+    serde_json::from_str(&text).map(Some).map_err(|error| format!("Cannot parse gallery save: {error}"))
+}
+
+#[tauri::command]
+fn delete_gallery_unlocks(app: AppHandle, install_id: String) -> Result<(), String> {
+    let dir = gallery_dir(&app, &install_id)?;
+    if dir.exists() { fs::remove_dir_all(dir).map_err(|error| format!("Cannot delete gallery data: {error}"))?; }
+    Ok(())
+}
+
+/// Called by the shared confirmed-exit flow after writes have settled.
+/// Finish Android's Activity on its UI thread, allowing normal WebView teardown.
+/// A later launcher Activity restores its own window in the cached process.
+#[tauri::command]
+async fn exit_runtime(_app: AppHandle, _window: tauri::WebviewWindow) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        let (sender, mut receiver) = tauri::async_runtime::channel(1);
+        _window
+            .with_webview(move |webview| {
+                webview.jni_handle().exec(move |env, activity, _| {
+                    let result = env.call_method(activity, "finishConfirmedRuntime", "()V", &[])
+                        .map(|_| ())
+                        .map_err(|error| {
+                            // A Java exception must not poison the UI thread
+                            // when the failure is returned to the exit dialog.
+                            let _ = env.exception_clear();
+                            format!("Cannot finish Android activity: {error}")
+                        });
+                    let _ = sender.try_send(result);
+                });
+            })
+            .map_err(|error| format!("Cannot access Android activity: {error}"))?;
+        receiver
+            .recv()
+            .await
+            .ok_or_else(|| "Android activity exit callback was dropped".to_string())?
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        _window.destroy().map_err(|error| format!("Cannot close game window: {error}"))
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1597,10 +1817,15 @@ pub fn run() {
                 let _ = PLAYER_ERROR_LOG_DIR.set(error_dir);
                 append_player_log("Android error log directory initialized.");
             }
+            #[cfg(target_os = "android")]
+            if let Some(window) = _app.get_webview_window("main") {
+                android_activity::install(_app.handle().clone(), window)?;
+            }
             Ok(())
         })
         .manage(PreviewRootState(Mutex::new(None)))
         .manage(EmbeddedResourceState(Mutex::new(None)))
+        .manage(StandaloneSaveState(Mutex::new(None)))
         .register_uri_scheme_protocol("agentvn-preview", |ctx, request| {
             handle_preview_protocol(ctx.app_handle().state::<PreviewRootState>(), request)
         })
@@ -1630,6 +1855,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
+            exit_runtime,
             append_frontend_error,
             import_cartridge_from_path,
             get_launch_config,
@@ -1638,19 +1864,236 @@ pub fn run() {
             read_cartridge_from_path,
             load_unpacked_preview,
             load_embedded_game,
+            get_save_storage_info,
+            migrate_legacy_saves,
             remove_installed_cartridge,
             list_saves,
             write_save,
             read_save,
             delete_save
+            ,list_gallery_unlocks
+            ,write_gallery_anchor
+            ,read_gallery_anchor
+            ,delete_gallery_unlocks
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running AgentVN Player");
+        .build(tauri::generate_context!())
+        .expect("error while building AgentVN Player")
+        .run(|_app, _event| {
+            // The last Activity's destruction otherwise enters Tao's C exit(),
+            // racing Android HWUI static destructors. Android owns cached
+            // process lifetime; desktop keeps Tauri's default.
+            #[cfg(target_os = "android")]
+            match _event {
+                tauri::RunEvent::ExitRequested { api, .. } => api.prevent_exit(),
+                tauri::RunEvent::MainEventsCleared => android_activity::restore_pending(_app),
+                _ => {}
+            }
+        });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resource_protocol_serves_large_audio_ranges_in_bounded_chunks() {
+        let dir = std::env::temp_dir().join(format!(
+            "agentvn-resource-large-range-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let asset_dir = dir.join("assets/bgm");
+        fs::create_dir_all(&asset_dir).unwrap();
+        let asset_path = asset_dir.join("large-track.mp3");
+        let asset_bytes = (0..(RESOURCE_RANGE_MAX_BYTES as usize + 512 * 1024))
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        fs::write(&asset_path, &asset_bytes).unwrap();
+        let canonical_root = fs::canonicalize(&dir).unwrap();
+        let context = EmbeddedResourceContext {
+            source: EmbeddedResourceSource::Directory(canonical_root),
+            content_id: "large-audio-content".to_string(),
+            files: HashMap::from([(
+                "assets/bgm/large-track.mp3".to_string(),
+                EmbeddedResourceFile {
+                    size_bytes: asset_bytes.len() as u64,
+                    mime_type: "audio/mpeg".to_string(),
+                    etag: "large-audio-etag".to_string(),
+                },
+            )]),
+        };
+        let request = http::Request::builder()
+            .method(http::Method::GET)
+            .uri("http://agentvn-resource.localhost/large-audio-content/assets/bgm/large-track.mp3")
+            .header(http::header::RANGE, "bytes=0-")
+            .body(Vec::new())
+            .unwrap();
+
+        let response = handle_resource_protocol_with_opener(context.clone(), request, |source, path| {
+            match source {
+                EmbeddedResourceSource::Directory(root) => {
+                    let asset_path = preview_file_path(root, path)?;
+                    fs::File::open(&asset_path).map_err(|error| {
+                        format!("Cannot open packaged resource {}: {error}", asset_path.display())
+                    })
+                }
+                EmbeddedResourceSource::Packaged(_) => {
+                    Err("Packaged resources are unavailable in this test.".to_string())
+                }
+            }
+        });
+        let continuation_request = http::Request::builder()
+            .method(http::Method::GET)
+            .uri("http://agentvn-resource.localhost/large-audio-content/assets/bgm/large-track.mp3")
+            .header(
+                http::header::RANGE,
+                format!("bytes={}-", RESOURCE_RANGE_MAX_BYTES),
+            )
+            .body(Vec::new())
+            .unwrap();
+        let continuation = handle_resource_protocol_with_opener(
+            context,
+            continuation_request,
+            |source, path| match source {
+                EmbeddedResourceSource::Directory(root) => {
+                    let asset_path = preview_file_path(root, path)?;
+                    fs::File::open(&asset_path).map_err(|error| {
+                        format!("Cannot open packaged resource {}: {error}", asset_path.display())
+                    })
+                }
+                EmbeddedResourceSource::Packaged(_) => {
+                    Err("Packaged resources are unavailable in this test.".to_string())
+                }
+            },
+        );
+        let _ = fs::remove_dir_all(&dir);
+
+        assert_eq!(
+            response.status(),
+            http::StatusCode::PARTIAL_CONTENT,
+            "{}",
+            String::from_utf8_lossy(response.body())
+        );
+        let expected_content_range = format!(
+            "bytes 0-{}/{}",
+            RESOURCE_RANGE_MAX_BYTES - 1,
+            asset_bytes.len()
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(http::header::CONTENT_RANGE)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            expected_content_range
+        );
+        assert_eq!(response.body().len() as u64, RESOURCE_RANGE_MAX_BYTES);
+        assert_eq!(
+            response.body(),
+            &asset_bytes[..RESOURCE_RANGE_MAX_BYTES as usize]
+        );
+        assert_eq!(continuation.status(), http::StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            continuation
+                .headers()
+                .get(http::header::CONTENT_RANGE)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            format!(
+                "bytes {}-{}/{}",
+                RESOURCE_RANGE_MAX_BYTES,
+                asset_bytes.len() - 1,
+                asset_bytes.len()
+            )
+        );
+        assert_eq!(
+            continuation.body(),
+            &asset_bytes[RESOURCE_RANGE_MAX_BYTES as usize..]
+        );
+    }
+
+    #[test]
+    fn save_storage_failed_finalize_preserves_previous_bytes() {
+        let dir = std::env::temp_dir().join(format!("agentvn-save-preserve-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("quick-01.json");
+        let missing = dir.join("missing-staging.json");
+        fs::write(&path, b"previous valid save").unwrap();
+        let result = finalize_save_file(&missing, &path);
+        let preserved = fs::read(&path);
+        let _ = fs::remove_dir_all(&dir);
+        assert!(result.is_err());
+        assert_eq!(preserved.unwrap(), b"previous valid save");
+    }
+
+    #[test]
+    fn save_storage_categories_have_independent_files() {
+        assert_eq!(save_file_name("manual", 1).unwrap(), "slot-01.json");
+        assert_eq!(save_file_name("auto", 1).unwrap(), "auto-01.json");
+        assert_eq!(save_file_name("quick", 1).unwrap(), "quick-01.json");
+        assert!(save_file_name("unknown", 1).is_err());
+    }
+
+    #[test]
+    fn save_storage_replaces_complete_save_and_leaves_no_staging() {
+        let dir = std::env::temp_dir().join(format!("agentvn-save-replace-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("quick-01.json");
+        write_save_file(&path, &serde_json::json!({"save_id": "first"})).unwrap();
+        write_save_file(&path, &serde_json::json!({"save_id": "second"})).unwrap();
+        let value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let count = fs::read_dir(&dir).unwrap().count();
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(value["save_id"], "second");
+        assert_eq!(count, 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "Requires the isolated, journaled redirected Player profile"]
+    fn save_storage_redirected_parent_preserves_atomic_save() {
+        let dir = PathBuf::from(std::env::var("AGENTVN_SAVE_JUNCTION_TEST_ROOT")
+            .expect("Explicit isolated junction test root is required"));
+        let physical = PathBuf::from(std::env::var("AGENTVN_SAVE_JUNCTION_PHYSICAL_ROOT")
+            .expect("The journaled physical root is required"));
+        assert!(dir.to_string_lossy().contains("qa_junction_rust_"));
+        assert!(physical.to_string_lossy().contains("junction-rust-"));
+        fs::create_dir_all(&dir).unwrap();
+        assert_eq!(dir.canonicalize().unwrap(), physical.canonicalize().unwrap());
+        for kind in ["manual", "auto", "quick"] {
+            let path = dir.join(save_file_name(kind, 1).unwrap());
+            write_save_file(&path, &serde_json::json!({"save_id": format!("{kind}-first")})).unwrap();
+            write_save_file(&path, &serde_json::json!({"save_id": format!("{kind}-replacement")})).unwrap();
+            let value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(value["save_id"], format!("{kind}-replacement"));
+        }
+        assert_eq!(fs::read_dir(&physical).unwrap().count(), 3,
+            "Only the three complete category files remain; no staging files");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn save_storage_locked_destination_preserves_save_and_cleans_staging() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = std::env::temp_dir().join(format!("agentvn-save-locked-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("quick-01.json");
+        fs::write(&path, b"previous valid save").unwrap();
+        let lock = fs::OpenOptions::new().read(true).share_mode(0).open(&path).unwrap();
+        let result = write_save_file(&path, &serde_json::json!({"save_id": "replacement"}));
+        drop(lock);
+        let preserved = fs::read(&path).unwrap();
+        let count = fs::read_dir(&dir).unwrap().count();
+        fs::remove_dir_all(&dir).unwrap();
+        assert!(result.is_err());
+        assert_eq!(preserved, b"previous valid save");
+        assert_eq!(count, 1, "Failed replacement must clean its staging file");
+    }
 
     #[test]
     fn error_logs_sanitize_credentials_and_url_query_values() {

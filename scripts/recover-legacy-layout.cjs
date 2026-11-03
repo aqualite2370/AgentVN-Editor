@@ -1,0 +1,20 @@
+// One-off recovery from the last build, before the accidental source restore.
+const fs = require("node:fs");
+const path = require("node:path");
+const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
+const postcss = require("../editor/node_modules/postcss");
+const root = path.resolve(__dirname, "..");
+const source = fs.readFileSync(path.join(root, "output/pre-rollback-built-styles.css"), "utf8");
+assert.equal(crypto.createHash("sha256").update(source).digest("hex"), "72fe4905c7a1a2285688e1529c3cc315fe9fef5c1533df058a11ad0cf70aa6e3");
+const nodes = postcss.parse(source).nodes;
+const start = nodes.findIndex((node) => node.selector === ".editor-shell");
+const end = nodes.findIndex((node) => node.selector === ":root" && node.nodes?.some((decl) => decl.prop === "--panel-bg-raised"));
+assert.equal(start, 38);
+assert.equal(end, 3179);
+assert.ok(nodes[end - 1].toString().includes(".toolbar-popover.advanced.is-layout-mode"));
+const recovered = nodes.slice(start, end).map((node) => node.toString()).join("\n") + "\n";
+assert.ok(recovered.includes(".glass-selection-group"));
+assert.ok(!recovered.includes("--panel-bg-raised:"));
+fs.writeFileSync(path.join(root, "editor/src/styles/layout.css"), recovered);
+console.log(`Recovered ${end - start} legacy CSS rules, excluding redesign overrides.`);

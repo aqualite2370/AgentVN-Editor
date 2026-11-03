@@ -66,7 +66,7 @@ const parameterHelp = {
     example: "请填写服务商后台生成的完整密钥。不要截图或发给别人；泄露后请到服务商后台立即重置。",
   },
   modelId: {
-    description: "服务商接口真实使用的模型名称，请和服务商文档或模型列表保持一致。",
+    description: "服务商接口使用的模型名称，请和服务商文档或模型列表保持一致。",
     example: "例：deepseek-chat、deepseek-reasoner、gpt-4o-mini。",
   },
   displayName: {
@@ -94,12 +94,12 @@ const parameterHelp = {
     example: "建议：普通模型 24000；长上下文模型可设 48000-128000。太高可能导致服务商拒绝或费用升高。",
   },
   structuredMode: {
-    description: "控制剧情生成最终数据来自结构化工具调用，还是旧的 JSON 兼容模式。",
-    example: "建议：默认使用自动兼容；只有模型服务明确不支持结构化工具时，再临时切到 JSON 兼容。",
+    description: "决定模型返回内容的兼容方式。通常保持推荐模式即可。",
+    example: "仅在兼容性检查提示时调整。",
   },
   thinkingMode: {
-    description: "标记这个模型会使用更长的推理或思考过程。它不会直接改写接口参数，只会在生成前提醒你结构化写入风险。",
-    example: "建议：DeepSeek reasoner、thinking、长推理模型可勾选；普通聊天模型保持关闭，避免频繁警告。",
+    description: "推理模型通常需要更长等待时间。",
+    example: "仅为明确标注为推理或思考型的模型开启。",
   },
   systemPrompt: {
     description: "为这个文本模型追加一段固定系统提示词，用来约束它的输出倾向、风格和格式习惯。",
@@ -108,14 +108,14 @@ const parameterHelp = {
 };
 
 parameterHelp.structuredMode = {
-  description: "Tool Call 会强制模型调用 AgentVN 工具并校验参数；工具优先兼容仅在服务商明确声明不支持工具时回退 JSON。",
-  example: "建议：所有支持 Tool Call 的模型都优先使用该模式；JSON 兼容可能出现截断，只应提供给明确不支持工具的模型。",
+  description: "决定模型返回内容的兼容方式。通常保持推荐模式即可。",
+  example: "仅在兼容性检查提示时调整。",
 };
 
 const providerStructuredModeOptions = [
-  { value: "tools", label: "Tool Call（推荐）" },
-  { value: "auto", label: "工具优先兼容" },
-  { value: "json_object", label: "JSON 兼容（可能截断）" },
+  { value: "tools", label: "推荐模式" },
+  { value: "auto", label: "自动兼容" },
+  { value: "json_object", label: "基础兼容" },
 ] as const;
 
 const providerModelExpansionStorageKey = "agentvn.providerModelExpansion";
@@ -181,7 +181,7 @@ function clampSystemPrompt(value: string | undefined): string | undefined {
 }
 
 function formatHelpText(help: { description: string; example: string }): string {
-  return `${help.description}\n${help.example}`;
+  return help.description;
 }
 
 function isLikelyToolChoiceLimitedModel(model: ProviderModel): boolean {
@@ -219,14 +219,14 @@ function sanitizeCompatibilityText(text: string | undefined): string {
 }
 
 function structuredModeLabel(mode: string | undefined): string {
-  if (mode === "tools") return "Tool Call";
-  if (mode === "json_object") return "JSON 兼容（可能截断）";
-  return "工具优先兼容";
+  if (mode === "tools") return "推荐模式";
+  if (mode === "json_object") return "基础兼容";
+  return "自动兼容";
 }
 
 function compatibilityResultLabel(result: { tool_calling_ok?: boolean; json_mode_ok?: boolean; memory_schema_ok?: boolean; recommended_structured_mode?: string }): string {
-  if (result.tool_calling_ok && result.memory_schema_ok !== false) return "Tool Call 已通过";
-  if (result.json_mode_ok) return "仅 JSON 兼容";
+  if (result.tool_calling_ok && result.memory_schema_ok !== false) return "兼容性已通过";
+  if (result.json_mode_ok) return "可使用基础兼容模式";
   return "检查失败";
 }
 
@@ -245,11 +245,11 @@ function resolvedCompatibilityState(model: ProviderModel, connection: ProviderCo
 }
 
 function compatibilityStateLabel(state: ReturnType<typeof resolvedCompatibilityState>): string {
-  if (state === "passed") return "Tool Call 已通过";
-  if (state === "json_fallback") return "仅 JSON 兼容";
-  if (state === "failed") return "适配测试失败";
-  if (state === "stale") return "配置已变更，需重测";
-  return "Tool Call 未测试";
+  if (state === "passed") return "兼容性已通过";
+  if (state === "json_fallback") return "基础兼容";
+  if (state === "failed") return "兼容性检查失败";
+  if (state === "stale") return "配置已变更，需重新检查";
+  return "尚未检查";
 }
 
 function modelSummaryChips(model: ProviderModel): Array<{ label: string; tone?: "muted" | "accent" | "asset" }> {
@@ -258,26 +258,14 @@ function modelSummaryChips(model: ProviderModel): Array<{ label: string; tone?: 
   ];
   if (isTextFamilyModel(model)) chips.push({ label: "文本", tone: "accent" });
   if (model.capabilities.includes("image_generation")) chips.push({ label: "素材", tone: "asset" });
-  const mode = model.default_parameters.structured_mode ?? "auto";
-  if (isTextFamilyModel(model)) chips.push({ label: mode === "json_object" ? "JSON" : mode === "tools" ? "工具" : "自动" });
-  if (model.default_parameters.thinking_mode === true) chips.push({ label: "思考" });
-  if (model.default_parameters.system_prompt?.trim()) chips.push({ label: "提示词" });
+  if (model.default_parameters.thinking_mode === true) chips.push({ label: "推理" });
+  if (model.default_parameters.system_prompt?.trim()) chips.push({ label: "自定义风格" });
   for (const capability of model.capabilities) {
     if (legacyTextFamilyCapabilities.includes(capability as never) || capability === "image_generation") continue;
     chips.push({ label: capabilityLabels[capability] ?? capability });
   }
   if (chips.length === 1) chips.push({ label: "未分配", tone: "muted" });
   return chips;
-}
-
-function ProviderInfoCard({ title, description, example }: { title: string; description: string; example: string }) {
-  return (
-    <article className="provider-info-card">
-      <strong>{title}</strong>
-      <span>{description}</span>
-      <span>{example}</span>
-    </article>
-  );
 }
 
 export function ProviderSettingsPanel() {
@@ -576,16 +564,14 @@ function updateTextFamilySelection(providerId?: string) {
 
   async function testModelGeneration(connection: ProviderConnection, model: ProviderModel) {
     const confirmed = window.confirm(
-      "建议先进行一次 Tool Call 适配测试。\n\n"
-      + "测试会向当前模型发送 SceneBeat、MemoryUpdate 和复杂小说规划三个小型探针，"
-      + "可能产生少量模型费用。只有服务商明确不支持 Tool Call 时才会追加一次 JSON 兼容探针。\n\n"
-      + "是否开始测试？"
+      "将向当前模型发送少量测试请求，以确认剧情生成是否稳定可用。\n\n"
+      + "测试可能产生少量模型费用。是否开始？"
     );
     if (!confirmed) return;
 
     const apiKey = tokenDrafts[connection.connection_id] ?? "";
     if (!apiKey.trim()) {
-      setConnectionStatus((current) => ({ ...current, [model.provider_id]: "请先填写 API Token，再检查结构化生成兼容性。" }));
+      setConnectionStatus((current) => ({ ...current, [model.provider_id]: "请先填写 API Token，再检查模型兼容性。" }));
       setCompatibilityProgress((current) => ({
         ...current,
         [model.provider_id]: { percent: 100, message: "缺少 API Token", level: "error" },
@@ -598,7 +584,7 @@ function updateTextFamilySelection(providerId?: string) {
       ...current,
       [model.provider_id]: { percent: 18, message: "准备请求", level: "info" },
     }));
-    setConnectionStatus((current) => ({ ...current, [model.provider_id]: "正在检查结构化生成兼容性..." }));
+    setConnectionStatus((current) => ({ ...current, [model.provider_id]: "正在检查模型兼容性..." }));
     try {
       setCompatibilityProgress((current) => ({
         ...current,
@@ -617,7 +603,7 @@ function updateTextFamilySelection(providerId?: string) {
         ...current,
         [model.provider_id]: {
           percent: 72,
-          message: result.complex_schema_ok === false ? "检查复杂规划结构" : "校验 Tool Call 参数",
+          message: result.complex_schema_ok === false ? "检查复杂剧情规划" : "校验模型返回内容",
           level: "info",
         },
       }));
@@ -659,7 +645,7 @@ function updateTextFamilySelection(providerId?: string) {
         ...current,
         [model.provider_id]: result.ok
           ? `${resultLabel}。耗时 ${result.latency_ms}ms。${recommended ? `建议模式：${recommendedLabel}；配置尚未自动修改。` : ""}`
-          : `检查失败：${sanitizeCompatibilityText(result.error_message || result.message)} Tool Call 失败不会自动降级为 JSON。`,
+          : `检查失败：${sanitizeCompatibilityText(result.error_message || result.message)}`,
       }));
       setCompatibilityProgress((current) => ({
         ...current,
@@ -706,7 +692,7 @@ function updateTextFamilySelection(providerId?: string) {
       <header className="provider-settings-header">
         <div>
           <h3>模型/连接</h3>
-          <p>这些配置只保存在当前设备，不会写入项目、运行脚本或卡带。</p>
+          <p>模型连接保存在本机，不会随作品发布。</p>
         </div>
         <button type="button" data-help-key="provider.addConnection" onClick={addConnection}>
           新增连接
@@ -776,11 +762,6 @@ function updateTextFamilySelection(providerId?: string) {
                 >
                   删除连接
                 </button>
-              </div>
-              <div className="provider-info-grid">
-                <ProviderInfoCard title="名称" {...parameterHelp.connectionName} />
-                <ProviderInfoCard title="接口地址（Base URL）" {...parameterHelp.baseUrl} />
-                <ProviderInfoCard title="API 密钥（API Token）" {...parameterHelp.apiToken} />
               </div>
               <div className="form-grid">
                 <label>
@@ -900,10 +881,6 @@ function updateTextFamilySelection(providerId?: string) {
                     {expandedModels[model.provider_id] && (
                     <div className="provider-model-content-wrap">
                       <div className="provider-model-content">
-                        <div className="provider-info-grid">
-                          <ProviderInfoCard title="模型 ID" {...parameterHelp.modelId} />
-                          <ProviderInfoCard title="显示名称" {...parameterHelp.displayName} />
-                        </div>
                         <div className="advanced-grid-2">
                           <label>
                             模型 ID
@@ -933,7 +910,7 @@ function updateTextFamilySelection(providerId?: string) {
                         </label>
                         <div className="provider-section-heading">
                           <strong>能力选择</strong>
-                          <span>勾选此模型可以承担的任务。文本与联想会同时服务剧情生成、大模型助手、小说导入和提示词优化。</span>
+                          <span>选择这个模型用于文字创作还是图片生成。</span>
                         </div>
                         <div className="provider-capability-grid">
                           <label className="provider-checkbox provider-capability-card ai-glow-surface">
@@ -945,8 +922,7 @@ function updateTextFamilySelection(providerId?: string) {
                             />
                             <span className="provider-checkbox-text">
                               <strong>用于文本与联想</strong>
-                              <small>用于剧情续写、小说导入、大模型助手和提示词优化。</small>
-                              <small>勾选后会进入统一文本模型列表，提示词优化也会共用这一项。</small>
+                              <small>剧情续写、小说导入、助手和提示词优化。</small>
                             </span>
                           </label>
                           <label className="provider-checkbox provider-capability-card ai-glow-surface">
@@ -958,14 +934,13 @@ function updateTextFamilySelection(providerId?: string) {
                             />
                             <span className="provider-checkbox-text">
                               <strong>用于素材生成</strong>
-                              <small>用于生成背景、立绘和素材图。普通文本模型不要勾选。</small>
-                              <small>如果只勾选素材生成，下方文本生成参数会自动收起。</small>
+                              <small>背景、立绘和其他图片素材。</small>
                             </span>
                           </label>
                         </div>
                         {isAssetOnlyModel(model) ? (
                           <p className="provider-status provider-asset-only-note">
-                            该模型只用于素材生成，文本生成参数和结构化生成兼容性检查无需填写。请在“素材生成”面板中验证实际图片生成效果。
+                            该模型只用于图片生成，可前往“素材生成”验证效果。
                           </p>
                         ) : (
                           <>
@@ -983,7 +958,7 @@ function updateTextFamilySelection(providerId?: string) {
                           </summary>
                           <div className="provider-system-prompt-body">
                             <p>
-                              可以约束模型按想要的输出进行输出。例如“破盾”提示词；具体实践可参考“酒馆”。
+                              为当前模型设置长期使用的写作风格和输出偏好。
                             </p>
                             <label>
                               系统提示词
@@ -994,7 +969,7 @@ function updateTextFamilySelection(providerId?: string) {
                                 data-help-key="provider.systemPrompt"
                                 data-help-title="模型系统提示词"
                                 data-help={formatHelpText(parameterHelp.systemPrompt)}
-                                placeholder="例如：保持冷静、克制、适合视觉小说的叙事语气；不要输出解释文字；所有新增内容必须能被 AgentVN 结构化校验。"
+                                placeholder="例如：保持冷静、克制的视觉小说叙事语气，不要输出额外解释。"
                                 onChange={(event) =>
                                   updateModel(model.provider_id, {
                                     default_parameters: {
@@ -1027,7 +1002,7 @@ function updateTextFamilySelection(providerId?: string) {
                         </details>
                         <div className="provider-section-heading">
                           <strong>生成参数</strong>
-                          <span>系统会根据模型 ID 自动选择内建预设；各项参数仍应按对应模型官方文档调整。</span>
+                          <span>通常保持默认；需要精细控制时再调整。</span>
                         </div>
                         <div className="advanced-grid-2">
                           <label>
@@ -1166,8 +1141,7 @@ function updateTextFamilySelection(providerId?: string) {
                               }
                             />
                             <small className="provider-parameter-note">
-                              当前自动预设：{getModelParameterProfile(model.model_name || model.model_id).label}
-                              （{getModelParameterProfile(model.model_name || model.model_id).basis_label}）。合适的参数详见对应模型官方文档。
+                              当前预设：{getModelParameterProfile(model.model_name || model.model_id).label}。
                             </small>
                           </label>
                           <label className="provider-checkbox provider-capability-card ai-glow-surface">
@@ -1187,14 +1161,13 @@ function updateTextFamilySelection(providerId?: string) {
                               }
                             />
                             <span className="provider-checkbox-text">
-                              <strong>启用思考模式</strong>
-                              <small>用于 reasoner / thinking 类模型，生成前会提示结构化写入风险。</small>
+                              <strong>推理模型</strong>
+                              <small>仅为明确标注为推理或思考型的模型开启。</small>
                             </span>
                           </label>
                           {isLikelyToolChoiceLimitedModel(model) && (
                             <p className="provider-status">
-                              检测到 thinking / reasoner 类模型。运行 Tool Call 时 AgentVN 会关闭 DeepSeek thinking；
-                              请使用下方适配测试确认服务商是否支持强制工具调用。
+                              检测到推理模型，建议运行兼容性检查。
                             </p>
                           )}
                         </div>
@@ -1202,23 +1175,23 @@ function updateTextFamilySelection(providerId?: string) {
                           <strong>{compatibilityStateLabel(resolvedCompatibilityState(model, selectedConnection))}</strong>
                           <span>
                             {model.structured_compatibility?.summary
-                              ?? "尚未验证当前模型能否完成 SceneBeat、MemoryUpdate 和复杂小说规划 Tool Call。"}
+                              ?? "尚未验证当前模型能否稳定完成剧情生成。"}
                           </span>
                           {model.structured_compatibility?.tested_at && (
                             <small>最后测试：{new Date(model.structured_compatibility.tested_at).toLocaleString()}</small>
                           )}
                         </div>
                         <div className="row-actions">
-                          <button type="button" onClick={() => applyRecommendedModelParameters(model)}>
+                          <button data-help-key="editor.control" type="button" onClick={() => applyRecommendedModelParameters(model)}>
                             应用推荐预设
                           </button>
                           <button type="button" data-help-key="provider.compatibilityCheck" disabled={testingProviderId === model.provider_id} onClick={() => void testModelGeneration(selectedConnection, model)}>
-                            {testingProviderId === model.provider_id ? "适配测试中..." : "检查模型 / Tool Call"}
+                            {testingProviderId === model.provider_id ? "检查中..." : "检查模型兼容性"}
                           </button>
                           {model.structured_compatibility?.recommended_structured_mode
                             && model.structured_compatibility.recommended_structured_mode !== model.default_parameters.structured_mode
                             && (
-                              <button type="button" onClick={() => applyCompatibilityRecommendation(model)}>
+                              <button data-help-key="editor.control" type="button" onClick={() => applyCompatibilityRecommendation(model)}>
                                 应用测试建议
                               </button>
                             )}

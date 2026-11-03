@@ -21,7 +21,7 @@ export const builtInAnimationPresets: AnimationPreset[] = [
     description: "角色柔和退场，适合场景收束。",
     target_type: "sprite",
     duration_ms: 420,
-    easing: "ease-in",
+    easing: "ease-out",
     loop: false,
     direction: "normal",
     keyframes: [
@@ -63,7 +63,7 @@ export const builtInAnimationPresets: AnimationPreset[] = [
     description: "角色向左侧快速离场。",
     target_type: "sprite",
     duration_ms: 460,
-    easing: "ease-in",
+    easing: "ease-out",
     loop: false,
     direction: "normal",
     keyframes: [
@@ -77,7 +77,7 @@ export const builtInAnimationPresets: AnimationPreset[] = [
     description: "角色向右侧快速离场。",
     target_type: "sprite",
     duration_ms: 460,
-    easing: "ease-in",
+    easing: "ease-out",
     loop: false,
     direction: "normal",
     keyframes: [
@@ -182,7 +182,7 @@ export const builtInAnimationPresets: AnimationPreset[] = [
     description: "适合回忆结束或失焦切换。",
     target_type: "background",
     duration_ms: 520,
-    easing: "ease-in",
+    easing: "ease-out",
     loop: false,
     direction: "normal",
     keyframes: [

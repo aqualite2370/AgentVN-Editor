@@ -1,18 +1,10 @@
-import type {
-  UILayoutBreakpoint,
-  UILayoutComponent,
-  UILayoutRect,
-} from "../../../shared/cartridge/uiSkin";
+import type { UILayoutComponent, UILayoutRect } from "../../../shared/cartridge/uiSkin";
 
 const containerPadding = 1;
-const gridByBreakpoint = {
-  desktop: { width: 20, height: 7, columnStep: 22, rowStep: 8, columns: 3 },
-  mobile: { width: 27, height: 6, columnStep: 29, rowStep: 7, columns: 3 },
-} as const;
+const grid = { width: 20, height: 7, columnStep: 22, rowStep: 8, columns: 3 } as const;
 
-function rectFor(component: UILayoutComponent, breakpoint: UILayoutBreakpoint): UILayoutRect {
-  return (breakpoint === "mobile" ? component.mobileRect ?? component.rect : component.rect)
-    ?? { x: 10, y: 10, width: 30, height: 20 };
+function rectFor(component: UILayoutComponent): UILayoutRect {
+  return component.rect ?? { x: 10, y: 10, width: 30, height: 20 };
 }
 
 function round(value: number): number {
@@ -34,15 +26,14 @@ function overlapRatio(left: UILayoutRect, right: UILayoutRect): number {
 export function findAvailableCustomButtonRect(
   components: UILayoutComponent[],
   container: UILayoutComponent,
-  breakpoint: UILayoutBreakpoint,
+  _breakpoint?: unknown,
 ): UILayoutRect {
-  const grid = gridByBreakpoint[breakpoint];
-  const containerRect = rectFor(container, breakpoint);
+  const containerRect = rectFor(container);
   const originX = containerRect.x + containerPadding;
   const bottom = containerRect.y + containerRect.height - containerPadding;
   const occupied = components
     .filter((component) => component.component_type === "main_menu_custom_button")
-    .map((component) => rectFor(component, breakpoint));
+    .map((component) => rectFor(component));
 
   for (let slot = 0; slot < 300; slot += 1) {
     const column = slot % grid.columns;

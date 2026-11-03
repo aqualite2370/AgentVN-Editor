@@ -4,7 +4,10 @@ import { fileURLToPath } from "node:url";
 import fs from "node:fs";
 import path from "node:path";
 
-const gameCliDist = fileURLToPath(new URL("../GameCli_framework/dist", import.meta.url));
+const defaultGameCliDist = fileURLToPath(new URL("../GameCli_framework/dist", import.meta.url));
+const gameCliDist = process.env.AGENTVN_GAMECLI_PREVIEW_DIST
+  ? path.resolve(process.env.AGENTVN_GAMECLI_PREVIEW_DIST)
+  : defaultGameCliDist;
 const bundledGameCliTarget = fileURLToPath(new URL("./dist/gamecli-preview", import.meta.url));
 
 function gameCliContentType(filePath: string): string {
@@ -27,9 +30,9 @@ function gameCliContentType(filePath: string): string {
   }
 }
 
-function assertGameCliBuild(): void {
-  if (!fs.existsSync(path.join(gameCliDist, "index.html"))) {
-    throw new Error(`GameCLI web build is missing: ${gameCliDist}. Run npm run build:gamecli-preview.`);
+function assertGameCliBuild(dist = gameCliDist): void {
+  if (!fs.existsSync(path.join(dist, "index.html"))) {
+    throw new Error(`GameCLI web build is missing: ${dist}. Run npm run build:gamecli-preview.`);
   }
 }
 
@@ -74,9 +77,9 @@ function gameCliPreviewPlugin() {
       });
     },
     closeBundle() {
-      assertGameCliBuild();
+      assertGameCliBuild(defaultGameCliDist);
       fs.rmSync(bundledGameCliTarget, { recursive: true, force: true });
-      fs.cpSync(gameCliDist, bundledGameCliTarget, { recursive: true });
+      fs.cpSync(defaultGameCliDist, bundledGameCliTarget, { recursive: true });
     },
   };
 }

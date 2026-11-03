@@ -1,0 +1,41 @@
+"use strict";
+const fs = require("node:fs"), path = require("node:path"), assert = require("node:assert/strict");
+const { sha } = require("./installed-runtime-session.cjs");
+const { validateNarrativeFixture } = require("./installed-narrative-1922-fixture.cjs");
+const root = path.resolve(__dirname, "../..");
+const read = f => JSON.parse(fs.readFileSync(f, "utf8").replace(/^\uFEFF/, ""));
+function validateDevNarrativePreparation(prep) {
+  assert.equal(prep.status, "PASS");
+  assert.equal(prep.scope, "CURRENT_DEV_NATIVE_NARRATIVE_NOT_INSTALLED_ACCEPTANCE");
+  assert.equal(path.dirname(path.resolve(prep.sessionRoot)), "F:\\AgentVN\\QA\\Native-Runtime-State-20261020-01");
+  assert.match(path.basename(prep.sessionRoot), /^dev-narrative-20261024-\d{2}$/);
+  assert.equal(prep.defaultStorage, "CODEX_EXPLICIT_PHYSICAL_ROAMING_LIBRARY_LOCAL_JUNCTION");
+  assert.equal(path.resolve(prep.temporary), path.join(prep.sessionRoot, "temporary"));
+  assert.equal(path.resolve(prep.webview), path.join(prep.sessionRoot, "webview"));
+  for (const f of [prep.build, prep.executable, prep.exported]) assert.equal(sha(f.path), f.sha256);
+  assert.equal(path.resolve(prep.build.path),
+    "F:\\AgentVN\\QA\\Narrative-Geometry-Source-20261024-01\\build-01\\report.json");
+  const build = read(prep.build.path);
+  assert.equal(build.status, "PASS"); assert(build.finishedAt);
+  assert.equal(build.commands.length, 4); assert(build.commands.every(c => c.status === "PASS" && c.exitCode === 0));
+  assert.equal(path.resolve(prep.executable.path), path.join(root, "editor/src-tauri/binaries/agentvn-player.exe"));
+  assert.equal(prep.executable.sha256, build.preview.sha256);
+  assert.equal(sha(build.dev.path), build.dev.sha256);
+  for (const s of build.sources) assert.equal(sha(path.join(root, s.file)), s.sha256);
+  for (const f of build.bundledSources) assert.equal(sha(f.path), f.sha256);
+  for (const f of build.frozenInstallation) assert.equal(sha(f.file), f.sha256);
+  const exported = read(prep.exported.path);
+  assert.equal(exported.status, "PASS"); assert(exported.finishedAt && !exported.cleanupError);
+  assert.equal(exported.scope, "ACTUAL_1922_INSTALLED_EDITOR_NARRATIVE_BOUNDARY_UI_EXPORT");
+  assert.equal(exported.steps.length, 3); assert(exported.steps.every(s => s.status === "PASS"));
+  assert.deepEqual(prep.cartridges, exported.cartridges); assert.equal(prep.cartridges.length, 2);
+  assert.deepEqual(prep.fixture, exported.fixture); assert.equal(prep.fixture.capacityVariant, "mixed-history-v2");
+  for (const c of prep.cartridges) assert.equal(sha(c.path), c.sha256);
+  assert.equal(sha(prep.fixture.input), prep.fixture.inputSha256);
+  validateNarrativeFixture(read(prep.fixture.input), prep.fixture, fs.readFileSync(prep.fixture.voice.path));
+  assert.equal(sha(exported.restoration.path), exported.restoration.sha256);
+  assert.equal(read(exported.restoration.path).status, "PASS");
+  assert(exported.cleanups.length && exported.cleanups.every(c => c.status === "PASS"));
+  return { scope: prep.scope, executable: prep.executable, storage: prep.defaultStorage };
+}
+module.exports = { validateDevNarrativePreparation };

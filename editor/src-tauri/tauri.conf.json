@@ -1,12 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "AgentVN Editor",
-  "version": "1.7.0",
+  "version": "1.9.41",
   "identifier": "com.agentvn.editor",
   "build": {
     "beforeDevCommand": "",
     "devUrl": "http://127.0.0.1:6767",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run build && npm run prepare:runtime-resources",
     "frontendDist": "../dist"
   },
   "app": {
@@ -29,24 +29,28 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis", "msi"],
+    "targets": ["nsis"],
     "icon": ["icons/icon.ico"],
     "resources": {
+      "bundle-workspace/build-versions.json": "build-versions.json",
       "binaries/agentvn-player.exe": "agentvn-player.exe",
       "binaries/creator-backend.exe": "creator-backend.exe",
       "bundle-workspace/GameCli_framework": "GameCli_framework",
       "bundle-workspace/scripts": "scripts",
       "bundle-workspace/shared": "shared",
-      "../../scripts/setup-android-build-env.ps1": "setup-android-build-env.ps1",
-      "../../scripts/setup-windows-build-env.ps1": "setup-windows-build-env.ps1"
+      "bundle-workspace/windows-offline-tools": "windows-offline-tools",
+      "../../scripts/setup-android-build-env.ps1": "setup-android-build-env.ps1"
     },
     "windows": {
       "wix": {
-        "language": ["zh-CN", "en-US"]
+        "language": ["zh-CN", "en-US"],
+        "fragmentPaths": ["wix/install-directory.wxs"],
+        "componentGroupRefs": ["AgentVNInstallDirectoryPolicy"]
       },
       "nsis": {
         "languages": ["SimpChinese", "English"],
-        "displayLanguageSelector": true
+        "displayLanguageSelector": true,
+        "installerHooks": "installer-hooks.nsh"
       }
     }
   }

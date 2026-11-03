@@ -1,6 +1,6 @@
 import type { Choice, GameCommand } from "../types/commands";
 import type { BackgroundFit, GameManifest } from "../types/manifest";
-import type { CameraReplayRecord, CameraSaveStateV1, HistoryEntry, SaveData } from "../types/save";
+import type { CameraReplayRecord, CameraSaveStateV1, HistoryEntry, NvlLineState, SaveData } from "../types/save";
 import type { RuntimeScene, RuntimeScript } from "../types/script";
 import type { ActiveVideoState, BgmState, DialogState, FocusedImageState, RuntimeAnimationEffect, SfxEvent, SpriteState } from "../types/settings";
 import { newId } from "../utils/id";
@@ -12,6 +12,9 @@ import {
 } from "../../../shared/animation/visualTransition";
 import { inheritedSpriteLayer } from "../../../shared/cartridge/spriteLayer";
 import { DEFAULT_SPRITE_SCALE, sanitizeSpriteScale } from "../../../shared/cartridge/spriteScale";
+import { sanitizeSpriteOffsetX, sanitizeSpriteOffsetY } from "../../../shared/cartridge/spritePlacement";
+import { normalizeBgmCommandFields } from "../../../shared/cartridge/bgmTransition";
+import { resolveDialogPresentation } from "../../../shared/cartridge/dialogPresentation";
 import {
   cameraCommandFingerprint,
   cameraMotionLane,
@@ -49,6 +52,13 @@ export interface StoryEngineState {
   sprites: Record<string, SpriteState>;
   spriteOrder: string[];
   dialog?: DialogState;
+  /** Restored dialogue is rendered without replaying the command's voice. */
+  dialogRestored?: boolean;
+  dialogPageIndex: number;
+  dialogPageCount: number;
+  dialogPageForwardIndex: number;
+  nvlPresentationMode: "dialog" | "nvl" | "bubble";
+  nvlPage: NvlLineState[];
   focusedImage?: FocusedImageState;
   activeVideo?: ActiveVideoState;
   choices: Choice[];
@@ -63,6 +73,7 @@ export interface StoryEngineState {
   isPaused: boolean;
   isEnded: boolean;
   isPreviewFrame: boolean;
+  isGalleryReplay: boolean;
   bgmState?: BgmState;
   currentCommandType?: string;
   cameraEffect?: string;
@@ -71,6 +82,10 @@ export interface StoryEngineState {
   animationHint?: string;
   animationEffects: RuntimeAnimationEffect[];
   sfxEvent?: SfxEvent;
+  canRollback: boolean;
+  canRollForward: boolean;
+  rollbackSelectedChoiceId?: string;
+  rollbackChoiceFixed: boolean;
 }
 
 const emptyState: StoryEngineState = {
@@ -81,6 +96,11 @@ const emptyState: StoryEngineState = {
   backgroundTransitionKey: 0,
   sprites: {},
   spriteOrder: [],
+  dialogPageIndex: 0,
+  dialogPageCount: 1,
+  dialogPageForwardIndex: 0,
+  nvlPresentationMode: "dialog",
+  nvlPage: [],
   choices: [],
   variables: {},
   history: [],
@@ -93,9 +113,27 @@ const emptyState: StoryEngineState = {
   isPaused: false,
   isEnded: false,
   isPreviewFrame: false,
+  isGalleryReplay: false,
   camera: createInitialCameraState(),
   animationEffects: [],
+  canRollback: false,
+  canRollForward: false,
+  rollbackChoiceFixed: false,
 };
+
+interface RollbackRecord {
+  id: number;
+  hard: boolean;
+  commandType?: string;
+  snapshot: SaveData;
+  selectedChoiceId?: string;
+  fixed?: boolean;
+}
+
+/** In-memory interruption state; never part of a portable save or cartridge. */
+export interface PlaybackSessionCheckpoint {
+  restore: () => boolean;
+}
 
 function recordRuntimeAnimationProbe(event: string, effect: RuntimeAnimationEffect, details?: Record<string, unknown>): void {
   if (typeof window === "undefined") return;
@@ -253,10 +291,13 @@ export class StoryEngine {
   onChange?: (state: StoryEngineState) => void;
   canSkipText?: (textKey: string) => boolean;
   onSkipBlocked?: (textKey: string) => void;
+  onGalleryAnchor?: (command: Extract<GameCommand, { type: "gallery_anchor" }>, snapshot: SaveData) => void;
+  shouldSuppressTransitions?: () => boolean;
   private automaticAdvanceCount = 0;
   private playthroughCounter = 0;
   private spriteReplacementCounter = 0;
   private previewSettling = false;
+  private galleryReplaySceneId?: string;
   private engineEpoch = 0;
   private executionCounter = 0;
   private currentExecutionId = 0;
@@ -265,6 +306,14 @@ export class StoryEngine {
   readonly cameraClock = new RuntimeClock();
   private readonly cameraScheduler = new RuntimeScheduler(this.cameraClock);
   private readonly maxAutomaticAdvanceCount = 100;
+  private rollbackRecords: RollbackRecord[] = [];
+  private rollbackCursor = -1;
+  private rollbackRecordCounter = 0;
+  private rollbackSuspended = false;
+  private atRollbackCheckpoint = false;
+  private restoringRollback = false;
+  private rollbackFixedThroughId = 0;
+  private scriptRevision = 0;
 
   private defaultSpriteScale(): number {
     return sanitizeSpriteScale(this.script?.default_sprite_scale, DEFAULT_SPRITE_SCALE);
@@ -339,6 +388,12 @@ export class StoryEngine {
     this.state.cameraNotice = undefined;
     this.state.animationHint = undefined;
     this.state.camera = nextCamera;
+    if (this.state.isSkipMode && motion) {
+      this.state.camera = finishCameraLane(this.state.camera, lane, logicalNow + motion.duration_ms, motion.run_id);
+      this.emit();
+      if (this.noteAutomaticAdvance()) this.next(true);
+      return;
+    }
     if (!motion) {
       this.emit();
       if (command.blocking) this.next(true);
@@ -398,17 +453,206 @@ export class StoryEngine {
     return true;
   }
 
+  private clearRollbackTimeline(): void {
+    this.rollbackRecords = [];
+    this.rollbackCursor = -1;
+    this.rollbackRecordCounter = 0;
+    this.rollbackSuspended = false;
+    this.rollbackFixedThroughId = 0;
+    this.atRollbackCheckpoint = false;
+    this.syncRollbackAvailability();
+  }
+
+  private previousHardRollbackIndex(fromIndex: number): number {
+    for (let index = Math.min(fromIndex, this.rollbackRecords.length - 1); index >= 0; index -= 1) {
+      if (this.rollbackRecords[index]?.hard) return index;
+    }
+    return -1;
+  }
+
+  private nextHardRollbackIndex(fromIndex: number): number {
+    for (let index = Math.max(0, fromIndex); index < this.rollbackRecords.length; index += 1) {
+      if (this.rollbackRecords[index]?.hard) return index;
+    }
+    return -1;
+  }
+
+  private syncRollbackAvailability(): void {
+    if (this.script?.rollback?.enabled === false) {
+      this.state.canRollback = false;
+      this.state.canRollForward = false;
+      return;
+    }
+    const rollbackFrom = this.atRollbackCheckpoint ? this.rollbackCursor - 1 : this.rollbackCursor;
+    this.state.canRollback = this.state.dialogPageIndex > 0
+      || this.previousHardRollbackIndex(rollbackFrom) >= 0;
+    this.state.canRollForward = this.state.dialogPageForwardIndex > this.state.dialogPageIndex
+      || this.nextHardRollbackIndex(this.rollbackCursor + 1) >= 0;
+  }
+
+  private markRollbackDeparted(): void {
+    if (!this.atRollbackCheckpoint) return;
+    this.atRollbackCheckpoint = false;
+    this.syncRollbackAvailability();
+  }
+
+  private recordRollbackCheckpoint(hard = true): void {
+    if (this.script?.rollback?.enabled === false || this.rollbackSuspended || this.restoringRollback) return;
+    const current = this.rollbackRecords[this.rollbackCursor];
+    if (
+      this.atRollbackCheckpoint
+      && current
+      && current.snapshot.scene_id === this.state.currentSceneId
+      && current.snapshot.command_index === this.state.currentCommandIndex
+      && current.commandType === this.state.currentCommandType
+    ) {
+      this.syncRollbackAvailability();
+      return;
+    }
+
+    if (this.rollbackCursor < this.rollbackRecords.length - 1) {
+      const next = this.rollbackRecords[this.rollbackCursor + 1];
+      if (
+        next
+        && next.snapshot.scene_id === this.state.currentSceneId
+        && next.snapshot.command_index === this.state.currentCommandIndex
+        && next.commandType === this.state.currentCommandType
+      ) {
+        this.rollbackCursor += 1;
+        this.atRollbackCheckpoint = true;
+        this.syncRollbackAvailability();
+        return;
+      }
+      this.rollbackRecords = this.rollbackRecords.slice(0, this.rollbackCursor + 1);
+    }
+
+    const record: RollbackRecord = {
+      id: ++this.rollbackRecordCounter,
+      hard,
+      commandType: this.state.currentCommandType,
+      snapshot: structuredClone(this.createSaveSnapshot(0)),
+    };
+    this.rollbackRecords.push(record);
+    this.rollbackCursor = this.rollbackRecords.length - 1;
+    this.atRollbackCheckpoint = true;
+
+    const logLength = Math.max(2, Math.min(512, Math.round(this.script?.rollback?.log_length ?? 128)));
+    const hardLimit = Math.max(0, Math.min(logLength, Math.round(this.script?.rollback?.hard_limit ?? 100)));
+    while (this.rollbackRecords.length > logLength) {
+      this.rollbackRecords.shift();
+      this.rollbackCursor -= 1;
+    }
+    while (this.rollbackRecords.filter((item) => item.hard).length > hardLimit) {
+      this.rollbackRecords.shift();
+      this.rollbackCursor -= 1;
+    }
+    this.syncRollbackAvailability();
+  }
+
+  private restoreRollbackRecord(index: number): boolean {
+    const record = this.rollbackRecords[index];
+    if (!record) return false;
+    this.restoringRollback = true;
+    try {
+      this.restoreSaveSnapshot(structuredClone(record.snapshot));
+      if (record.snapshot.bgm_state === undefined) this.state.bgmState = undefined;
+      this.state.currentCommandType = record.commandType;
+      this.state.rollbackSelectedChoiceId = record.selectedChoiceId;
+      this.state.rollbackChoiceFixed = Boolean(
+        record.selectedChoiceId
+        && (record.fixed || record.id <= this.rollbackFixedThroughId)
+      );
+      if (
+        this.state.rollbackChoiceFixed
+        && this.script?.rollback?.fixed_choice_mode === "selected_only"
+        && record.selectedChoiceId
+      ) {
+        this.state.choices = this.state.choices.filter((choice) => choice.choice_id === record.selectedChoiceId);
+      }
+      this.state.isAutoMode = false;
+      this.state.isSkipMode = false;
+      this.state.isTyping = false;
+      this.state.typingRevealRequested = Boolean(this.state.dialog);
+      this.state.advanceQueuedAfterReveal = false;
+      this.rollbackCursor = index;
+      this.atRollbackCheckpoint = true;
+      this.syncRollbackAvailability();
+      this.emit();
+      return true;
+    } finally {
+      this.restoringRollback = false;
+    }
+  }
+
+  rollback(): boolean {
+    if (this.state.dialogPageIndex > 0) {
+      this.restoreDialogPage(this.state.dialogPageIndex - 1);
+      return true;
+    }
+    const fromIndex = this.atRollbackCheckpoint ? this.rollbackCursor - 1 : this.rollbackCursor;
+    const targetIndex = this.previousHardRollbackIndex(fromIndex);
+    return targetIndex >= 0 ? this.restoreRollbackRecord(targetIndex) : false;
+  }
+
+  rollForward(): boolean {
+    if (this.state.dialogPageForwardIndex > this.state.dialogPageIndex) {
+      this.restoreDialogPage(this.state.dialogPageIndex + 1);
+      return true;
+    }
+    const targetIndex = this.nextHardRollbackIndex(this.rollbackCursor + 1);
+    return targetIndex >= 0 ? this.restoreRollbackRecord(targetIndex) : false;
+  }
+
+  private executeRollbackControl(command: Extract<GameCommand, { type: "rollback" }>): void {
+    if (command.action === "checkpoint") {
+      this.recordRollbackCheckpoint(command.hard !== false);
+    } else if (command.action === "block") {
+      this.recordRollbackCheckpoint(true);
+      const current = this.rollbackRecords[this.rollbackCursor];
+      this.rollbackRecords = current ? [current] : [];
+      this.rollbackCursor = this.rollbackRecords.length - 1;
+      this.atRollbackCheckpoint = Boolean(current);
+      this.syncRollbackAvailability();
+    } else if (command.action === "fix") {
+      this.recordRollbackCheckpoint(true);
+      const current = this.rollbackRecords[this.rollbackCursor];
+      if (current) {
+        current.fixed = true;
+        this.rollbackFixedThroughId = Math.max(this.rollbackFixedThroughId, current.id);
+      }
+    } else if (command.action === "suspend") {
+      this.rollbackSuspended = true;
+    } else if (command.action === "resume") {
+      this.rollbackSuspended = false;
+    }
+    this.emitAndContinue();
+  }
+
   loadScript(script: RuntimeScript, manifest: GameManifest): void {
+    this.scriptRevision += 1;
     this.script = script;
     this.manifest = manifest;
+    this.clearRollbackTimeline();
     this.reset();
   }
 
   start(): void {
     if (!this.script) return;
+    this.galleryReplaySceneId = undefined;
+    this.clearRollbackTimeline();
     this.state = this.createFreshState();
     this.resetAutomaticAdvance();
     this.jumpToScene(this.script.entry_scene_id);
+  }
+
+  startGalleryReplay(sceneId: string): void {
+    if (!this.script) return;
+    if (!this.getScene(sceneId)) throw new Error(`画廊回放场景不存在：${sceneId}`);
+    this.galleryReplaySceneId = sceneId;
+    this.clearRollbackTimeline();
+    this.state = this.createFreshState();
+    this.resetAutomaticAdvance();
+    this.jumpToScene(sceneId);
   }
 
   previewScene(
@@ -419,6 +663,7 @@ export class StoryEngine {
     },
   ): void {
     if (!this.script) return;
+    this.galleryReplaySceneId = undefined;
     if (!this.getScene(sceneId)) {
       throw new Error(`场景编号不存在：${sceneId}`);
     }
@@ -451,6 +696,7 @@ export class StoryEngine {
 
   previewStart(spec: PreviewStartSpec): void {
     if (!this.script) return;
+    this.galleryReplaySceneId = undefined;
     const targetScene = this.getScene(spec.target.sceneId);
     if (!targetScene) {
       throw new Error(`找不到要预览的场景：${spec.target.sceneId}。请重新选择预览位置。`);
@@ -613,6 +859,8 @@ export class StoryEngine {
             character_id: command.character_id,
             sprite_id: command.sprite_id || existing?.sprite_id || "",
             position: command.position ?? existing?.position,
+            offset_x: sanitizeSpriteOffsetX(command.offset_x ?? existing?.offset_x),
+            offset_y: sanitizeSpriteOffsetY(command.offset_y ?? existing?.offset_y),
             layer: inheritedSpriteLayer(command.layer, existing?.layer),
             animation: command.animation,
             animation_config: command.animation_config,
@@ -721,6 +969,12 @@ export class StoryEngine {
   }
 
   jumpToScene(sceneId: string, options?: { automatic?: boolean }): void {
+    if (this.galleryReplaySceneId && sceneId !== this.galleryReplaySceneId) {
+      this.state.isEnded = true;
+      this.state.isPaused = true;
+      this.emit();
+      return;
+    }
     const scene = this.getScene(sceneId);
     if (!scene) {
       throw new Error(`场景编号不存在：${sceneId}。剧情跳转指向了不存在的场景，请回到编辑器检查下一场景或选项目标。`);
@@ -729,6 +983,8 @@ export class StoryEngine {
     this.resetSceneLocalSpriteState();
     this.state.currentSceneId = scene.scene_id;
     this.state.currentCommandIndex = 0;
+    this.state.nvlPresentationMode = "dialog";
+    this.state.nvlPage = [];
     this.state.choices = [];
     this.state.focusedImage = undefined;
     this.state.activeVideo = undefined;
@@ -748,7 +1004,7 @@ export class StoryEngine {
   }
 
   next(automatic = false): void {
-    if (this.state.isPaused || this.state.isWaitingChoice || this.state.focusedImage || this.state.activeVideo) return;
+    if (this.state.isEnded || this.state.isPaused || this.state.isWaitingChoice || this.state.focusedImage || this.state.activeVideo) return;
     const cameraGate = this.state.camera.blocking_gate;
     if (!automatic && cameraGate?.phase === "running") {
       this.finishStructuredCamera(
@@ -778,6 +1034,7 @@ export class StoryEngine {
       this.emit();
       return;
     }
+    this.markRollbackDeparted();
     this.state.currentCommandIndex += 1;
     this.executeCurrentCommand();
   }
@@ -787,6 +1044,12 @@ export class StoryEngine {
     if (!scene) return;
     const command = scene.commands[this.state.currentCommandIndex];
     if (!command) {
+      if (this.galleryReplaySceneId === scene.scene_id) {
+        this.state.isEnded = true;
+        this.state.isPaused = true;
+        this.emit();
+        return;
+      }
       if (scene.is_ending) {
         this.state.isEnded = true;
         this.state.isPaused = true;
@@ -795,6 +1058,15 @@ export class StoryEngine {
       }
       if (scene.next_scene_id) {
         this.scheduleJumpToScene(scene.next_scene_id);
+      } else if (scene.commands.length > 0) {
+        // An unfinished scene has no explicit ending or successor. Keep its
+        // last presentation saveable instead of letting auto/skip continually
+        // advance beyond the script and produce an unreadable snapshot.
+        this.state.currentCommandIndex = scene.commands.length - 1;
+        this.state.isAutoMode = false;
+        this.state.isSkipMode = false;
+        this.resetAutomaticAdvance();
+        this.emit();
       }
       return;
     }
@@ -807,6 +1079,12 @@ export class StoryEngine {
       onFinish?.();
       this.state.currentCommandIndex += 1;
       this.executeCurrentCommand();
+      return;
+    }
+    if (this.state.isSkipMode || this.shouldSuppressTransitions?.()) {
+      onFinish?.();
+      if (blocking) this.next(true);
+      else if (this.noteAutomaticAdvance()) this.next(true);
       return;
     }
     if (blocking) this.resetAutomaticAdvance();
@@ -831,13 +1109,31 @@ export class StoryEngine {
 
   executeCommand(command: GameCommand): void {
     this.state.currentCommandType = command.type;
+    if (command.type !== "choice") {
+      this.state.rollbackSelectedChoiceId = undefined;
+      this.state.rollbackChoiceFixed = false;
+    }
     switch (command.type) {
       case "dialog":
         this.resetAutomaticAdvance();
+        this.state.dialogRestored = false;
+        this.state.dialogPageIndex = 0;
+        this.state.dialogPageCount = 1;
+        this.state.dialogPageForwardIndex = 0;
+        const dialogPresentation = resolveDialogPresentation(command, this.script);
+        if (dialogPresentation !== this.state.nvlPresentationMode) {
+          this.state.nvlPage = [];
+          this.state.nvlPresentationMode = dialogPresentation;
+        }
+        if (this.state.nvlPresentationMode === "nvl" && command.clear_nvl_page_before) {
+          this.state.nvlPage = [];
+        }
         const speaker = this.characterDisplayName(command.character_id);
         const dialogTextKey = this.currentTextKey(command.text);
         const dialogSkipsInstantly = this.textSkipsInstantly(dialogTextKey);
         this.state.dialog = {
+          presentation_mode: dialogPresentation,
+          bubble_position: command.bubble_position ? structuredClone(command.bubble_position) : undefined,
           character_id: command.character_id,
           speaker,
           text: command.text,
@@ -850,6 +1146,13 @@ export class StoryEngine {
           dialog_style_mode: command.dialog_style_mode ?? (command.dialog_style ? "manual" : "inherit"),
           isNarration: false,
         };
+        if (this.state.nvlPresentationMode === "nvl") {
+          this.state.nvlPage = [...this.state.nvlPage, {
+            ...structuredClone(this.state.dialog),
+            scene_id: this.state.currentSceneId,
+            command_index: this.state.currentCommandIndex,
+          }];
+        }
         this.state.isTyping = !dialogSkipsInstantly;
         this.state.typingRevealRequested = false;
         this.state.advanceQueuedAfterReveal = false;
@@ -858,25 +1161,49 @@ export class StoryEngine {
           text: command.text,
           emotion: command.emotion,
         });
+        this.recordRollbackCheckpoint();
         this.emit();
         break;
       case "narration":
         this.resetAutomaticAdvance();
+        this.state.dialogRestored = false;
+        this.state.dialogPageIndex = 0;
+        this.state.dialogPageCount = 1;
+        this.state.dialogPageForwardIndex = 0;
+        const narrationPresentation = resolveDialogPresentation(command, this.script);
+        if (narrationPresentation !== this.state.nvlPresentationMode) {
+          this.state.nvlPage = [];
+          this.state.nvlPresentationMode = narrationPresentation;
+        }
+        if (this.state.nvlPresentationMode === "nvl" && command.clear_nvl_page_before) {
+          this.state.nvlPage = [];
+        }
         const narrationTextKey = this.currentTextKey(command.text);
         const narrationSkipsInstantly = this.textSkipsInstantly(narrationTextKey);
         this.state.dialog = {
+          presentation_mode: narrationPresentation,
+          bubble_position: command.bubble_position ? structuredClone(command.bubble_position) : undefined,
           speaker: undefined,
           text: command.text,
           text_key: narrationTextKey,
           font_asset_id: command.font_asset_id,
           dialog_style: command.dialog_style_mode === "manual" || command.dialog_style ? command.dialog_style ?? null : null,
           dialog_style_mode: command.dialog_style_mode ?? (command.dialog_style ? "manual" : "inherit"),
+          narration_style: command.narration_style ?? "dialog",
           isNarration: true,
         };
+        if (this.state.nvlPresentationMode === "nvl") {
+          this.state.nvlPage = [...this.state.nvlPage, {
+            ...structuredClone(this.state.dialog),
+            scene_id: this.state.currentSceneId,
+            command_index: this.state.currentCommandIndex,
+          }];
+        }
         this.state.isTyping = !narrationSkipsInstantly;
         this.state.typingRevealRequested = false;
         this.state.advanceQueuedAfterReveal = false;
         this.pushHistory({ speaker: "旁白", text: command.text });
+        this.recordRollbackCheckpoint();
         this.emit();
         break;
       case "hide_dialog":
@@ -902,7 +1229,7 @@ export class StoryEngine {
         }
         this.state.background = command.background_id;
         this.state.backgroundFit = nextBackgroundFit;
-        this.state.backgroundTransition = nextBackgroundTransition;
+        this.state.backgroundTransition = this.shouldSuppressTransitions?.() ? undefined : nextBackgroundTransition;
         this.state.backgroundTransitionKey += 1;
         this.emitAndContinue();
         break;
@@ -927,14 +1254,19 @@ export class StoryEngine {
         this.state.isTyping = false;
         this.state.typingRevealRequested = false;
         this.state.advanceQueuedAfterReveal = false;
+        this.recordRollbackCheckpoint();
         this.emit();
         break;
       case "sprite":
         const existingSprite = this.state.sprites[command.character_id];
         const nextSpriteId = command.sprite_id || existingSprite?.sprite_id || "";
         const nextPosition = command.position ?? existingSprite?.position;
+        const nextOffsetX = sanitizeSpriteOffsetX(command.offset_x ?? existingSprite?.offset_x);
+        const nextOffsetY = sanitizeSpriteOffsetY(command.offset_y ?? existingSprite?.offset_y);
         const nextScale = command.scale ?? existingSprite?.scale ?? this.defaultSpriteScale();
-        const normalizedSwitchTransition = resolveVisualTransition(command.switch_transition);
+        const normalizedSwitchTransition = this.shouldSuppressTransitions?.()
+          ? undefined
+          : resolveVisualTransition(command.switch_transition);
         const isSamePlacement = Boolean(
           existingSprite
           && normalizedSpritePlacement(existingSprite.position) === normalizedSpritePlacement(nextPosition),
@@ -951,6 +1283,8 @@ export class StoryEngine {
           ? {
               previous_sprite_id: existingSprite.sprite_id,
               previous_position: existingSprite.position,
+              previous_offset_x: existingSprite.offset_x,
+              previous_offset_y: existingSprite.offset_y,
               previous_scale: existingSprite.scale,
               transition: normalizedSwitchTransition,
               key: ++this.spriteReplacementCounter,
@@ -960,6 +1294,8 @@ export class StoryEngine {
           character_id: command.character_id,
           sprite_id: nextSpriteId,
           position: nextPosition,
+          offset_x: nextOffsetX,
+          offset_y: nextOffsetY,
           layer: inheritedSpriteLayer(command.layer, existingSprite?.layer),
           animation: command.animation,
           animation_config: command.animation_config,
@@ -1026,7 +1362,17 @@ export class StoryEngine {
         }
         break;
       case "choice":
-        this.state.choices = command.choices.filter((choice) => this.evaluateConditions(choice.conditions));
+        this.state.rollbackSelectedChoiceId = undefined;
+        this.state.rollbackChoiceFixed = false;
+        this.state.choices = command.choices
+          .filter((choice) => this.evaluateConditions(choice.conditions))
+          .map((choice) => ({
+            ...choice,
+            button_style: {
+              ...(command.button_style ?? {}),
+              ...(choice.button_style ?? {}),
+            },
+          }));
         if (this.state.choices.length === 0) {
           this.state.isWaitingChoice = false;
           this.state.animationHint = "选项全部被显示条件隐藏，已自动继续下一条事件。";
@@ -1035,6 +1381,7 @@ export class StoryEngine {
         }
         this.resetAutomaticAdvance();
         this.state.isWaitingChoice = true;
+        this.recordRollbackCheckpoint();
         this.emit();
         break;
       case "state_update":
@@ -1080,7 +1427,11 @@ export class StoryEngine {
           this.executeCurrentCommand();
           break;
         }
-        this.state.bgmState = { bgm_id: command.bgm_id, action: command.action, volume: command.volume, fade_ms: command.fade_ms };
+        this.state.bgmState = {
+          bgm_id: command.bgm_id,
+          ...normalizeBgmCommandFields(command as unknown as { action?: unknown; fade_ms?: unknown }),
+          volume: command.volume,
+        };
         this.emitAndContinue();
         break;
       case "sfx":
@@ -1144,9 +1495,25 @@ export class StoryEngine {
           this.executeCurrentCommand();
           break;
         }
+        if (this.state.isSkipMode) {
+          this.emitAndContinue();
+          break;
+        }
+        if (this.script?.rollback?.pause_as_checkpoint) this.recordRollbackCheckpoint(false);
         this.resetAutomaticAdvance();
         this.emit();
         this.scheduleForCurrentPlaythrough(() => this.next(true), command.duration_ms);
+        break;
+      case "gallery_anchor": {
+        const snapshot = this.createSaveSnapshot(0);
+        snapshot.gallery_anchor_id = command.anchor_id;
+        snapshot.command_index = this.state.currentCommandIndex + 1;
+        this.onGalleryAnchor?.(command, snapshot);
+        this.emitAndContinue();
+        break;
+      }
+      case "rollback":
+        this.executeRollbackControl(command);
         break;
     }
   }
@@ -1154,9 +1521,21 @@ export class StoryEngine {
   choose(choiceId: string): void {
     const choice = this.state.choices.find((item) => item.choice_id === choiceId);
     if (!choice) return;
+    if (this.state.rollbackChoiceFixed && this.state.rollbackSelectedChoiceId !== choiceId) return;
+    const currentRecord = this.rollbackRecords[this.rollbackCursor];
+    if (currentRecord?.commandType === "choice") {
+      const followsRecordedChoice = currentRecord.selectedChoiceId === choiceId;
+      if (currentRecord.selectedChoiceId && !followsRecordedChoice) {
+        this.rollbackRecords = this.rollbackRecords.slice(0, this.rollbackCursor + 1);
+        this.syncRollbackAvailability();
+      }
+      currentRecord.selectedChoiceId = choiceId;
+      if (followsRecordedChoice && this.state.canRollForward && this.rollForward()) return;
+    }
     this.state.isPreviewFrame = false;
     this.state.isWaitingChoice = false;
     this.state.choices = [];
+    this.markRollbackDeparted();
     this.resetAutomaticAdvance();
     this.jumpToScene(choice.target_scene_id);
   }
@@ -1181,8 +1560,41 @@ export class StoryEngine {
     this.state.focusedImage = undefined;
     this.changeCameraSuspension("focused-image", false, false);
     this.resetAutomaticAdvance();
+    this.markRollbackDeparted();
     this.state.currentCommandIndex += 1;
     this.executeCurrentCommand();
+  }
+
+  setDialogPagePosition(pageIndex: number, pageCount: number): void {
+    if (!Number.isSafeInteger(pageCount) || pageCount < 1) return;
+    if (!Number.isSafeInteger(pageIndex) || pageIndex < 0 || pageIndex >= pageCount) return;
+    if (this.state.dialogPageIndex === pageIndex && this.state.dialogPageCount === pageCount) return;
+    this.state.dialogPageIndex = pageIndex;
+    this.state.dialogPageCount = pageCount;
+    this.state.dialogPageForwardIndex = pageIndex;
+    const checkpoint = this.rollbackRecords[this.rollbackCursor];
+    if (checkpoint && this.atRollbackCheckpoint) {
+      checkpoint.snapshot.dialog_page_index = pageIndex;
+      checkpoint.snapshot.dialog_page_count = pageCount;
+    }
+    this.syncRollbackAvailability();
+    this.emit();
+  }
+
+  private restoreDialogPage(pageIndex: number): void {
+    const forwardIndex = Math.max(this.state.dialogPageForwardIndex, this.state.dialogPageIndex);
+    this.state.dialogPageIndex = pageIndex;
+    this.state.dialogPageForwardIndex = forwardIndex;
+    this.state.isTyping = false;
+    this.state.typingRevealRequested = Boolean(this.state.dialog);
+    this.state.advanceQueuedAfterReveal = false;
+    const checkpoint = this.rollbackRecords[this.rollbackCursor];
+    if (checkpoint && this.atRollbackCheckpoint) {
+      checkpoint.snapshot.dialog_page_index = pageIndex;
+      checkpoint.snapshot.dialog_page_count = this.state.dialogPageCount;
+    }
+    this.syncRollbackAvailability();
+    this.emit();
   }
 
   completeActiveVideo(): void {
@@ -1190,6 +1602,7 @@ export class StoryEngine {
     this.state.activeVideo = undefined;
     this.changeCameraSuspension("video", false, false);
     this.resetAutomaticAdvance();
+    this.markRollbackDeparted();
     this.state.currentCommandIndex += 1;
     this.executeCurrentCommand();
   }
@@ -1265,6 +1678,47 @@ export class StoryEngine {
     };
   }
 
+  capturePlaybackSession(): PlaybackSessionCheckpoint {
+    const revision = this.scriptRevision;
+    const snapshot = structuredClone(this.createSaveSnapshot());
+    const rollback = structuredClone({
+      records: this.rollbackRecords,
+      cursor: this.rollbackCursor,
+      counter: this.rollbackRecordCounter,
+      suspended: this.rollbackSuspended,
+      atCheckpoint: this.atRollbackCheckpoint,
+      fixedThroughId: this.rollbackFixedThroughId,
+      selectedChoiceId: this.state.rollbackSelectedChoiceId,
+      choiceFixed: this.state.rollbackChoiceFixed,
+      pageForwardIndex: this.state.dialogPageForwardIndex,
+    });
+    let consumed = false;
+    return {
+      restore: () => {
+        if (consumed || revision !== this.scriptRevision) return false;
+        consumed = true;
+        // Keep ordinary disk-load semantics unchanged. Only a temporary
+        // same-script interruption restores the private rollback timeline.
+        this.restoreSaveSnapshot(snapshot);
+        this.rollbackRecords = rollback.records;
+        this.rollbackCursor = rollback.cursor;
+        this.rollbackRecordCounter = rollback.counter;
+        this.rollbackSuspended = rollback.suspended;
+        this.atRollbackCheckpoint = rollback.atCheckpoint;
+        this.rollbackFixedThroughId = rollback.fixedThroughId;
+        this.state.rollbackSelectedChoiceId = rollback.selectedChoiceId;
+        this.state.rollbackChoiceFixed = rollback.choiceFixed;
+        this.state.dialogPageForwardIndex = rollback.pageForwardIndex;
+        if (rollback.choiceFixed && this.script?.rollback?.fixed_choice_mode === "selected_only") {
+          this.state.choices = this.state.choices.filter(choice => choice.choice_id === rollback.selectedChoiceId);
+        }
+        this.syncRollbackAvailability();
+        this.emit();
+        return true;
+      },
+    };
+  }
+
   createSaveSnapshot(slot = 0): SaveData {
     const stableSprites = stripSpriteReplacement(this.state.sprites);
     return {
@@ -1281,7 +1735,12 @@ export class StoryEngine {
       background_fit: this.state.backgroundFit ?? "stretch",
       sprites: stableSprites,
       sprite_order: normalizeSpriteOrder(stableSprites, this.state.spriteOrder),
+      bgm_state: this.state.bgmState ? structuredClone(this.state.bgmState) : undefined,
       dialog: this.state.dialog,
+      dialog_page_index: this.state.dialogPageIndex,
+      dialog_page_count: this.state.dialogPageCount,
+      nvl_presentation_mode: this.state.nvlPresentationMode,
+      nvl_page: structuredClone(this.state.nvlPage),
       focused_image: this.state.focusedImage,
       unlocked_gallery: [],
       playtime_seconds: 0,
@@ -1289,7 +1748,9 @@ export class StoryEngine {
     };
   }
 
-  restoreSaveSnapshot(snapshot: SaveData): void {
+  restoreSaveSnapshot(snapshot: SaveData, options?: { autoAdvance?: boolean }): void {
+    this.galleryReplaySceneId = undefined;
+    if (!this.restoringRollback) this.clearRollbackTimeline();
     const scene = this.getScene(snapshot.scene_id);
     const command = scene?.commands[snapshot.command_index];
     const restoredSprites = stripSpriteReplacement(snapshot.sprites);
@@ -1297,6 +1758,7 @@ export class StoryEngine {
       ...this.createFreshState(),
       currentSceneId: snapshot.scene_id,
       currentCommandIndex: snapshot.command_index,
+      currentCommandType: command?.type,
       variables: snapshot.variables,
       history: snapshot.history,
       background: snapshot.background,
@@ -1305,7 +1767,24 @@ export class StoryEngine {
       backgroundTransitionKey: 0,
       sprites: restoredSprites,
       spriteOrder: normalizeSpriteOrder(restoredSprites, snapshot.sprite_order),
+      bgmState: snapshot.bgm_state
+        ? structuredClone(snapshot.bgm_state)
+        : { action: "stop", fade_ms: 0 },
       dialog: snapshot.dialog,
+      dialogRestored: Boolean(snapshot.dialog),
+      dialogPageIndex: Number.isSafeInteger(snapshot.dialog_page_index) && snapshot.dialog_page_index! >= 0
+        ? snapshot.dialog_page_index!
+        : 0,
+      dialogPageCount: Number.isSafeInteger(snapshot.dialog_page_count) && snapshot.dialog_page_count! >= 1
+        ? snapshot.dialog_page_count!
+        : 1,
+      dialogPageForwardIndex: Number.isSafeInteger(snapshot.dialog_page_index) && snapshot.dialog_page_index! >= 0
+        ? snapshot.dialog_page_index!
+        : 0,
+      nvlPresentationMode: snapshot.nvl_presentation_mode
+        ?? snapshot.dialog?.presentation_mode
+        ?? (snapshot.nvl_page?.length ? "nvl" : "dialog"),
+      nvlPage: structuredClone(snapshot.nvl_page ?? []),
       focusedImage: command?.type === "show_image"
         ? snapshot.focused_image ?? focusedImageFromCommand(command)
         : undefined,
@@ -1318,8 +1797,19 @@ export class StoryEngine {
       animationEffects: [],
     };
     this.restoreCameraSaveState(snapshot.camera, snapshot);
-    if (command?.type === "choice") {
-      this.state.choices = command.choices.filter((choice) => this.evaluateConditions(choice.conditions));
+    if (snapshot.command_index >= (scene?.commands.length ?? 0)) {
+      this.state.currentCommandType = undefined;
+      this.scheduleForCurrentPlaythrough(() => this.next(true), 0);
+    } else if (command?.type === "choice") {
+      this.state.choices = command.choices
+        .filter((choice) => this.evaluateConditions(choice.conditions))
+        .map((choice) => ({
+          ...choice,
+          button_style: {
+            ...(command.button_style ?? {}),
+            ...(choice.button_style ?? {}),
+          },
+        }));
       this.state.isWaitingChoice = this.state.choices.length > 0;
       this.state.currentCommandType = "choice";
       if (this.state.choices.length === 0) this.scheduleForCurrentPlaythrough(() => this.next(true), 0);
@@ -1330,7 +1820,16 @@ export class StoryEngine {
     if (command?.type === "video") {
       this.state.currentCommandType = "video";
     }
+    if (
+      !this.restoringRollback
+      && ["dialog", "narration", "choice", "show_image"].includes(this.state.currentCommandType ?? "")
+    ) {
+      this.recordRollbackCheckpoint();
+    }
     this.emit();
+    if (options?.autoAdvance) {
+      this.scheduleForCurrentPlaythrough(() => this.executeCurrentCommand(), 0);
+    }
   }
 
   private isValidSavedCameraPose(value: unknown): value is CameraRuntimeState["persistent_pose"] {
@@ -1522,6 +2021,7 @@ export class StoryEngine {
   }
 
   reset(): void {
+    this.galleryReplaySceneId = undefined;
     this.state = this.createFreshState();
     this.resetAutomaticAdvance();
     this.emit();
@@ -1621,6 +2121,7 @@ export class StoryEngine {
     return {
       ...structuredClone(emptyState),
       playthroughId: this.playthroughCounter,
+      isGalleryReplay: Boolean(this.galleryReplaySceneId),
     };
   }
 

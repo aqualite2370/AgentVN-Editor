@@ -16,7 +16,7 @@ import json
 import time
 from datetime import datetime, timedelta, timezone
 
-from app.ai.context_budget import estimate_tokens
+from app.ai.context_budget import available_input_tokens, estimate_tokens, tokens_to_approx_chars
 from app.ai.novel_dialogue_semantics import (
     build_character_candidates,
     detect_speaker_names,
@@ -24,6 +24,11 @@ from app.ai.novel_dialogue_semantics import (
     validate_dialogue_semantics,
 )
 from app.ai.provider import AIProvider
+from app.ai.runtime_event_policy import (
+    SUBAGENT_RUNTIME_EVENT_PROMPT_RULES,
+    filter_unauthorized_rollback_commands,
+    guard_scene_ai_operations,
+)
 from app.core.error_logging import log_exception
 from app.models.novel_import import CharacterCandidate
 from app.models.novel_process import (
@@ -69,6 +74,9 @@ MAX_RETRY_BACKOFF_SECONDS = 3.0
 FRAGMENT_PROMPT_VERSION = "novel-process-v3"
 MAX_AUTO_SPLIT_DEPTH = 2
 MIN_AUTO_SPLIT_CHARS = 1500
+STRUCTURED_OUTPUT_SOURCE_CHARS_PER_TOKEN = 0.9
+STRUCTURED_INPUT_SAFETY_TOKENS = 256
+DEFAULT_STRUCTURED_OUTPUT_TOKENS = 4096
 ROUTE_COMMAND_TYPES = {"choice", "jump", "conditional_jump"}
 
 
@@ -314,11 +322,12 @@ class NovelProcessService:
             createdAt=now,
             updatedAt=now,
         )
+        self._append_event(job, "job_created", f"Job created with {len(chunks)} requested chunks.")
+        self._pre_split_oversized_chunks(job)
         lock = self._lock_for(job_id)
         with lock:
             self._jobs[job_id] = job
             self._cancel_events[job_id] = Event()
-            self._append_event(job, "job_created", f"Job created with {len(chunks)} chunks.")
             self._refresh_progress(job)
             self._save_job_unlocked(job)
         self.start_job(job_id)
@@ -598,6 +607,7 @@ class NovelProcessService:
                     f" {evidence}"
                 )
 
+        final_output = self._guard_subagent_runtime_controls(final_output, model_input.userInstruction)
         if model_input.promptVersion == FRAGMENT_PROMPT_VERSION and self._fragment_from_output(final_output) is None:
             raise RuntimeError("structured fragment missing from chunk output")
 
@@ -627,6 +637,79 @@ class NovelProcessService:
             semantic_repair_count=semantic_repair_count,
             semantic_validation_status=semantic_validation_status,
             semantic_quality_issues=semantic_quality_issues,
+        )
+
+    @staticmethod
+    def _guard_subagent_runtime_controls(
+        output: SubagentModelOutput,
+        user_instruction: str,
+    ) -> SubagentModelOutput:
+        rollback_removed = 0
+        protected_changes = 0
+        fragment = output.fragment
+        if fragment is not None:
+            fragment_guard = guard_scene_ai_operations(
+                SceneBeat(
+                    scene_id="subagent_fragment_guard",
+                    title="Subagent fragment guard",
+                    summary=fragment.summary,
+                    commands=fragment.commands,
+                    chapter=0,
+                )
+            )
+            protected_changes += (
+                fragment_guard.removed_commands
+                + fragment_guard.stripped_fields
+                + fragment_guard.restored_commands
+                + fragment_guard.restored_fields
+            )
+            commands, fragment_removed = filter_unauthorized_rollback_commands(
+                fragment_guard.scene.commands,
+                user_instruction=user_instruction,
+            )
+            rollback_removed += fragment_removed
+            if fragment_removed or fragment_guard.changed:
+                fragment = fragment.model_copy(update={"commands": commands})
+
+        scenes: list[SceneBeat] = []
+        for scene in output.scenes:
+            scene_guard = guard_scene_ai_operations(scene)
+            protected_changes += (
+                scene_guard.removed_commands
+                + scene_guard.stripped_fields
+                + scene_guard.restored_commands
+                + scene_guard.restored_fields
+            )
+            commands, scene_removed = filter_unauthorized_rollback_commands(
+                scene_guard.scene.commands,
+                user_instruction=user_instruction,
+            )
+            rollback_removed += scene_removed
+            scenes.append(
+                scene_guard.scene
+                if scene_removed == 0
+                else scene_guard.scene.model_copy(update={"commands": commands})
+            )
+
+        if rollback_removed == 0 and protected_changes == 0:
+            return output
+        warnings = list(output.warnings)
+        if protected_changes:
+            warnings.append(
+                "Removed AI-generated asset-reference events, camera commands, protected asset fields, "
+                "or choice button styles because subagents cannot operate author-managed assets or camera."
+            )
+        if rollback_removed:
+            warnings.append(
+                f"Removed {rollback_removed} rollback command(s): "
+                "userInstruction did not explicitly authorize runtime controls."
+            )
+        return output.model_copy(
+            update={
+                "fragment": fragment,
+                "scenes": scenes,
+                "warnings": warnings,
+            }
         )
 
     def _handle_task_completed(self, job_id: str, task_id: str, result: AgentExecutionResult) -> None:
@@ -995,9 +1078,8 @@ class NovelProcessService:
             (
                 "Return JSON matching SubagentModelOutput. Populate exactly one `fragment` with summary, tags, commands, continuityNotes, warnings, and errorMessage; "
                 "keep `scenes` empty. Every fragment command must be a legal AgentVN GameCommand with a type discriminator. "
-                "Use exact command types: `background` (not `show_background`), `sprite` (not `show_character`), "
-                "and `dialog` (not `dialogue`). For sprite entry effects, put the object in `animation_config`; "
-                "`animation` itself is only a string preset ID. "
+                "Use exact `dialog` rather than `dialogue`. Do not emit asset-reference events or camera commands; "
+                "those remain author-managed outside the subagent. "
                 "Do not emit choice, jump, or conditional_jump commands: routes are built only after all chapter fragments merge. "
                 "Do not return scene IDs, scene titles, planner beats, locations, or characters outside legal commands. "
             )
@@ -1007,9 +1089,8 @@ class NovelProcessService:
                 "scenes, inputTokens, outputTokens, warnings, errorMessage. "
                 "When possible, include one or more complete AgentVN SceneBeat objects in scenes. "
                 "Use these exact snake_case SceneBeat fields only: scene_id, scene_display_name, title, summary, commands, tags, chapter. "
-                "`chapter` must be an integer. Use exact command types: `background` (not `show_background`), "
-                "`sprite` (not `show_character`), and `dialog` (not `dialogue`). For sprite entry effects, "
-                "put the object in `animation_config`; `animation` itself is only a string preset ID. "
+                "`chapter` must be an integer. Use exact `dialog` rather than `dialogue`. "
+                "Do not emit asset-reference events or camera commands; those remain author-managed outside the subagent. "
                 "Every commands item must be a legal AgentVN GameCommand with a type discriminator; do not return sceneId, sceneTitle, "
                 "sceneType, dialogue, actions, beats, location, characters, or other prose-planner fields inside scenes. "
             )
@@ -1018,6 +1099,7 @@ class NovelProcessService:
             "Subagent input JSON follows. The only source text you may transform is chunkText in this object.\n"
             f"{model_input.model_dump_json(exclude_none=True)}\n\n"
             f"{output_instructions}"
+            f"\n\n{SUBAGENT_RUNTIME_EVENT_PROMPT_RULES}\n"
             "continuityNotes and warnings must always be JSON arrays of strings, even when there is only one item. "
             "Set status to completed unless the chunk cannot be processed."
         )
@@ -1376,6 +1458,149 @@ class NovelProcessService:
     @staticmethod
     def _leaf_chunks(job: NovelProcessJob) -> list[ChunkRecord]:
         return [chunk for chunk in job.chunks if chunk.status != "superseded"]
+
+    def _pre_split_oversized_chunks(self, job: NovelProcessJob) -> None:
+        original_chunks = list(job.chunks)
+        created_children: list[ChunkRecord] = []
+        for chunk in original_chunks:
+            model_input = self._model_input_for_chunk(job, chunk)
+            maximum_chars, budget_details = self._safe_chunk_text_chars(job, model_input)
+            if len(chunk.chunkText) <= maximum_chars:
+                continue
+            parts = self._split_text_to_limit(chunk.chunkText, maximum_chars)
+            if len(parts) <= 1:
+                continue
+            now = utc_now()
+            chunk.status = "superseded"
+            chunk.updatedAt = now
+            relative_offset = 0
+            children: list[ChunkRecord] = []
+            for index, text in enumerate(parts):
+                child_start = chunk.startOffset + relative_offset
+                relative_offset += len(text)
+                previous_hint = (
+                    chunk.previousContextSummary
+                    if index == 0
+                    else clip_text(f"Previous fragment ends: {parts[index - 1][-360:]}", SUMMARY_LIMIT)
+                )
+                next_hint = (
+                    chunk.nextContextHint
+                    if index == len(parts) - 1
+                    else clip_text(f"Next fragment begins: {parts[index + 1][:360]}", NEXT_HINT_LIMIT)
+                )
+                children.append(
+                    ChunkRecord(
+                        chunkId=new_id("chunk"),
+                        chapterTitle=chunk.chapterTitle,
+                        chapterIndex=chunk.chapterIndex,
+                        chunkIndex=chunk.chunkIndex,
+                        chunkText=text,
+                        parentChunkId=chunk.chunkId,
+                        splitDepth=min(MAX_AUTO_SPLIT_DEPTH, chunk.splitDepth + 1),
+                        startOffset=child_start,
+                        endOffset=child_start + len(text),
+                        previousContextSummary=previous_hint,
+                        nextContextHint=next_hint,
+                        contextChars=len(previous_hint) + len(next_hint),
+                        updatedAt=now,
+                    )
+                )
+            created_children.extend(children)
+            self._append_event(
+                job,
+                "chunk_pre_split",
+                f"Pre-split one oversized chunk into {len(children)} structured-request checkpoints.",
+                chunk_id=chunk.chunkId,
+                details={
+                    "parentChunkId": chunk.chunkId,
+                    "childChunkIds": [child.chunkId for child in children],
+                    "sourceChars": len(chunk.chunkText),
+                    "maximumChunkChars": maximum_chars,
+                    **budget_details,
+                },
+            )
+        if created_children:
+            job.chunks.extend(created_children)
+            for chapter_index in {chunk.chapterIndex for chunk in created_children}:
+                chapter_leaves = sorted(
+                    (chunk for chunk in self._leaf_chunks(job) if chunk.chapterIndex == chapter_index),
+                    key=lambda item: (item.startOffset, item.endOffset, item.chunkId),
+                )
+                for index, leaf in enumerate(chapter_leaves):
+                    leaf.chunkIndex = index
+        job.totalChunks = len(self._leaf_chunks(job))
+
+    def _safe_chunk_text_chars(
+        self,
+        job: NovelProcessJob,
+        model_input: SubagentModelInput,
+    ) -> tuple[int, dict[str, object]]:
+        empty_input = model_input.model_copy(update={"chunkText": ""})
+        system_prompt, user_prompt = self._agent_prompts(empty_input)
+        prompt_overhead_tokens = estimate_tokens(f"{system_prompt}\n{user_prompt}")
+        context_budget, reserved_tokens, available_tokens = available_input_tokens(job.providerSelection)
+        input_limited_tokens = max(
+            1,
+            available_tokens - prompt_overhead_tokens - STRUCTURED_INPUT_SAFETY_TOKENS,
+        )
+        configured_output_tokens = (
+            int(job.providerSelection.parameters.max_tokens)
+            if job.providerSelection
+            and job.providerSelection.parameters
+            and job.providerSelection.parameters.max_tokens
+            else DEFAULT_STRUCTURED_OUTPUT_TOKENS
+        )
+        output_limited_chars = int(configured_output_tokens * STRUCTURED_OUTPUT_SOURCE_CHARS_PER_TOKEN)
+        input_limited_chars = tokens_to_approx_chars(input_limited_tokens)
+        maximum_chars = max(
+            MIN_AUTO_SPLIT_CHARS,
+            min(input_limited_chars, output_limited_chars),
+        )
+        return maximum_chars, {
+            "contextBudgetTokens": context_budget,
+            "reservedTokens": reserved_tokens,
+            "availableInputTokens": available_tokens,
+            "promptOverheadTokens": prompt_overhead_tokens,
+            "configuredOutputTokens": configured_output_tokens,
+            "inputLimitedChars": input_limited_chars,
+            "outputLimitedChars": output_limited_chars,
+        }
+
+    @classmethod
+    def _split_text_to_limit(cls, text: str, maximum_chars: int) -> list[str]:
+        if len(text) <= maximum_chars:
+            return [text]
+        parts: list[str] = []
+        cursor = 0
+        while len(text) - cursor > maximum_chars:
+            remaining = len(text) - cursor
+            minimum_end = cursor + min(MIN_AUTO_SPLIT_CHARS, maximum_chars)
+            ideal_end = cursor + maximum_chars
+            maximum_end = min(len(text), ideal_end)
+            split_at = cls._preferred_split_before(text, minimum_end, maximum_end)
+            if split_at is None or split_at <= cursor:
+                split_at = maximum_end
+            tail_length = len(text) - split_at
+            if 0 < tail_length < MIN_AUTO_SPLIT_CHARS and remaining > MIN_AUTO_SPLIT_CHARS * 2:
+                balanced_end = cursor + (remaining // 2)
+                split_at = cls._preferred_split_before(
+                    text,
+                    minimum_end,
+                    min(maximum_end, balanced_end),
+                ) or balanced_end
+            parts.append(text[cursor:split_at])
+            cursor = split_at
+        parts.append(text[cursor:])
+        return [part for part in parts if part]
+
+    @staticmethod
+    def _preferred_split_before(text: str, minimum_end: int, maximum_end: int) -> int | None:
+        window = text[minimum_end:maximum_end]
+        for pattern in (r"\n\s*\n", r"(?<=[。！？!?])(?:[”’」』】）》]*)\s*", r"\n"):
+            matches = list(re.finditer(pattern, window))
+            if matches:
+                return minimum_end + matches[-1].end()
+        return None
 
     @staticmethod
     def _fragment_from_output(output: SubagentModelOutput) -> SceneFragment | None:

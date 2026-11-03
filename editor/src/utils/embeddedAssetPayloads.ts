@@ -1,11 +1,10 @@
 import type { EditorProjectFile } from "../types/nodes";
 
-export const embeddedProjectPayloadImportLimitBytes = 64 * 1024 * 1024;
-// Keep this below the 64 MiB file guard, but high enough for a realistic
-// project containing a handful of recommended 1920x1080 backgrounds, UI art,
-// and transparent sprites.  The old 32 MiB threshold rejected otherwise
-// valid projects before the browser had a chance to hydrate them.
-export const embeddedProjectPayloadInlineLimitChars = 48 * 1024 * 1024;
+export const embeddedProjectPayloadImportLimitBytes = 512 * 1024 * 1024;
+// Keep this below the file guard, but high enough for large complete projects
+// that intentionally embed generated backgrounds, UI art, and transparent
+// sprites. Smaller timeline backups still strip payloads before writing.
+export const embeddedProjectPayloadInlineLimitChars = 448 * 1024 * 1024;
 
 export interface EmbeddedAssetPayloadStats {
   count: number;

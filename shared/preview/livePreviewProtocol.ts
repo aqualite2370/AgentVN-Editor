@@ -3,7 +3,7 @@ import type { UISkinLayout } from "../cartridge/uiSkin";
 
 export const LIVE_PREVIEW_PROTOCOL_VERSION = 2;
 
-export type LivePreviewScreen = "title_menu" | "playing" | "settings" | "save_load" | "history" | "gallery" | "about";
+export type LivePreviewScreen = "title_menu" | "playing" | "settings" | "save_load" | "history" | "gallery" | "about" | "help";
 export type LivePreviewPlaybackRate = 0.5 | 1 | 2;
 
 export type PreviewPathStep =
@@ -67,6 +67,8 @@ export interface LivePreviewStartMessage extends LivePreviewMessageIdentity {
 
 export interface LivePreviewPatchMessage extends LivePreviewMessageIdentity {
   type: "agentvn.live-preview.patch";
+  /** Layout authoring only. Must not contain script/scenes/start or restart playback. */
+  presentationOnly?: boolean;
   script?: RuntimeScript;
   scenes?: Scene[];
   manifest?: GameManifest;
@@ -93,6 +95,11 @@ export interface LivePreviewReadyMessage extends LivePreviewMessageIdentity {
   commandIndex?: number;
 }
 
+export interface LivePreviewScreenChangeMessage extends LivePreviewMessageIdentity {
+  type: "agentvn.live-preview.screen-change";
+  screen: LivePreviewScreen;
+}
+
 export interface LivePreviewErrorMessage extends LivePreviewMessageIdentity {
   type: "agentvn.live-preview.error";
   message: string;
@@ -115,6 +122,7 @@ export type LivePreviewEditorMessage =
 
 export type LivePreviewRuntimeMessage =
   | LivePreviewReadyMessage
+  | LivePreviewScreenChangeMessage
   | LivePreviewErrorMessage
   | PreviewFreezeFrameResponse;
 

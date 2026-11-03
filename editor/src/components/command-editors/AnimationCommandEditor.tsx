@@ -34,7 +34,7 @@ export function AnimationCommandEditor({
       />
       <label>
         演出动画代称 <FieldHelp field="animation_display_name" />
-        <input
+        <input data-help-key="editor.control"
           value={command.animation_display_name ?? ""}
           placeholder="例如：闪白强调、镜头震动"
           onChange={(event) => onChange({ ...command, animation_display_name: event.target.value || null })}

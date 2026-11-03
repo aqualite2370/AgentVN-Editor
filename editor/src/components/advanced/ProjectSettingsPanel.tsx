@@ -14,6 +14,10 @@ import { RichSelect } from "../common/RichSelect";
 import { reportFrontendError } from "../../../../shared/logging/frontendErrorLogger";
 import { RuntimeVisualAssetsPanel } from "./RuntimeVisualAssetsPanel";
 import { requestAdvancedTools } from "./advancedToolsBridge";
+import { useEditorStore } from "../../store/editorStore";
+import { OpeningAudioQueueEditor } from "../common/OpeningAudioQueueEditor";
+import { OpeningAnimationEditor } from "../common/OpeningAnimationEditor";
+import { invoke } from "@tauri-apps/api/core";
 
 const editorCanvasBackgroundMimeTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/svg+xml"]);
 const maxEditorCanvasBackgroundEdge = 2560;
@@ -182,21 +186,30 @@ export function ProjectSettingsPanel() {
   const [editorBackgroundError, setEditorBackgroundError] = useState<string | undefined>();
   const editorBackgroundInputRef = useRef<HTMLInputElement>(null);
   const title = useProjectStore((state) => state.title);
+  const projectId = useProjectStore((state) => state.projectId);
   const author = useProjectStore((state) => state.author);
   const settings = useProjectStore((state) => state.settings);
   const assetManifest = useProjectStore((state) => state.assetManifest);
+  const startNode = useEditorStore((state) => state.nodes.find((node) => node.data.nodeKind === "start"));
+  const updateNodeData = useEditorStore((state) => state.updateNodeData);
   const setMetadata = useProjectStore((state) => state.setMetadata);
   const setPackageAppearance = useProjectStore((state) => state.setPackageAppearance);
   const setEditorAppearance = useProjectStore((state) => state.setEditorAppearance);
   const setRuntimeUILayout = useProjectStore((state) => state.setRuntimeUILayout);
   const setSpeakerFocus = useProjectStore((state) => state.setSpeakerFocus);
+  const setDefaultDialogPresentation = useProjectStore((state) => state.setDefaultDialogPresentation);
+  const setRollbackSettings = useProjectStore((state) => state.setRollbackSettings);
   const hoverHelpEnabled = useEditorPreferencesStore((state) => state.hoverHelpEnabled);
   const setHoverHelpEnabled = useEditorPreferencesStore((state) => state.setHoverHelpEnabled);
+  const projectExportDirectory = useEditorPreferencesStore((state) => state.projectExportDirectories[projectId]);
+  const setProjectExportDirectory = useEditorPreferencesStore((state) => state.setProjectExportDirectory);
+  const [projectDirectoryError, setProjectDirectoryError] = useState<string>();
   const packageAppearance = settings.packageAppearance ?? {};
   const aboutFields = packageAppearance.about?.fields ?? defaultAboutFields;
   const editorAppearance = settings.editorAppearance ?? {};
   const runtimeUILayout = settings.runtimeUILayout;
   const speakerFocus = settings.speakerFocus;
+  const rollback = settings.rollback;
   const fontAssets = useMemo(() => assetManifest.filter((asset) => asset.asset_type === "font"), [assetManifest]);
   const defaultFontAssetId = runtimeUILayout?.tokens?.fontAssetId ?? "";
   const selectedFontAsset = fontAssets.find((asset) => asset.asset_id === defaultFontAssetId);
@@ -210,6 +223,16 @@ export function ProjectSettingsPanel() {
 
   function updatePackageAppearance(partial: Partial<typeof packageAppearance>) {
     setPackageAppearance({ ...packageAppearance, ...partial });
+  }
+
+  async function chooseProjectExportDirectory() {
+    setProjectDirectoryError(undefined);
+    try {
+      const selected = await invoke<string | null>("select_project_export_dir");
+      if (selected) setProjectExportDirectory(projectId, selected);
+    } catch (error) {
+      setProjectDirectoryError(error instanceof Error ? error.message : "无法选择工程保存目录。");
+    }
   }
 
   function updateAboutCopy(partial: NonNullable<typeof packageAppearance.about>) {
@@ -286,18 +309,56 @@ export function ProjectSettingsPanel() {
         </label>
       </div>
 
+      <section className="package-appearance-setting" role="region" aria-label="工程保存目录">
+        <header>
+          <div>
+            <strong>工程保存目录</strong>
+            <p>只控制当前工程的 .vnproj 导出，保存在本机编辑器中；不影响游戏客户端打包路径。</p>
+          </div>
+          {"__TAURI_INTERNALS__" in window && (
+            <div className="row-actions">
+              <button type="button" data-help-key="settings.projectExportDirectory.choose" onClick={() => void chooseProjectExportDirectory()}>选择目录</button>
+              <button type="button" data-help-key="settings.projectExportDirectory.reset" disabled={!projectExportDirectory} onClick={() => setProjectExportDirectory(projectId, null)}>恢复默认</button>
+            </div>
+          )}
+        </header>
+        <p data-help-key="settings.projectExportDirectory.current" title={projectExportDirectory || "系统下载目录"}>
+          {projectExportDirectory || "系统下载目录"}
+        </p>
+        {!("__TAURI_INTERNALS__" in window) && <p>浏览器下载目录由浏览器控制，桌面安装版可为每个工程选择保存目录。</p>}
+        {projectDirectoryError && <p className="inline-status warning" role="alert">{projectDirectoryError}</p>}
+      </section>
+
+      {startNode && (
+        <OpeningAnimationEditor
+          animation={startNode.data.loadingAnimation}
+          assets={assetManifest}
+          helpKey="settings.loadingAnimation"
+          onChange={(loadingAnimation) => updateNodeData(startNode.id, { loadingAnimation })}
+        />
+      )}
+
+      {startNode && (
+        <OpeningAudioQueueEditor
+          tracks={startNode.data.openingAudio}
+          assets={assetManifest}
+          helpKey="settings.openingAudio"
+          onChange={(openingAudio) => updateNodeData(startNode.id, { openingAudio })}
+        />
+      )}
+
       <section className="package-appearance-setting editor-hover-help-setting">
         <header>
           <div>
             <strong><CircleHelp size={16} /> 鼠标悬停提示</strong>
-            <p>控制鼠标停在按钮和控件上时显示的说明小浮窗。部分工作区原本已禁用提示，开启此选项也不会改变这些局部规则。</p>
+            <p>鼠标停在复杂控件上时显示简短说明。</p>
           </div>
           <label className="check-row">
-            <input
+            <input data-help-key="editor.control"
               type="checkbox"
               checked={hoverHelpEnabled}
               aria-label="启用鼠标悬停提示"
-              data-tooltip="开启后，鼠标停在支持说明的按钮和控件上会显示提示小浮窗；关闭后不再显示。"
+              data-tooltip="显示或隐藏控件说明。"
               onChange={(event) => setHoverHelpEnabled(event.target.checked)}
             />
             启用
@@ -321,7 +382,7 @@ export function ProjectSettingsPanel() {
         </header>
         <div className="editor-canvas-background-controls">
           <div className="editor-canvas-background-picker" data-help-key="settings.editorAppearance.canvasBackground">
-            <input
+            <input data-help-key="editor.control"
               ref={editorBackgroundInputRef}
               type="file"
               accept="image/png,image/jpeg,image/webp,image/svg+xml"
@@ -540,6 +601,18 @@ export function ProjectSettingsPanel() {
         </div>
       </section>
 
+      <section className="package-appearance-setting dialog-presentation-setting">
+        <header><div><strong>对白呈现默认</strong>
+          <p>节点显式设置优先，其次角色默认，最后工程默认；旁白只继承工程默认。</p>
+        </div></header>
+        <label>工程默认呈现方式
+          <RichSelect ariaLabel="工程默认呈现方式" value={settings.defaultDialogPresentation ?? "dialog"}
+            options={[{ value: "dialog", label: "普通对白框" }, { value: "nvl", label: "NVL 累积阅读" },
+              { value: "bubble", label: "气泡对白" }]}
+            onChange={value => setDefaultDialogPresentation(value)} />
+        </label>
+      </section>
+
       <section className="package-appearance-setting speaker-focus-setting">
         <header>
           <div>
@@ -582,6 +655,79 @@ export function ProjectSettingsPanel() {
               onChange={(duration_ms) => setSpeakerFocus({ ...speakerFocus, duration_ms })}
             />
             <output>{speakerFocus.duration_ms} ms</output>
+          </label>
+        </div>
+      </section>
+
+      <section className="package-appearance-setting">
+        <header>
+          <div>
+            <strong>剧情回退</strong>
+            <p>控制 GameCLI 的模板式回退日志；对白、旁白、选项和聚焦图片会自动建立检查点。</p>
+          </div>
+          <label className="check-row">
+            <input data-help-key="editor.control"
+              type="checkbox"
+              checked={rollback.enabled}
+              onChange={(event) => setRollbackSettings({ ...rollback, enabled: event.target.checked })}
+            />
+            启用
+          </label>
+        </header>
+        <div className="form-grid">
+          <label>
+            玩家回退上限
+            <RangeControl
+              min={0}
+              max={200}
+              step={1}
+              value={rollback.hard_limit}
+              ariaLabel="玩家回退上限"
+              onChange={(hard_limit) => setRollbackSettings({
+                ...rollback,
+                hard_limit: Math.min(hard_limit, rollback.log_length),
+              })}
+            />
+            <output>{rollback.hard_limit}</output>
+          </label>
+          <label>
+            内部日志长度
+            <RangeControl
+              min={2}
+              max={256}
+              step={1}
+              value={rollback.log_length}
+              ariaLabel="内部回退日志长度"
+              onChange={(log_length) => setRollbackSettings({
+                ...rollback,
+                log_length,
+                hard_limit: Math.min(rollback.hard_limit, log_length),
+              })}
+            />
+            <output>{rollback.log_length}</output>
+          </label>
+          <label>
+            固定选项显示
+            <RichSelect
+              value={rollback.fixed_choice_mode}
+              ariaLabel="固定选项显示"
+              options={[
+                { value: "selected_marked", label: "标记原选择并禁用其他项" },
+                { value: "selected_only", label: "仅显示原选择" },
+              ]}
+              onChange={(fixed_choice_mode) => setRollbackSettings({
+                ...rollback,
+                fixed_choice_mode,
+              })}
+            />
+          </label>
+          <label className="check-row">
+            <input data-help-key="editor.control"
+              type="checkbox"
+              checked={rollback.pause_as_checkpoint}
+              onChange={(event) => setRollbackSettings({ ...rollback, pause_as_checkpoint: event.target.checked })}
+            />
+            等待事件作为软检查点
           </label>
         </div>
       </section>

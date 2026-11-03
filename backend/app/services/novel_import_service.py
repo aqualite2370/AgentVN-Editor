@@ -8,6 +8,12 @@ from typing import TypeVar
 
 from app.ai.novel_adapter import NovelAdapter
 from app.ai.provider import AIProvider
+from app.ai.runtime_event_policy import (
+    NOVEL_IMPORT_RUNTIME_EVENT_PROMPT_RULES,
+    SUPPORTED_GAME_COMMAND_TYPES_TEXT,
+    filter_unauthorized_rollback_commands,
+    guard_scene_ai_operations,
+)
 from app.core.errors import AIProviderError
 from app.core.error_logging import log_exception
 from app.models.commands import BackgroundCommand, DialogCommand, NarrationCommand, SpriteCommand
@@ -1099,6 +1105,7 @@ class NovelImportService:
             return []
 
     def ai_adapt_scene(self, request: NovelAiAdaptSceneRequest) -> AdaptSceneResponse:
+        warnings: list[str] = []
         scene_beat = self.provider.create_with_tools(
             SceneBeat,
             self._adapt_scene_beat_system_prompt(),
@@ -1106,13 +1113,15 @@ class NovelImportService:
             temperature=0.2,
             selection=self._json_mode_selection(request.provider_selection, "scene"),
         )
-        warnings: list[str] = []
+        scene_beat = self._repair_scene_beat_character_references(request, scene_beat, warnings)
+        scene_beat = self._guard_novel_import_runtime_controls(scene_beat, warnings)
         conflict_points = self._safe_ai_conflict_points(request, scene_beat, warnings)
         branch_suggestions = self._safe_ai_branch_suggestions(request, conflict_points, warnings)
         return self._compose_adapt_scene_response(request, scene_beat, conflict_points, branch_suggestions, warnings)
 
     def stream_ai_adapt_scene(self, request: NovelAiAdaptSceneRequest) -> Iterator[tuple[str, object]]:
         yield ("status", "Adapting scene into AgentVN commands...")
+        warnings: list[str] = []
         scene_beat = yield from self._stream_structured_result(
             SceneBeat,
             self._adapt_scene_beat_system_prompt(),
@@ -1121,11 +1130,32 @@ class NovelImportService:
             selection=self._json_mode_selection(request.provider_selection, "scene"),
             phase="scene_adaptation",
         )
+        scene_beat = self._repair_scene_beat_character_references(request, scene_beat, warnings)
+        scene_beat = self._guard_novel_import_runtime_controls(scene_beat, warnings)
         yield ("checkpoint", {"stage": "scene_beat", "payload": scene_beat.model_dump(mode="json")})
-        warnings: list[str] = []
         conflict_points = yield from self._stream_ai_conflict_points(request, scene_beat, warnings)
         branch_suggestions = yield from self._stream_ai_branch_suggestions(request, conflict_points, warnings)
         yield ("final", self._compose_adapt_scene_response(request, scene_beat, conflict_points, branch_suggestions, warnings))
+
+    @staticmethod
+    def _guard_novel_import_runtime_controls(scene_beat: SceneBeat, warnings: list[str]) -> SceneBeat:
+        operation_guard = guard_scene_ai_operations(scene_beat)
+        if operation_guard.changed:
+            warnings.append(
+                "Removed AI-generated asset-reference events, camera commands, protected asset fields, "
+                "or choice button styles because novel import cannot operate author-managed assets or camera."
+            )
+        scene_beat = operation_guard.scene
+        commands, removed = filter_unauthorized_rollback_commands(
+            scene_beat.commands,
+            user_instruction=None,
+        )
+        if removed == 0:
+            return scene_beat
+        warnings.append(
+            f"Removed {removed} rollback command(s): novel import has no explicit runtime-control instruction field."
+        )
+        return scene_beat.model_copy(update={"commands": commands})
 
     def _safe_ai_conflict_points(
         self,
@@ -1563,6 +1593,15 @@ class NovelImportService:
         )
 
     @staticmethod
+    def _outline_story_json(request: NovelAiOutlineRequest) -> str:
+        """Serialize authored input, never provider credentials/configuration."""
+        return request.model_dump_json(include={
+            "document_id", "title", "total_chars", "analyses",
+            "allow_branch_suggestions", "partial_mainline",
+            "partial_structure", "partial_index",
+        })
+
+    @staticmethod
     def _outline_mainline_user_prompt(request: NovelAiOutlineRequest) -> str:
         return f"""
 请根据分块分析结果合成可播放主线总览。
@@ -1577,7 +1616,7 @@ class NovelImportService:
 允许分支建议: {request.allow_branch_suggestions}
 
 分块分析数据:
-{request.model_dump_json()}
+{NovelImportService._outline_story_json(request)}
 """
 
     @staticmethod
@@ -1609,7 +1648,7 @@ Hard source-range requirements:
 {mainline.model_dump_json()}
 
 分块分析数据:
-{request.model_dump_json()}
+{NovelImportService._outline_story_json(request)}
 """
 
     @staticmethod
@@ -1635,7 +1674,7 @@ Hard source-range requirements:
 {mainline.model_dump_json()}
 
 分块分析数据:
-{request.model_dump_json()}
+{NovelImportService._outline_story_json(request)}
 """
 
     @staticmethod
@@ -1663,7 +1702,7 @@ Hard source-range requirements:
 允许分支建议: {request.allow_branch_suggestions}
 
 分块分析数据:
-{request.model_dump_json()}
+{NovelImportService._outline_story_json(request)}
 """
 
     @staticmethod
@@ -1840,7 +1879,8 @@ Conflict points:
             "Adapt one imported Chinese novel scene into one playable AgentVN SceneBeat. "
             "Hard requirements: output must include summary and commands; commands must not be empty. "
             "Return only the SceneBeat object. Do not include conflict analysis, branch suggestions, "
-            "source mapping, review notes, or extra fields. The backend will assemble those separately."
+            "source mapping, review notes, or extra fields. The backend will assemble those separately.\n\n"
+            f"{NOVEL_IMPORT_RUNTIME_EVENT_PROMPT_RULES}"
         )
 
     @staticmethod
@@ -1850,9 +1890,9 @@ Conflict points:
 Create one SceneBeat for the current imported novel scene.
 Required:
 - Keep the mainline smooth and playable.
-- Use only valid AgentVN command types: dialog, narration, hide_dialog, background, show_image, video, sprite, choice, state_update, conditional_jump, jump, animation, bgm, sfx, camera, wait.
-- Camera commands may use either structured motion or legacy action/params, but never mix both formats in one command. Prefer structured motion for new camera work.
-- Use show_image for key items, clues, photos, letters, or props that should be shown in focused detail.
+- Use only valid AgentVN command types: {SUPPORTED_GAME_COMMAND_TYPES_TEXT}.
+- Existing camera commands may use structured motion or legacy action/params, but AI novel import must not generate or modify either form.
+- Do not emit asset-reference events or camera commands; preserve the source beat through narration, dialog, state, choices, waits, and other non-asset commands.
 - Use concise Chinese narration and dialogue.
 - For dialog/sprite character_id, use only the exact Chinese character_id/name from Known characters or the scene candidate.
   Never invent placeholders such as senpai, senior, main_character, protagonist, speaker, or narrator.

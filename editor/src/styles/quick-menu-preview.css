@@ -1,0 +1,423 @@
+/*
+ * Sole editor-preview owner for quick-menu geometry, material, interaction
+ * and motion. RuntimeLayoutDesigner supplies the shared metrics as variables.
+ */
+
+/* Let the quick-menu's own z-index share the stage with edit overlays.
+ * A stacking context around the whole read-only preview otherwise traps the
+ * menu beneath a selected background, even when its buttons accept pointers. */
+.runtime-layout-expected-preview.is-player,
+.runtime-layout-expected-preview.is-player > .runtime-layout-page-surface {
+  z-index: auto;
+}
+
+.runtime-layout-page-part.part-quick_menu {
+  display: block !important;
+  overflow: visible !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.preview-quick-menu-preview {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  z-index: 2;
+  overflow: visible;
+  background: transparent;
+  cursor: default;
+  touch-action: auto;
+  isolation: isolate;
+  pointer-events: none;
+}
+
+.preview-quick-menu-preview::before,
+.preview-quick-menu-preview::after,
+.preview-quick-menu-surface::before,
+.preview-quick-menu-surface::after {
+  display: none !important;
+  content: none !important;
+}
+
+.preview-quick-menu-surface {
+  position: absolute !important;
+  inset: 0 !important;
+  z-index: 1;
+  display: block !important;
+  width: 100% !important;
+  height: 100% !important;
+  box-sizing: border-box;
+  overflow: hidden !important;
+  border: var(--preview-quick-menu-surface-border-width, 1px) solid transparent;
+  border-radius: var(--preview-quick-menu-surface-radius, 18px);
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  clip-path: inset(
+    calc(100% - var(--preview-quick-menu-toggle-hit-size, 50px))
+    0
+    0
+    calc(100% - var(--preview-quick-menu-toggle-hit-size, 50px))
+    round 50%
+  );
+  pointer-events: none;
+  transition:
+    clip-path 220ms cubic-bezier(0.23, 1, 0.32, 1),
+    opacity 180ms cubic-bezier(0.23, 1, 0.32, 1),
+    background-color 180ms ease,
+    border-color 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.runtime-layout-expected-preview[data-preview-quick-menu-direction="down"] .preview-quick-menu-surface {
+  clip-path: inset(
+    0
+    0
+    calc(100% - var(--preview-quick-menu-toggle-hit-size, 50px))
+    calc(100% - var(--preview-quick-menu-toggle-hit-size, 50px))
+    round 50%
+  );
+}
+
+.runtime-layout-expected-preview[data-preview-quick-menu-direction="right"] .preview-quick-menu-surface {
+  clip-path: inset(
+    0
+    calc(100% - var(--preview-quick-menu-toggle-hit-size, 50px))
+    calc(100% - var(--preview-quick-menu-toggle-hit-size, 50px))
+    0
+    round 50%
+  );
+}
+
+.runtime-layout-expected-preview[data-preview-quick-menu-state="collapsed"] .preview-quick-menu-surface {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  transition:
+    clip-path 220ms cubic-bezier(0.23, 1, 0.32, 1),
+    opacity 180ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.runtime-layout-expected-preview[data-preview-quick-menu-state="expanded"] .preview-quick-menu-surface {
+  border-color: color-mix(in srgb, var(--preview-quick-menu-surface-border, var(--preview-runtime-line, var(--line))) 64%, transparent);
+  background: var(--preview-quick-menu-surface-glass-background, color-mix(
+    in srgb,
+    var(--preview-quick-menu-surface-background, var(--preview-runtime-quick-menu, #686d72)) var(--preview-quick-menu-surface-alpha, 66%),
+    transparent
+  ));
+  box-shadow:
+    0 12px 28px rgb(0 0 0 / 0.2),
+    inset 0 1px 0 rgb(255 255 255 / 0.08);
+  -webkit-backdrop-filter: blur(var(--preview-quick-menu-surface-blur, 16px)) saturate(0.5);
+  backdrop-filter: blur(var(--preview-quick-menu-surface-blur, 16px)) saturate(0.5);
+  clip-path: inset(0 round var(--preview-quick-menu-surface-radius, 18px));
+}
+
+.preview-quick-menu-action-layer,
+.preview-quick-menu-toggle-layer {
+  position: absolute !important;
+  inset: 0 !important;
+  padding: 0 !important;
+  pointer-events: none !important;
+}
+
+.preview-quick-menu-action-layer {
+  z-index: 2;
+}
+
+.runtime-layout-expected-preview[data-preview-quick-menu-state="expanded"] .preview-quick-menu-action-layer {
+  pointer-events: auto !important;
+}
+
+.preview-quick-menu-toggle-layer {
+  z-index: 3;
+  pointer-events: none !important;
+}
+
+.preview-quick-menu-buttons {
+  position: absolute !important;
+  inset: 0 !important;
+  display: grid !important;
+  box-sizing: border-box;
+  gap: var(--preview-quick-menu-gap, 4px) !important;
+  margin: 0 !important;
+  pointer-events: none !important;
+}
+
+.preview-quick-menu-preview-c .preview-quick-menu-buttons {
+  inset:
+    calc(var(--preview-quick-menu-padding, 6px) - var(--preview-quick-menu-surface-border-width, 1px))
+    calc(var(--preview-quick-menu-padding, 6px) - var(--preview-quick-menu-surface-border-width, 1px))
+    calc(
+      var(--preview-quick-menu-padding, 6px)
+      + var(--preview-quick-menu-toggle-hit-size, 50px)
+      + var(--preview-quick-menu-toggle-gap, 6px)
+      - var(--preview-quick-menu-surface-border-width, 1px)
+    )
+    calc(var(--preview-quick-menu-padding, 6px) - var(--preview-quick-menu-surface-border-width, 1px)) !important;
+  grid-template-columns: minmax(0, var(--preview-quick-menu-cell-width, 248px)) !important;
+  grid-template-rows: repeat(7, var(--preview-quick-menu-action-hit-size, 48px)) !important;
+  align-content: start;
+  padding: 0 !important;
+  gap: var(--preview-quick-menu-toggle-gap, 6px) !important;
+  overflow: visible;
+}
+
+.preview-quick-menu-preview-a .preview-quick-menu-buttons {
+  inset:
+    var(--preview-quick-menu-padding, 8px)
+    calc(var(--preview-quick-menu-toggle-hit-size, 50px) + var(--preview-quick-menu-padding, 8px))
+    var(--preview-quick-menu-padding, 8px)
+    var(--preview-quick-menu-padding, 8px) !important;
+  grid-template-columns: repeat(7, var(--preview-quick-menu-action-hit-size, 48px)) !important;
+  grid-template-rows: var(--preview-quick-menu-action-hit-size, 48px) !important;
+  align-content: center;
+  justify-content: start;
+}
+
+.runtime-layout-expected-preview[data-preview-quick-menu-state="collapsed"] .preview-quick-menu-buttons {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none !important;
+}
+
+.runtime-layout-expected-preview[data-preview-quick-menu-state="expanded"] .preview-quick-menu-buttons {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto !important;
+  transition: opacity 180ms cubic-bezier(0.23, 1, 0.32, 1) 60ms;
+}
+
+.preview-quick-menu-button {
+  position: relative;
+  z-index: 1;
+  display: grid !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  height: var(--preview-quick-menu-action-hit-size, 48px) !important;
+  min-height: var(--preview-quick-menu-action-hit-size, 48px) !important;
+  max-height: var(--preview-quick-menu-action-hit-size, 48px) !important;
+  box-sizing: border-box;
+  padding: 0 !important;
+  border: var(--preview-quick-menu-action-border-width, 1px) solid color-mix(
+    in srgb,
+    var(--preview-quick-menu-action-border, var(--preview-runtime-line, #9aa1a6)) 72%,
+    transparent
+  ) !important;
+  box-shadow: none !important;
+  color: var(--ink-strong) !important;
+  filter: none !important;
+  -webkit-backdrop-filter: blur(var(--preview-quick-menu-action-blur, 6px)) !important;
+  backdrop-filter: blur(var(--preview-quick-menu-action-blur, 6px)) !important;
+  transform: none !important;
+}
+
+.preview-quick-menu-button:not(.is-image-owned) {
+  background-color: color-mix(
+    in srgb,
+    var(--preview-quick-menu-action-background, var(--preview-runtime-control, #74797e)) var(--preview-quick-menu-action-alpha, 72%),
+    transparent
+  ) !important;
+  background-image: none !important;
+}
+
+.preview-quick-menu-button::before {
+  content: none;
+  display: none;
+}
+
+.preview-quick-menu-preview-c .preview-quick-menu-button {
+  height: var(--preview-quick-menu-cell-height, 48px) !important;
+  min-height: var(--preview-quick-menu-cell-height, 48px) !important;
+  max-height: var(--preview-quick-menu-cell-height, 48px) !important;
+  grid-template-columns:
+    var(--preview-quick-menu-c-leading-track, 32px)
+    var(--preview-quick-menu-c-icon-track, 46px)
+    minmax(0, 1fr) !important;
+  align-items: center;
+  justify-items: start;
+  border-radius: var(--preview-quick-menu-action-radius, 10px) !important;
+  box-shadow: none !important;
+}
+
+.preview-quick-menu-preview-c .preview-quick-menu-button.is-image-owned {
+  box-shadow: none !important;
+}
+
+.preview-quick-menu-preview-c .preview-quick-menu-button .precision-icon {
+  grid-column: 2;
+  justify-self: center;
+  width: var(--preview-quick-menu-c-icon-size, 27px);
+  height: var(--preview-quick-menu-c-icon-size, 27px);
+}
+
+.preview-quick-menu-preview-c .preview-quick-menu-button-label {
+  grid-column: 3;
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  font-size: calc(16px * var(--preview-quick-menu-uniform-scale, 1));
+  font-weight: 800;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-quick-menu-preview-a .preview-quick-menu-button {
+  width: var(--preview-quick-menu-action-hit-size, 48px) !important;
+  min-width: var(--preview-quick-menu-action-hit-size, 48px) !important;
+  max-width: var(--preview-quick-menu-action-hit-size, 48px) !important;
+  place-items: center;
+}
+
+.preview-quick-menu-preview-a .preview-quick-menu-button::before {
+  content: none;
+  display: none;
+}
+
+.preview-quick-menu-preview-a .preview-quick-menu-button .precision-icon {
+  width: var(--preview-quick-menu-a-icon-size, 22px);
+  height: var(--preview-quick-menu-a-icon-size, 22px);
+  pointer-events: none;
+}
+
+.preview-quick-menu-preview-a .preview-quick-menu-button-label {
+  display: none;
+}
+
+.preview-quick-menu-button:active:not(:disabled) {
+  filter: brightness(0.94) !important;
+}
+
+.preview-quick-menu-button.is-image-owned {
+  background-color: transparent !important;
+  box-shadow: none !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+.preview-quick-menu-button:focus-visible,
+.preview-quick-menu-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.preview-quick-menu-toggle {
+  position: absolute !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  z-index: 4;
+  display: grid !important;
+  width: var(--preview-quick-menu-toggle-hit-size, 50px) !important;
+  min-width: var(--preview-quick-menu-toggle-hit-size, 50px) !important;
+  max-width: var(--preview-quick-menu-toggle-hit-size, 50px) !important;
+  height: var(--preview-quick-menu-toggle-hit-size, 50px) !important;
+  min-height: var(--preview-quick-menu-toggle-hit-size, 50px) !important;
+  max-height: var(--preview-quick-menu-toggle-hit-size, 50px) !important;
+  box-sizing: border-box;
+  padding: 0 !important;
+  place-items: center;
+  border: var(--preview-quick-menu-action-border-width, 1px) solid color-mix(
+    in srgb,
+    var(--preview-quick-menu-action-border, var(--preview-runtime-line, #9aa1a6)) 72%,
+    transparent
+  ) !important;
+  border-radius: 50% !important;
+  background-color: color-mix(
+    in srgb,
+    var(--preview-quick-menu-action-background, var(--preview-runtime-control, #74797e)) var(--preview-quick-menu-action-alpha, 72%),
+    transparent
+  ) !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  color: var(--preview-quick-menu-action-color, var(--ink-strong));
+  opacity: 1 !important;
+  filter: none !important;
+  -webkit-backdrop-filter: blur(var(--preview-quick-menu-action-blur, 6px)) !important;
+  backdrop-filter: blur(var(--preview-quick-menu-action-blur, 6px)) !important;
+  transform: none !important;
+  pointer-events: auto !important;
+}
+
+.runtime-layout-expected-preview[data-preview-quick-menu-state="expanded"] .preview-quick-menu-preview-c .preview-quick-menu-toggle {
+  right: var(--preview-quick-menu-padding, 6px) !important;
+  bottom: var(--preview-quick-menu-padding, 6px) !important;
+  height: var(--preview-quick-menu-toggle-hit-size, 50px) !important;
+  min-height: var(--preview-quick-menu-toggle-hit-size, 50px) !important;
+  max-height: var(--preview-quick-menu-toggle-hit-size, 50px) !important;
+  width: var(--preview-quick-menu-toggle-hit-size, 50px) !important;
+  min-width: var(--preview-quick-menu-toggle-hit-size, 50px) !important;
+  max-width: var(--preview-quick-menu-toggle-hit-size, 50px) !important;
+  border-radius: 50% !important;
+}
+
+.runtime-layout-expected-preview[data-preview-quick-menu-direction="down"][data-preview-quick-menu-state="expanded"] .preview-quick-menu-preview-c .preview-quick-menu-toggle {
+  top: var(--preview-quick-menu-padding, 6px) !important;
+  bottom: auto !important;
+}
+.preview-quick-menu-preview-c[data-preview-quick-menu-direction="down"] .preview-quick-menu-buttons {
+  top: calc(var(--preview-quick-menu-padding, 6px) + var(--preview-quick-menu-toggle-hit-size, 50px) + var(--preview-quick-menu-toggle-gap, 6px) - var(--preview-quick-menu-surface-border-width, 1px)) !important;
+  bottom: calc(var(--preview-quick-menu-padding, 6px) - var(--preview-quick-menu-surface-border-width, 1px)) !important;
+}
+
+.runtime-layout-expected-preview[data-preview-quick-menu-variant="A"] .preview-quick-menu-toggle {
+  top: calc(50% - (var(--preview-quick-menu-toggle-hit-size, 50px) / 2)) !important;
+  right: var(--preview-quick-menu-padding, 8px) !important;
+  bottom: auto !important;
+}
+
+.runtime-layout-expected-preview[data-preview-quick-menu-direction="right"] .preview-quick-menu-toggle {
+  right: auto !important;
+  bottom: 0 !important;
+  left: 0 !important;
+}
+
+.preview-quick-menu-toggle::before {
+  content: none;
+  display: none;
+}
+
+.preview-quick-menu-toggle-icon {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 220ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.preview-quick-menu-toggle-icon.is-visible {
+  opacity: 1;
+}
+
+.preview-quick-menu-toggle-icon-expand > .precision-icon {
+  width: var(--preview-quick-menu-toggle-expand-icon-size, 33px);
+  height: var(--preview-quick-menu-toggle-expand-icon-size, 33px);
+  pointer-events: none;
+}
+
+.preview-quick-menu-toggle-icon-close > .precision-icon {
+  width: var(--preview-quick-menu-toggle-close-icon-size, 22px);
+  height: var(--preview-quick-menu-toggle-close-icon-size, 22px);
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .preview-quick-menu-surface {
+    clip-path: none;
+    transition: opacity 80ms linear;
+  }
+
+  .runtime-layout-expected-preview[data-preview-quick-menu-state="expanded"] .preview-quick-menu-buttons,
+  .preview-quick-menu-toggle-icon {
+    transition: opacity 80ms linear;
+  }
+}

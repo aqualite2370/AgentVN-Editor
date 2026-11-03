@@ -102,6 +102,23 @@ try {
     assert.deepEqual(snapshot(repo), before);
     assert.match(result.stdout, /CHECK_ONLY_PASS/);
   });
+  test('feature-branch CheckOnly is read-only while publishing still requires main', () => {
+    const repo = fixture('feature-branch-preflight');
+    git(repo, 'switch', '-c', 'codex/isolated-preflight');
+    write(repo, 'scripts/selected-source.cjs');
+    git(repo, 'add', '--', 'scripts/selected-source.cjs');
+    write(repo, 'scripts/untracked-source.cjs');
+    git(repo, 'remote', 'add', 'origin', path.join(runRoot, 'absent-feature-remote'));
+    const before = snapshot(repo);
+    const result = check(repo, '-CheckOnly');
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /CHECK_ONLY_PASS/);
+    assert.deepEqual(snapshot(repo), before);
+    const publish = check(repo);
+    assert.notEqual(publish.status, 0);
+    assert.match(publish.stdout + publish.stderr, /Expected branch 'main'/);
+    assert.deepEqual(snapshot(repo), before);
+  });
   test('generated payloads and signing secrets are ignored without hiding source or offline NSIS', () => {
     const repo = fixture('ignore-matrix');
     const ignored = [
@@ -131,6 +148,124 @@ try {
       assert.equal(result.status, 1, `Unexpectedly ignored: ${relative}`);
     }
     assert.equal(check(repo, '-CheckOnly').status, 0);
+  });
+  test('only reviewed small QA projects are publishable and their bytes remain pinned', () => {
+    const repo = fixture('approved-project-fixtures');
+    const approved = [
+      'scripts/fixtures/dialog-presentation-isolated.vnproj',
+      'scripts/fixtures/editor-isolated-small.vnproj',
+      'scripts/fixtures/installed-preview-isolated.vnproj',
+    ];
+    for (const relative of approved) {
+      const source = path.join(workspace, relative);
+      const target = path.join(repo, relative);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.copyFileSync(source, target);
+      assert.equal(command('git', ['check-ignore', '-q', '--', relative], repo).status, 1,
+        `Reviewed fixture must be visible to Git: ${relative}`);
+    }
+    const safe = check(repo, '-CheckOnly');
+    assert.equal(safe.status, 0, safe.stdout + safe.stderr);
+    assert.match(safe.stdout, /CHECK_ONLY_PASS/);
+
+    write(repo, 'scripts/fixtures/other-project.vnproj', 'unreviewed project\n');
+    assert.equal(command('git', ['check-ignore', '-q', '--', 'scripts/fixtures/other-project.vnproj'], repo).status, 0,
+      'Unreviewed project archives remain ignored');
+    git(repo, 'add', '-f', '--', 'scripts/fixtures/other-project.vnproj');
+    const unreviewed = check(repo, '-CheckOnly');
+    assert.notEqual(unreviewed.status, 0);
+    assert.match(unreviewed.stdout, /BLOCKED scripts\/fixtures\/other-project\.vnproj/);
+
+    git(repo, 'rm', '--cached', '--', 'scripts/fixtures/other-project.vnproj');
+    write(repo, approved[1], 'changed reviewed fixture bytes\n');
+    const changed = check(repo, '-CheckOnly');
+    assert.notEqual(changed.status, 0);
+    assert.match(changed.stdout, /BLOCKED scripts\/fixtures\/editor-isolated-small\.vnproj/);
+  });
+  test('local task history stays ignored and cannot be force-published', () => {
+    const repo = fixture('local-task-history');
+    const relative = 'plans/ACTIVE_TASKS.md';
+    write(repo, relative, 'SYNTHETIC_LOCAL_TASK_HISTORY_NOT_FOR_PUBLICATION\n');
+    assert.equal(command('git', ['check-ignore', '-q', '--', relative], repo).status, 0);
+    assert.equal(check(repo, '-CheckOnly').status, 0);
+    git(repo, 'add', '-f', '--', relative);
+    write(repo, '.gitignore', '');
+    const before = snapshot(repo);
+    const result = check(repo, '-CheckOnly');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stdout + result.stderr, /BLOCKED plans\/ACTIVE_TASKS\.md/);
+    assert.doesNotMatch(result.stdout + result.stderr, /SYNTHETIC_LOCAL_TASK_HISTORY_NOT_FOR_PUBLICATION/);
+    assert.deepEqual(snapshot(repo), before);
+  });
+  test('local root instructions stay ignored and forced staged copies cannot publish', () => {
+    const repo = fixture('local-root-instructions');
+    const relative = 'AGENTS.md';
+    write(repo, relative, 'SYNTHETIC_LOCAL_INSTRUCTIONS_NOT_FOR_PUBLICATION\n');
+    assert.equal(command('git', ['check-ignore', '-q', '--', relative], repo).status, 0);
+    assert.equal(check(repo, '-CheckOnly').status, 0);
+    git(repo, 'add', '-f', '--', relative);
+    write(repo, '.gitignore', '');
+    const before = snapshot(repo);
+    const result = check(repo, '-CheckOnly');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stdout + result.stderr, /BLOCKED AGENTS\.md/);
+    assert.doesNotMatch(result.stdout + result.stderr, /SYNTHETIC_LOCAL_INSTRUCTIONS_NOT_FOR_PUBLICATION/);
+    assert.deepEqual(snapshot(repo), before);
+  });
+  test('local literary fixtures and their dependent workflows cannot be published', () => {
+    const repo = fixture('local-literary-workflows');
+    const paths = [
+      'scripts/fixtures/night-king-opening.json',
+      'scripts/build-angle-owl-project.ts',
+      'scripts/build-angle-owl-assets.ps1',
+      'scripts/angle-owl-ch4-preview-smoke.cjs',
+      'scripts/polish-angle-owl-chapter4-batch11.cjs',
+      'scripts/sync-angle-owl-editor-state-direct.py',
+      'scripts/build-night-king-opening-fixture.cjs',
+      'scripts/migrate-night-king-opening-visual-entry-v2.cjs',
+      'scripts/agentvn-test-matrix.cjs',
+      'scripts/agentvn-test-matrix-contract-test.cjs',
+      'scripts/editor-horizontal-preview-layout-contract.cjs',
+      'scripts/full-real-agentvn-acceptance.cjs',
+      'scripts/gamecli-choice-nameplate-layout-acceptance.cjs',
+      'scripts/gamecli-preview-tauri-cdp-playwright.cjs',
+      'scripts/project-settings-and-opening-contract.cjs',
+      'scripts/provider-timeout-contract-test.cjs',
+      'scripts/release-asset-optimizer-test.cjs',
+      'scripts/runtime-fix-engineering-acceptance.cjs',
+      'scripts/sprite-scale-display-name-contract.cjs',
+    ];
+    for (const relative of paths) {
+      write(repo, relative, 'SYNTHETIC_PRIVATE_LITERARY_FIXTURE_DO_NOT_PRINT\n');
+      assert.equal(command('git', ['check-ignore', '-q', '--', relative], repo).status, 0,
+        `Local literary workflow is visible to Git: ${relative}`);
+    }
+    assert.equal(check(repo, '-CheckOnly').status, 0);
+    git(repo, 'add', '-f', '--', ...paths);
+    write(repo, '.gitignore', '');
+    const before = snapshot(repo);
+    const result = check(repo, '-CheckOnly');
+    assert.notEqual(result.status, 0);
+    for (const relative of paths) assert(result.stdout.includes(`BLOCKED ${relative} [`), relative);
+    assert.doesNotMatch(result.stdout + result.stderr, /SYNTHETIC_PRIVATE_LITERARY_FIXTURE_DO_NOT_PRINT/);
+    assert.deepEqual(snapshot(repo), before);
+  });
+  test('approved fixture working bytes cannot conceal different staged project data', () => {
+    const repo = fixture('staged-project-substitution');
+    const relative = 'scripts/fixtures/editor-isolated-small.vnproj';
+    const original = fs.readFileSync(path.join(workspace, relative));
+    write(repo, relative, 'SYNTHETIC_PRIVATE_PROJECT_NOT_FOR_PUBLICATION\n');
+    git(repo, 'add', '--', relative);
+    write(repo, relative, original);
+    const before = snapshot(repo);
+    const blocked = check(repo, '-CheckOnly');
+    assert.notEqual(blocked.status, 0, 'The actual indexed project must match its approved SHA-256');
+    assert.match(blocked.stdout + blocked.stderr, /indexed regression fixture bytes changed/);
+    assert.doesNotMatch(blocked.stdout + blocked.stderr, /SYNTHETIC_PRIVATE_PROJECT_NOT_FOR_PUBLICATION/);
+    assert.deepEqual(snapshot(repo), before);
+    git(repo, '-c', 'core.autocrlf=false', 'add', '--', relative);
+    const safe = check(repo, '-CheckOnly');
+    assert.equal(safe.status, 0, safe.stdout + safe.stderr);
   });
   test('forced signing files stay blocked even after ignore rules are removed', () => {
     const repo = fixture('forced-secret');

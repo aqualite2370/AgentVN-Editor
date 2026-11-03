@@ -1,11 +1,10 @@
-import { useEffect, useRef, useState, type PointerEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type PointerEvent } from "react";
 import { Check, RotateCw, TriangleAlert } from "lucide-react";
 import { useRuntimeStore } from "../../store/runtimeStore";
 import { BackgroundLayer } from "./BackgroundLayer";
 import { ChoicePanel } from "./ChoicePanel";
 import { DialogBox } from "./DialogBox";
 import { PlaybackControls } from "./PlaybackControls";
-import { RuntimeAudio } from "./RuntimeAudio";
 import { SpriteLayer } from "./SpriteLayer";
 import { SpriteFocusBackdrop } from "./SpriteFocusBackdrop";
 import { FocusedImageOverlay } from "./FocusedImageOverlay";
@@ -14,6 +13,8 @@ import { CameraWorldLayer } from "./CameraWorldLayer";
 import { isSpriteFocusEffect, latestEffect, spriteEffectTargetsCharacter, useRuntimeAnimation } from "./runtimeAnimation";
 import { useSettingsStore } from "../../store/settingsStore";
 import { sanitizeSpeakerFocus } from "../../../../shared/cartridge/speakerFocus";
+import { autoForwardDelayMs } from "../../store/runtimePreferences";
+import { RuntimeCustomComponentLayer } from "../../uiSkin/RuntimeCustomComponentLayer";
 
 export function StoryPlayer() {
   const state = useRuntimeStore((store) => store.engineState);
@@ -22,24 +23,70 @@ export function StoryPlayer() {
   const engine = useRuntimeStore((store) => store.engine);
   const isUiHidden = useRuntimeStore((store) => store.isUiHidden);
   const setUiHidden = useRuntimeStore((store) => store.setUiHidden);
-  const launchTransition = useRuntimeStore((store) => store.launchTransition);
   const saveNotice = useRuntimeStore((store) => store.saveNotice);
   const settings = useSettingsStore((store) => store.settings);
+  const isVoicePlaying = useRuntimeStore((store) => store.isVoicePlaying);
+  const spritePresentationMode = useRuntimeStore((store) => store.spritePresentationMode);
+  const consumeSpritePresentationMode = useRuntimeStore((store) => store.consumeSpritePresentationMode);
   const [saveNoticeVisible, setSaveNoticeVisible] = useState(false);
+  const [quickMenuExpanded, setQuickMenuExpanded] = useState(false);
   const speakerFocus = sanitizeSpeakerFocus(currentGame?.script.speaker_focus);
   const speakingCharacterId = state.dialog && !state.dialog.isNarration ? state.dialog.character_id : undefined;
   const playerRef = useRef<HTMLElement | null>(null);
   const pointerStartRef = useRef<{ x: number; y: number; id: number } | null>(null);
   useRuntimeAnimation(playerRef, latestEffect(state.animationEffects, (effect) => effect.target_kind === "screen"));
-  const hidePlayerUi = isUiHidden && state.choices.length === 0 && !state.isWaitingChoice;
+  const hidePlayerUi = isUiHidden;
+  const interfaceRef = useRef<HTMLDivElement | null>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  const consumeRestoreClickRef = useRef(false);
   const visibleCharacterIds = Object.values(state.sprites).filter((sprite) => sprite.visible).map((sprite) => sprite.character_id);
   const selectedCharacterId = visibleCharacterIds[visibleCharacterIds.length - 1];
   const spriteFocusEffect = latestEffect(state.animationEffects, (effect) => (
     isSpriteFocusEffect(effect) && visibleCharacterIds.some((characterId) => spriteEffectTargetsCharacter(effect, characterId, selectedCharacterId))
   ));
+  const collapseQuickMenu = () => setQuickMenuExpanded(false);
+
+  useLayoutEffect(() => {
+    if (hidePlayerUi) {
+      const focused = document.activeElement;
+      returnFocusRef.current = focused instanceof HTMLElement && interfaceRef.current?.contains(focused)
+        ? focused : null;
+      playerRef.current?.focus({ preventScroll: true });
+    } else if (returnFocusRef.current) {
+      const target = returnFocusRef.current;
+      returnFocusRef.current = null;
+      if (target.isConnected && !document.querySelector("[data-runtime-modal='true']"))
+        target.focus({ preventScroll: true });
+    }
+  }, [hidePlayerUi]);
 
   useEffect(() => {
-    if (!saveNotice) return;
+    if (spritePresentationMode !== "settle" || typeof window === "undefined") return;
+    const frame = window.requestAnimationFrame(() => consumeSpritePresentationMode());
+    return () => window.cancelAnimationFrame(frame);
+  }, [consumeSpritePresentationMode, spritePresentationMode]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const resetTransientPlayerUi = () => setQuickMenuExpanded(false);
+    const handleVisibility = () => {
+      if (document.visibilityState !== "visible") resetTransientPlayerUi();
+    };
+    window.addEventListener("pageshow", resetTransientPlayerUi);
+    window.addEventListener("agentvn:android-resume", resetTransientPlayerUi);
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      window.removeEventListener("pageshow", resetTransientPlayerUi);
+      window.removeEventListener("agentvn:android-resume", resetTransientPlayerUi);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!saveNotice || (saveNotice.kind === "auto" && saveNotice.status !== "error")) {
+      setSaveNoticeVisible(false);
+      return;
+    }
     setSaveNoticeVisible(true);
     if (saveNotice.status === "saving") return;
     const timer = window.setTimeout(() => setSaveNoticeVisible(false), 2400);
@@ -47,8 +94,20 @@ export function StoryPlayer() {
   }, [saveNotice]);
 
   useEffect(() => {
+    if (!settings.selfVoicing || typeof window === "undefined" || !("speechSynthesis" in window) || !state.dialog?.text) return;
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(
+      state.dialog.speaker ? `${state.dialog.speaker}。${state.dialog.text}` : state.dialog.text,
+    );
+    utterance.lang = settings.language;
+    window.speechSynthesis.speak(utterance);
+    return () => window.speechSynthesis.cancel();
+  }, [settings.language, settings.selfVoicing, state.dialog?.speaker, state.dialog?.text, state.dialog?.text_key]);
+
+  useEffect(() => {
     if (
       !state.isAutoMode ||
+      hidePlayerUi ||
       state.isTyping ||
       state.isPaused ||
       state.isEnded ||
@@ -56,15 +115,21 @@ export function StoryPlayer() {
       state.choices.length > 0 ||
       state.focusedImage ||
       state.activeVideo ||
-      !state.dialog
+      !state.dialog ||
+      (settings.waitForVoice && isVoicePlaying)
     ) {
       return;
     }
-    const timer = window.setTimeout(() => next(), settings.autoSpeed);
+    const delay = autoForwardDelayMs(state.dialog.text, settings.autoForwardTime);
+    if (delay === undefined) return;
+    const timer = window.setTimeout(() => next(true), delay);
     return () => window.clearTimeout(timer);
   }, [
     next,
-    settings.autoSpeed,
+    hidePlayerUi,
+    isVoicePlaying,
+    settings.autoForwardTime,
+    settings.waitForVoice,
     state.choices.length,
     state.currentCommandIndex,
     state.currentSceneId,
@@ -81,6 +146,7 @@ export function StoryPlayer() {
   useEffect(() => {
     if (
       !state.isSkipMode ||
+      hidePlayerUi ||
       state.isTyping ||
       state.isPaused ||
       state.isEnded ||
@@ -92,10 +158,11 @@ export function StoryPlayer() {
     ) {
       return;
     }
-    const timer = window.setTimeout(() => next(), 60);
+    const timer = window.setTimeout(() => next(true), 60);
     return () => window.clearTimeout(timer);
   }, [
     next,
+    hidePlayerUi,
     state.choices.length,
     state.currentCommandIndex,
     state.currentSceneId,
@@ -111,6 +178,10 @@ export function StoryPlayer() {
 
   function handlePointerDown(event: PointerEvent<HTMLElement>) {
     if (event.button !== 0) return;
+    // Consume the restoring gesture from its start: touch compatibility mouse
+    // events must not steal focus back from the action restored on pointerup.
+    if (hidePlayerUi) event.preventDefault();
+    consumeRestoreClickRef.current = false;
     pointerStartRef.current = { x: event.clientX, y: event.clientY, id: event.pointerId };
   }
 
@@ -125,6 +196,7 @@ export function StoryPlayer() {
     if (hidePlayerUi) {
       event.preventDefault();
       event.stopPropagation();
+      consumeRestoreClickRef.current = true;
       setUiHidden(false);
       return;
     }
@@ -133,15 +205,27 @@ export function StoryPlayer() {
     if (target?.closest("button,a,input,textarea,select,[role='button'],[data-no-advance],.playback-controls,.choice-panel,.modal-backdrop")) {
       return;
     }
+    collapseQuickMenu();
     next();
   }
 
   return (
     <main
-      className={`story-player camera-${state.cameraEffect ?? "none"}${launchTransition === "covering" ? " is-launch-covered" : ""}`}
+      className={`story-player camera-${state.cameraEffect ?? "none"}${settings.highContrastText ? " preference-high-contrast" : ""}`}
+      style={{
+        "--runtime-preference-font-scale": String(settings.fontScale),
+        "--runtime-preference-line-spacing": String(settings.lineSpacing),
+      } as CSSProperties}
       ref={playerRef}
       onPointerDown={handlePointerDown}
       onPointerUp={handlePointerUp}
+      onClickCapture={(event) => {
+        if (!consumeRestoreClickRef.current) return;
+        consumeRestoreClickRef.current = false;
+        event.preventDefault();
+        event.stopPropagation();
+      }}
+      tabIndex={-1}
       aria-label="游戏画面"
       data-testid="game-state-playing"
       data-runtime-screen="playing"
@@ -164,23 +248,35 @@ export function StoryPlayer() {
         />
         <SpriteFocusBackdrop effect={spriteFocusEffect} />
         <SpriteLayer
-          key={state.playthroughId + ":" + state.currentSceneId}
           sprites={state.sprites}
           spriteOrder={state.spriteOrder}
           effects={state.animationEffects}
           focusEffect={spriteFocusEffect}
           speakingCharacterId={speakingCharacterId}
           speakerFocus={speakerFocus}
+          presentationMode={spritePresentationMode}
         />
       </CameraWorldLayer>
-      <RuntimeAudio />
       {state.animationHint && <div key={state.animationHint} className="animation-hint">{state.animationHint}</div>}
-      {!hidePlayerUi && !state.activeVideo && <DialogBox />}
-      {!state.activeVideo && <ChoicePanel />}
-      {!hidePlayerUi && !state.activeVideo && <PlaybackControls />}
+      <div ref={element => {
+        interfaceRef.current = element;
+        if (element) element.inert = hidePlayerUi || Boolean(state.activeVideo);
+      }} className="story-interface" data-testid="story-interface"
+        data-hidden={hidePlayerUi ? "true" : "false"}
+        aria-hidden={hidePlayerUi || Boolean(state.activeVideo)}>
+      {!state.activeVideo && <DialogBox onStoryInteraction={collapseQuickMenu} />}
+      {!state.activeVideo && !(state.nvlPresentationMode === "nvl" && state.nvlPage.length > 0) && <ChoicePanel />}
+      {!state.activeVideo && (
+        <PlaybackControls
+          expanded={quickMenuExpanded}
+          onToggleExpanded={() => setQuickMenuExpanded((value) => !value)}
+        />
+      )}
+      {!state.activeVideo && <RuntimeCustomComponentLayer screen="player" />}
+      </div>
       <FocusedImageOverlay />
       <CutsceneVideoOverlay />
-      {saveNotice && saveNoticeVisible && (
+      {saveNotice && saveNoticeVisible && (saveNotice.kind !== "auto" || saveNotice.status === "error") && (
         <div className={`save-status-toast is-${saveNotice.status}`} role="status" aria-live="polite" data-no-advance="true">
           {saveNotice.status === "saving" && <RotateCw size={15} aria-hidden="true" />}
           {saveNotice.status === "saved" && <Check size={15} aria-hidden="true" />}

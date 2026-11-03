@@ -1,12 +1,13 @@
 import type { CharacterSpriteAnimationConfig } from "../../../shared/animation/characterAnimation";
 import type { VisualTransitionConfig } from "../../../shared/animation/visualTransition";
-import type { BackgroundFit, DialogVisualStyle } from "../../../shared/cartridge/types";
+import type { BackgroundFit, BubblePositionConfig, DialogPresentationMode, DialogVisualStyle } from "../../../shared/cartridge/types";
+import type { UILayoutComponentStyle } from "../../../shared/cartridge/uiSkin";
 import type { CameraCommand as SharedCameraCommand } from "../../../shared/camera/cameraMotion";
 
 export type CharacterSide = "left" | "right" | "center";
 export type StateOperation = "set" | "set_if_unset" | "add" | "subtract" | "toggle" | "append" | "remove";
 export type StateValueType = "boolean" | "number" | "text" | "list";
-export type BgmAction = "play" | "stop" | "fade";
+export type BgmAction = "play" | "stop";
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 export type ConditionOperator =
   | "equals"
@@ -28,6 +29,9 @@ export interface Condition {
 
 export interface DialogCommand {
   type: "dialog";
+  presentation_mode?: DialogPresentationMode;
+  bubble_position?: BubblePositionConfig;
+  clear_nvl_page_before?: boolean;
   character_id: string;
   text: string;
   emotion?: string | null;
@@ -41,10 +45,14 @@ export interface DialogCommand {
 
 export interface NarrationCommand {
   type: "narration";
+  presentation_mode?: DialogPresentationMode;
+  bubble_position?: BubblePositionConfig;
+  clear_nvl_page_before?: boolean;
   text: string;
   font_asset_id?: string | null;
   dialog_style?: DialogVisualStyle | null;
   dialog_style_mode?: "inherit" | "manual";
+  narration_style?: "dialog" | "centered";
 }
 
 export interface HideDialogCommand {
@@ -84,6 +92,8 @@ export interface SpriteCommand {
   character_id: string;
   sprite_id: string;
   position?: string | null;
+  offset_x?: number | null;
+  offset_y?: number | null;
   layer?: number | null;
   animation?: string | null;
   animation_display_name?: string | null;
@@ -99,11 +109,13 @@ export interface Choice {
   text: string;
   target_scene_id: string;
   conditions: Array<string | Condition>;
+  button_style?: UILayoutComponentStyle;
 }
 
 export interface ChoiceCommand {
   type: "choice";
   choices: Choice[];
+  button_style?: UILayoutComponentStyle;
 }
 
 export interface StateUpdateCommand {
@@ -156,6 +168,18 @@ export interface WaitCommand {
   duration_ms: number;
 }
 
+export interface GalleryAnchorCommand {
+  type: "gallery_anchor";
+  anchor_id: string;
+  title: string;
+  asset_id: string;
+  description?: string | null;
+}
+
+export type RollbackControlCommand =
+  | { type: "rollback"; action: "checkpoint"; hard?: boolean }
+  | { type: "rollback"; action: "block" | "fix" | "suspend" | "resume" };
+
 export type GameCommand =
   | DialogCommand
   | NarrationCommand
@@ -172,6 +196,8 @@ export type GameCommand =
   | BgmCommand
   | SfxCommand
   | CameraCommand
-  | WaitCommand;
+  | WaitCommand
+  | GalleryAnchorCommand
+  | RollbackControlCommand;
 
 export type GameCommandType = GameCommand["type"];

@@ -12,6 +12,7 @@ from app.ai.structured_normalization import normalize_structured_payload
 from app.core.errors import AIProviderError
 from app.mcp.tools import agentvn_tool_registry
 from app.models.memory import MemoryUpdate
+from app.models.assistant_creation import AssistantComponentDraftBatch
 from app.models.novel_import import NovelAiBranchSuggestionResponse, NovelAiChapterScenePlan
 from app.models.novel_process import SubagentModelOutput
 from app.models.scene import SceneBeat
@@ -170,6 +171,7 @@ def test_scene_generation_tool_schema_includes_structured_camera_motion() -> Non
 def test_tool_registry_covers_every_production_structured_output() -> None:
     names = {item["name"] for item in agentvn_tool_registry.list_tools()}
     assert names == {
+        "submit_assistant_component_draft",
         "create_scene_beat",
         "extract_memory_update",
         "analyze_novel_chunk",
@@ -189,6 +191,17 @@ def test_tool_registry_covers_every_production_structured_output() -> None:
         "submit_subagent_output",
     }
     assert all(isinstance(item["inputSchema"], dict) and item["inputSchema"] for item in agentvn_tool_registry.list_tools())
+    component_tool = agentvn_tool_registry.tool_for_model(AssistantComponentDraftBatch)
+    assert component_tool.name == "submit_assistant_component_draft"
+    draft = agentvn_tool_registry.call_tool(component_tool.name, {
+        "components": [{"name": "隔离草稿", "html": "<span>待审核</span>"}],
+    })
+    assert isinstance(draft, AssistantComponentDraftBatch)
+    assert draft.components[0].name == "隔离草稿"
+    with pytest.raises(AIProviderError):
+        agentvn_tool_registry.call_tool(component_tool.name, {
+            "components": [{"name": "超限", "html": "<span></span>"}] * 17,
+        })
 
 
 def test_ai_scene_normalization_preserves_structured_camera_motion() -> None:
@@ -1029,7 +1042,28 @@ def test_model_plain_text_claiming_tools_are_unsupported_does_not_trigger_json_f
     assert calls == ["tool"]
 
 
-def test_stream_mcp_tools_mode_falls_back_when_provider_rejects_tool_choice(monkeypatch) -> None:
+@pytest.fixture
+def controlled_public_notes(monkeypatch):
+    """Keep the real public-notes parser but isolate its transport as well."""
+    client = FakeLLMClient([
+        iter([SimpleNamespace(choices=[
+            SimpleNamespace(delta=SimpleNamespace(content="受控公开创作记录"))
+        ])])
+    ])
+    monkeypatch.setattr("app.ai.provider.OpenAI", lambda **_kwargs: client)
+    yield client
+    # Each stream includes exactly one public-notes request, even if the
+    # subsequent structured tool raises. It must never reach a real provider.
+    assert len(client.chat.completions.calls) == 1
+    request = client.chat.completions.calls[0]
+    assert request["stream"] is True
+    assert request["max_tokens"] == 520
+    assert request["messages"][-1]["content"].endswith("\n\nuser")
+
+
+def test_stream_mcp_tools_mode_falls_back_when_provider_rejects_tool_choice(
+    monkeypatch, controlled_public_notes
+) -> None:
     provider = AIProvider()
     calls: list[str] = []
 
@@ -1050,9 +1084,12 @@ def test_stream_mcp_tools_mode_falls_back_when_provider_rejects_tool_choice(monk
 
     assert calls == ["mcp", "json"]
     assert any(kind == "final" for kind, _payload in events)
+    assert ("delta", "受控公开创作记录") in events
 
 
-def test_stream_tools_mode_does_not_fall_back_when_tool_request_times_out(monkeypatch) -> None:
+def test_stream_tools_mode_does_not_fall_back_when_tool_request_times_out(
+    monkeypatch, controlled_public_notes
+) -> None:
     provider = AIProvider()
     calls: list[str] = []
 
@@ -1073,7 +1110,9 @@ def test_stream_tools_mode_does_not_fall_back_when_tool_request_times_out(monkey
     assert calls == ["mcp"]
 
 
-def test_stream_mcp_auto_mode_rejects_plain_text_when_model_skips_required_tool(monkeypatch) -> None:
+def test_stream_mcp_auto_mode_rejects_plain_text_when_model_skips_required_tool(
+    monkeypatch, controlled_public_notes
+) -> None:
     provider = AIProvider()
     calls: list[str] = []
 

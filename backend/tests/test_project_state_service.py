@@ -81,6 +81,12 @@ def test_project_catalog_and_detail_are_split_from_recent_projects() -> None:
     service.save_state({"recent_projects": projects})
 
     catalog = service.load_catalog()
+    stored_project = service.conn.execute(
+        "SELECT project_json FROM editor_project_details WHERE project_id = ?", ("large_project",)
+    ).fetchone()["project_json"]
+    canonical_project = json.dumps(
+        json.loads(stored_project), ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    )
     assert catalog == [
         {
             "project_id": "large_project",
@@ -92,6 +98,8 @@ def test_project_catalog_and_detail_are_split_from_recent_projects() -> None:
             "edge_count": 1,
             "schema_version": "1.0.0",
             "has_detail": True,
+            "size_bytes": len(canonical_project.encode("utf-8")),
+            "size_source": "storage",
         }
     ]
     detail = service.load_project("large_project")
@@ -185,6 +193,8 @@ def test_catalog_recovers_summary_from_huge_legacy_current_project(monkeypatch) 
             "edge_count": 1,
             "schema_version": "1.0.0",
             "has_detail": False,
+            "size_bytes": 0,
+            "size_source": "unknown",
         }
     ]
     assert service.conn.execute("SELECT count(*) AS n FROM editor_project_details").fetchone()["n"] == 0

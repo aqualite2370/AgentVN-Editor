@@ -8,6 +8,25 @@ task.md
 temp.txt
 image_gen_task.txt
 gitpush/
+# Local acceptance history stays available without publishing user/task records.
+/plans/
+/AGENTS.md
+# Local author-project fixtures, excerpts, and workflows that depend on them.
+# Keep every original file locally; publish generic/synthetic regression sources.
+/scripts/*angle-owl*
+/scripts/*night-king*
+/scripts/fixtures/night-king-opening.json
+/scripts/agentvn-test-matrix.cjs
+/scripts/agentvn-test-matrix-contract-test.cjs
+/scripts/editor-horizontal-preview-layout-contract.cjs
+/scripts/full-real-agentvn-acceptance.cjs
+/scripts/gamecli-choice-nameplate-layout-acceptance.cjs
+/scripts/gamecli-preview-tauri-cdp-playwright.cjs
+/scripts/project-settings-and-opening-contract.cjs
+/scripts/provider-timeout-contract-test.cjs
+/scripts/release-asset-optimizer-test.cjs
+/scripts/runtime-fix-engineering-acceptance.cjs
+/scripts/sprite-scale-display-name-contract.cjs
 
 # Dependencies and caches
 node_modules/
@@ -41,6 +60,10 @@ backend/data/
 *.vnproj
 *.vncart
 *.agentvn
+# Reviewed, synthetic regression fixtures; the publish guard pins their SHA-256.
+!/scripts/fixtures/dialog-presentation-isolated.vnproj
+!/scripts/fixtures/editor-isolated-small.vnproj
+!/scripts/fixtures/installed-preview-isolated.vnproj
 
 # Build, release, test, and packaging output
 # Keep regression source scripts versioned; only their generated evidence is local.

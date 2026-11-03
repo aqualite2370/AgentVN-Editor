@@ -1,0 +1,477 @@
+.editor-toolbar {
+  display: block;
+  min-height: var(--editor-toolbar-height);
+  padding: 10px 12px;
+  overflow: visible;
+  border-radius: 14px;
+  background: var(--editor-glass-surface);
+  box-shadow: var(--shadow), inset 0 1px color-mix(in srgb, var(--ink-strong) 12%, transparent);
+  -webkit-backdrop-filter: blur(16px) saturate(1.12);
+  backdrop-filter: blur(16px) saturate(1.12);
+}
+
+.toolbar-inner {
+  display: grid;
+  grid-template-columns: max-content max-content minmax(280px, 1fr) max-content max-content;
+  grid-template-areas: "brand home nav project right";
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+}
+
+.toolbar-brand { grid-area: brand; }
+.toolbar-home-button { grid-area: home; }
+.workspace-surface-nav { grid-area: nav; }
+.toolbar-project-group { grid-area: project; }
+.toolbar-right { grid-area: right; }
+
+.toolbar-brand {
+  min-width: 84px;
+  padding-right: 12px;
+  border-right-color: color-mix(in srgb, var(--divider) 92%, transparent);
+}
+
+.toolbar-home-button {
+  min-width: 112px;
+  justify-content: center;
+}
+
+.workspace-surface-nav {
+  --control-focus-enter-duration: 240ms;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 4px;
+  border: 1px solid color-mix(in srgb, var(--line-strong) 42%, transparent);
+  border-radius: 11px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--surface-2) 76%, transparent), color-mix(in srgb, var(--surface) 68%, transparent));
+  box-shadow: inset 0 1px color-mix(in srgb, var(--ink-strong) 9%, transparent);
+}
+
+.workspace-surface-nav button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  flex: 1 1 0;
+  min-width: 76px;
+  padding: 0 13px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: color-mix(in srgb, var(--muted) 86%, var(--ink));
+  font-weight: 650;
+  opacity: 0.72;
+  transform: none !important;
+  box-shadow: inset 0 1px color-mix(in srgb, var(--ink-strong) 4%, transparent);
+  transition: opacity 240ms cubic-bezier(0.23, 1, 0.32, 1),
+    transform 240ms cubic-bezier(0.23, 1, 0.32, 1) !important;
+  white-space: nowrap;
+}
+
+.workspace-surface-nav button:hover,
+.workspace-surface-nav button:focus-visible {
+  color: var(--ink-strong);
+  opacity: 0.86;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.workspace-surface-nav button.is-active {
+  border-color: color-mix(in srgb, var(--accent) 78%, var(--line-strong)) !important;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 28%, transparent), color-mix(in srgb, var(--accent) 10%, transparent)),
+    color-mix(in srgb, var(--surface-2) 82%, transparent) !important;
+  color: color-mix(in srgb, var(--accent) 72%, var(--ink-strong));
+  opacity: 1;
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--accent) 22%, transparent), inset 0 1px color-mix(in srgb, white 22%, transparent) !important;
+}
+
+.workspace-surface-nav .glass-selection-indicator { filter: none; }
+.workspace-surface-nav .glass-selection-indicator::before { filter: none; opacity: 0.2; }
+
+.advanced-tab-pending {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  z-index: 4;
+  max-width: calc(100% - 24px);
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-bg-strong);
+  color: var(--ink);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.advanced-tab-load-error {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  left: 12px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  background: var(--panel-bg-strong);
+  overflow-wrap: anywhere;
+}
+.advanced-tab-load-error span { min-width: 0; }
+.advanced-tab-load-error button { flex: 0 0 auto; }
+.workspace-load-feedback {
+  position: fixed;
+  top: calc(var(--workspace-task-top, 100px) + 8px);
+  right: 28px;
+  z-index: 1250;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100vw - 56px);
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-bg-strong);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.workspace-load-feedback span { min-width: 0; }
+.workspace-load-feedback button { flex: 0 0 auto; }
+
+/* The light selection marker only measures on navigation/resize. Keep it
+   visible while content changes; a transition must not erase selection. */
+.advanced-tools-panel > nav.glass-selection-group .glass-selection-indicator {
+  visibility: visible;
+  opacity: 1 !important;
+}
+.advanced-tools-panel > nav button.is-active {
+  color: var(--ink-strong);
+  box-shadow: inset 0 -2px var(--accent) !important;
+}
+.advanced-tools-panel .advanced-tab-content:is(.is-entering, .is-leaving) {
+  animation: none !important;
+}
+
+/* Keep the material attached to the selection's stationary rim. Hover still
+   changes color; press feedback stays on this layer without an upward offset. */
+.advanced-tools-panel > nav .glass-selection-indicator[data-glass-hover="true"] .glass-selection-press {
+  transform: none;
+}
+.advanced-tools-panel > nav .glass-selection-indicator[data-glass-pressed="true"] .glass-selection-press {
+  transform: scale(.94);
+}
+
+/* Page selection is a quiet control, including its shared glass marker.
+   Keep outlines for focus instead of the global button/hover shadow. */
+.runtime-layout-screen-list > button,
+.runtime-layout-screen-list > button:is(:hover, :focus-visible, :active),
+.renpy-editor-page-list > button,
+.renpy-editor-page-list > button:is(:hover, :focus-visible, :active),
+.runtime-layout-sidebar > .glass-selection-indicator,
+.runtime-layout-sidebar > .glass-selection-indicator *,
+.runtime-layout-sidebar > .glass-selection-indicator::before,
+.runtime-layout-sidebar > .glass-selection-indicator::after {
+  box-shadow: none !important;
+  filter: none !important;
+}
+.runtime-layout-screen-list > button,
+.renpy-editor-page-list > button {
+  /* The shared focus policy has high specificity; opt out through its own
+     variable rather than changing that policy for Runtime/other controls. */
+  --global-control-focus-shadow: none;
+  --control-shadow: none;
+  --control-focus-shadow: none;
+}
+.runtime-layout-screen-list > button:focus-visible,
+.renpy-editor-page-list > button:focus-visible {
+  border-color: var(--accent) !important;
+  background-color: var(--selection-bg) !important;
+}
+
+/* The short-window legacy layout compressed only wide pages. Reserve the
+   same navigation track in both modes, with scroll for off-screen labels. */
+@media (min-width: 641px) and (max-height: 480px) {
+  .toolbar-popover.advanced .advanced-tools-panel > nav.glass-selection-group {
+    height: 48px !important;
+    min-height: 48px !important;
+    padding-block: 0 !important;
+  }
+  .toolbar-popover.advanced .advanced-tools-panel > nav.glass-selection-group > .glass-selection-viewport {
+    padding-block: 2px !important;
+  }
+}
+
+/* Confirmation/options pages use a compact task panel. Publishing retains its
+   existing full-screen workbench so stages, logs and actions have enough room. */
+.toolbar-popover.workspace-task-panel:not(.cartridge) {
+  --workspace-task-motion-distance: 14px;
+  position: fixed;
+  top: var(--workspace-task-top, 100px);
+  right: var(--workspace-task-right, 16px);
+  left: auto;
+  bottom: 16px;
+  width: min(980px, var(--workspace-task-width, calc(100vw - 32px)));
+  height: auto;
+  max-height: none;
+  min-height: 0;
+  padding: 14px;
+  overflow: auto;
+}
+.toolbar-popover.workspace-task-panel {
+  transition: none !important;
+  transform: none;
+  animation: none !important;
+  opacity: 1;
+}
+.toolbar-popover.workspace-task-panel:not(.cartridge).is-open {
+  animation: workspace-task-enter calc(800ms / var(--editor-workspace-playback-rate)) var(--ease-editor-container) both !important;
+}
+.toolbar-panel-presentation-layer { display: contents; }
+.toolbar-popover.is-morphing {
+  transform-origin: top left;
+  will-change: transform, opacity;
+}
+/* Editor FLIP deltas are measured from the top-left corner. The legacy wide
+   layout rule uses a centered origin and outranks the generic morph selector;
+   keep the measured anchor for the entire geometry bridge in that mode too. */
+.toolbar-popover.advanced.is-layout-mode.is-morphing {
+  transform-origin: top left;
+}
+.toolbar-popover.workspace-task-panel.preview { overflow: hidden; }
+.toolbar-popover.workspace-task-panel > * { animation: none; }
+.toolbar-popover.workspace-task-panel.is-closing {
+  animation: workspace-task-exit calc(800ms / var(--editor-workspace-playback-rate)) var(--ease-editor-container) both !important;
+}
+@keyframes workspace-task-enter {
+  from {
+    opacity: var(--workspace-task-enter-start-opacity, 0);
+    transform: var(--workspace-task-enter-start-transform, translate3d(var(--workspace-task-motion-distance), 0, 0) scale(0.99));
+  }
+  to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+}
+@keyframes workspace-task-exit {
+  from {
+    opacity: var(--workspace-task-exit-start-opacity, 1);
+    transform: var(--workspace-task-exit-start-transform, translate3d(0, 0, 0) scale(1));
+  }
+  to { opacity: 0; transform: translate3d(var(--workspace-task-motion-distance), 0, 0) scale(0.99); }
+}
+
+.workspace-surface-nav button.is-active svg {
+  color: var(--accent);
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--accent) 42%, transparent));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-surface-nav button {
+    transition-duration: 240ms !important;
+  }
+  .toolbar-popover.workspace-task-panel:not(.cartridge) {
+    --workspace-task-motion-distance: 5px;
+  }
+  .toolbar-popover.workspace-task-panel:not(.cartridge).is-open,
+  .toolbar-popover.workspace-task-panel.is-closing {
+    animation-duration: calc(800ms / var(--editor-workspace-playback-rate)) !important;
+    animation-timing-function: var(--ease-editor-container) !important;
+  }
+  .novel-import-workbench-dialog {
+    animation-name: studio-dialog-in !important;
+    animation-duration: 560ms !important;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1) !important;
+  }
+  .novel-import-workbench-dialog.is-closing {
+    animation-name: novel-import-workbench-dialog-out !important;
+    animation-duration: 440ms !important;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1) !important;
+  }
+  .novel-import-workbench-backdrop {
+    animation-name: studio-overlay-in !important;
+    animation-duration: 440ms !important;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1) !important;
+  }
+  .novel-import-workbench-backdrop.is-closing {
+    animation-name: novel-import-workbench-backdrop-out !important;
+    animation-duration: 440ms !important;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1) !important;
+  }
+}
+
+/* Percent maxima refer to an implicit grid track, which can already overflow.
+   Share the actual inset with viewport sizing instead of growing that track. */
+@media (min-width: 641px) {
+  .novel-import-workbench-backdrop {
+    --novel-workbench-inset: clamp(10px, 2vw, 22px);
+    padding: var(--novel-workbench-inset);
+  }
+
+  .novel-import-workbench-dialog {
+    width: min(1900px, calc(100vw - var(--novel-workbench-inset) - var(--novel-workbench-inset)));
+    height: min(1180px, calc(100svh - var(--novel-workbench-inset) - var(--novel-workbench-inset)));
+    min-width: 0;
+    min-height: 0;
+  }
+}
+
+.toolbar-project-group {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 6px;
+  min-width: 0;
+  width: auto;
+  padding: 4px;
+}
+
+.toolbar-project-group > button,
+.toolbar-project-group > .file-button {
+  flex: 0 0 auto;
+  min-width: 44px;
+  padding-inline: 10px;
+}
+
+.toolbar-project-group [data-help-key="toolbar.exportCartridge"] {
+  display: none;
+}
+
+.toolbar-project-group [data-help-key="toolbar.importProject"],
+.toolbar-project-group [data-help-key="toolbar.autoArrange"],
+.toolbar-project-group [data-help-key="toolbar.advanced"] {
+  display: none;
+}
+
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  width: auto;
+}
+
+.toolbar-right .toolbar-tool-container {
+  display: none;
+}
+
+.toolbar-right .memory-selector.compact,
+.toolbar-right .status-dot {
+  display: none;
+}
+
+.toolbar-right .memory-selector.compact {
+  display: flex;
+  align-items: center;
+  height: var(--editor-control-height);
+  flex: 0 1 190px;
+  min-width: 150px;
+}
+
+.toolbar-right .memory-selector.compact .rich-select-trigger {
+  min-height: var(--editor-control-height);
+  height: var(--editor-control-height);
+  box-shadow: var(--control-shadow);
+}
+
+.toolbar-right .theme-tone-switch {
+  flex: 0 0 auto;
+}
+
+.toolbar-right .memory-selector.compact,
+.toolbar-right .status-dot {
+  display: none !important;
+}
+
+.toolbar-inner button:focus-visible,
+.toolbar-inner .file-button:focus-within,
+.workspace-surface-nav button:focus-visible {
+  outline: none;
+  box-shadow: var(--editor-focus-ring), var(--control-shadow);
+}
+
+@media (max-width: 1460px) {
+  .toolbar-inner {
+    grid-template-columns: max-content max-content minmax(240px, 1fr) max-content;
+    grid-template-areas:
+      "brand home nav right"
+      "project project project project";
+  }
+
+  .toolbar-project-group {
+    justify-content: flex-end;
+  }
+}
+
+@media (max-width: 900px) {
+  .editor-toolbar {
+    min-height: 0;
+    padding: 8px;
+  }
+
+  .toolbar-inner {
+    grid-template-columns: minmax(0, 1fr) 44px 94px;
+    grid-template-areas:
+      "brand home tone"
+      "nav nav nav";
+    gap: 8px;
+  }
+
+  .toolbar-home-button {
+    width: 44px;
+    min-width: 44px;
+    padding-inline: 0;
+    font-size: 0;
+  }
+
+  .toolbar-home-button svg {
+    flex: 0 0 auto;
+  }
+
+  .workspace-surface-nav {
+    grid-area: nav;
+    justify-content: stretch;
+    overflow: hidden;
+  }
+
+  .workspace-surface-nav button {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  .toolbar-project-group {
+    display: none;
+  }
+
+  .toolbar-right {
+    display: contents !important;
+  }
+
+  .toolbar-right .theme-tone-switch {
+    grid-area: tone;
+    width: 94px !important;
+    min-width: 94px !important;
+    height: 44px;
+  }
+}
+
+@media (max-width: 640px) {
+  .toolbar-brand {
+    min-width: 0;
+    padding-right: 8px;
+  }
+
+  .workspace-surface-nav button {
+    flex: 1 1 0;
+    flex-basis: 0;
+    min-width: 0;
+    gap: 4px;
+    padding-inline: 6px;
+    font-size: 13px;
+  }
+
+  .workspace-surface-nav button svg {
+    display: none;
+  }
+}

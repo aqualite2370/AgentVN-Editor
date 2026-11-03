@@ -4,15 +4,20 @@ from __future__ import annotations
 
 import base64
 import binascii
+import errno
 import hashlib
 import json
 import logging
 import mimetypes
 import re
 import sqlite3
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote_to_bytes
+
+from app.services.project_container import is_safe_project_path, load_project_container
 
 logger = logging.getLogger("agentvn.backend.project_state")
 
@@ -21,6 +26,14 @@ DEFAULT_ASSET_STORAGE_DIR = Path("data/project_assets")
 DEFAULT_ASSET_PUBLIC_URL_PREFIX = "http://127.0.0.1:8278/api/project/assets"
 LEGACY_CATALOG_MIGRATION_MAX_CHARS = 8 * 1024 * 1024
 LEGACY_CATALOG_SUMMARY_PREFIX_CHARS = 64 * 1024
+STORAGE_TRANSIENT_METADATA_KEYS = frozenset({
+    "bytes",
+    "data_url",
+    "blob_url",
+    "filePath",
+    "url",
+    "backend_asset_path",
+})
 
 PROJECT_GRAPH_KEY = "project_graph"
 PROJECT_METADATA_KEY = "project_metadata"
@@ -41,6 +54,10 @@ EDITOR_SHARED_STATE_KEYS = {
 }
 
 
+class ProjectImportError(ValueError):
+    """Raised when a .vnproj file cannot be safely imported."""
+
+
 def _json_clone(value: Any) -> Any:
     return json.loads(json.dumps(value, ensure_ascii=False))
 
@@ -52,17 +69,38 @@ def _safe_path_segment(value: Any, fallback: str) -> str:
 
 
 def _decode_data_url(value: str) -> tuple[str, bytes] | None:
-    match = re.match(r"^data:([^;,]+)?(;base64)?,(.*)$", value, flags=re.DOTALL)
-    if not match:
+    if not value.startswith("data:"):
         return None
-    mime_type = match.group(1) or "application/octet-stream"
-    payload = match.group(3) or ""
+    header, separator, payload = value[5:].partition(",")
+    if not separator or any(ord(char) < 32 or ord(char) == 127 for char in header):
+        return None
+    parts = header.split(";")
+    token = r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+"
+    mime_type = parts[0] or "application/octet-stream"
+    if parts[0] and not re.fullmatch(rf"{token}/{token}", parts[0]):
+        return None
+    encoded = False
+    for index, parameter in enumerate(parts[1:], 1):
+        if parameter.lower() == "base64":
+            if encoded or index != len(parts) - 1:
+                return None
+            encoded = True
+        else:
+            name, equals, parameter_value = parameter.partition("=")
+            if not equals or not re.fullmatch(token, name) or not parameter_value:
+                return None
     try:
-        if match.group(2):
-            return mime_type, base64.b64decode(payload, validate=False)
-        return mime_type, unquote_to_bytes(payload)
+        # Decode URL escaping once, preserving literal '+' and UTF-8 bytes.
+        # MIME parameters describe the bytes; they must not transcode them.
+        if re.search(r"%(?![0-9a-fA-F]{2})", payload):
+            return None
+        raw = unquote_to_bytes(payload)
+        if encoded:
+            return mime_type, base64.b64decode(re.sub(rb"[\t\n\r\f ]", b"", raw), validate=True)
+        return mime_type, raw
     except (binascii.Error, ValueError):
-        # error-log-ignore: 内联素材解析失败后保留原引用，调用方会继续按普通素材路径处理。
+        # The caller rejects the entire operation without persisting missing
+        # bytes. Never include payload contents in an error/log.
         return None
 
 
@@ -103,6 +141,8 @@ def _default_project_summary(project_id: str) -> dict[str, Any]:
         "updated_at": now,
         "node_count": 0,
         "edge_count": 0,
+        "size_bytes": 0,
+        "size_source": "unknown",
         "schema_version": "1.0.0",
         "has_detail": False,
     }
@@ -166,6 +206,8 @@ class ProjectStateService:
             PROVIDER_SELECTIONS_KEY: self._normalize_object(raw_state.get(PROVIDER_SELECTIONS_KEY)),
             PROVIDER_SECRETS_KEY: self._normalize_object(raw_state.get(PROVIDER_SECRETS_KEY)),
         }
+        for key in (PROJECT_GRAPH_KEY, PROJECT_METADATA_KEY, RECENT_PROJECTS_KEY):
+            self._refresh_backend_asset_urls(state[key])
         return state
 
     def save_state(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -174,6 +216,8 @@ class ProjectStateService:
         if isinstance(recent_projects, list):
             self.save_projects(recent_projects)
         current_project = self._project_from_normalized_payload(normalized)
+        if current_project is None and PROJECT_GRAPH_KEY not in normalized:
+            current_project = self._project_with_updated_metadata(normalized.get(PROJECT_METADATA_KEY))
         if current_project is not None:
             self.save_project(current_project)
         for key, value in normalized.items():
@@ -186,11 +230,23 @@ class ProjectStateService:
             state[key] = value
         return state
 
+    @staticmethod
+    def public_state(state: dict[str, Any]) -> dict[str, Any]:
+        """Keep the legacy shape without exposing credentials in project reads."""
+        return {**state, PROVIDER_SECRETS_KEY: {}}
+
+    def load_provider_secrets(self) -> dict[str, str]:
+        """Only the explicit, non-cacheable credential channel may return keys."""
+        value = self._normalize_object(self._read_shared_value(PROVIDER_SECRETS_KEY))
+        return {key: secret for key, secret in value.items() if isinstance(secret, str)}
+
     def load_catalog(self) -> list[dict[str, Any]]:
         self._ensure_catalog_from_legacy()
+        self._refresh_storage_summaries()
         rows = self.conn.execute(
             """
             SELECT project_id, title, author, created_at, updated_at, node_count, edge_count,
+                   size_bytes,
                    schema_version, has_detail, summary_json
             FROM editor_project_summaries
             ORDER BY display_order ASC, updated_at DESC, project_id ASC
@@ -205,6 +261,7 @@ class ProjectStateService:
         ).fetchone()
         if row is not None:
             project = self._decode_value(row["project_json"])
+            self._refresh_backend_asset_urls(project)
             return project if isinstance(project, dict) else None
 
         legacy_project = self._load_legacy_project(project_id)
@@ -212,11 +269,154 @@ class ProjectStateService:
             return self.save_project(legacy_project)
         return None
 
-    def save_project(self, project: dict[str, Any]) -> dict[str, Any]:
+    def save_project(
+        self,
+        project: dict[str, Any],
+        *,
+        size_bytes_override: int | None = None,
+        size_source: str | None = None,
+    ) -> dict[str, Any]:
         normalized = self._normalize_project_file(project)
         project_id = normalized["project_id"]
         externalized = self._externalize_embedded_asset_payloads(normalized, project_id)
-        self._upsert_project_summary(externalized, has_detail=True)
+        return self._persist_externalized_project(
+            externalized,
+            size_bytes_override=size_bytes_override,
+            size_source=size_source,
+        )
+
+    def import_project_file(self, project_path: Path, *, source_size_bytes: int | None = None) -> dict[str, Any]:
+        """Import a .vnproj from disk while externalizing payloads before persistence.
+
+        The caller owns the temporary source file. The imported object is mutated
+        in place during externalization so the large base64 strings are not
+        duplicated by an intermediate JSON clone.
+        """
+
+        staging_dir: Path | None = None
+        archive = None
+        try:
+            container_kind, project, archive = load_project_container(project_path)
+            if container_kind == "zip":
+                staging_dir = Path(tempfile.mkdtemp(prefix="agentvn-vnproj-"))
+                assert archive is not None
+                for asset in project.get("asset_manifest", []):
+                    if not isinstance(asset, dict):
+                        continue
+                    metadata = asset.get("metadata")
+                    if not isinstance(metadata, dict):
+                        continue
+                    internal_path = metadata.get("project_path")
+                    if not isinstance(internal_path, str) or not internal_path.startswith("assets/"):
+                        raise ProjectImportError(f"PROJECT_ZIP_PATH_UNSAFE: {internal_path}")
+                    info = archive.getinfo(internal_path)
+                    target = (staging_dir / internal_path).resolve()
+                    target.relative_to(staging_dir.resolve())
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    digest = hashlib.sha256()
+                    copied = 0
+                    with archive.open(info) as source, target.open("wb") as destination:
+                        while chunk := source.read(1024 * 1024):
+                            destination.write(chunk)
+                            digest.update(chunk)
+                            copied += len(chunk)
+                    expected_size = metadata.get("size_bytes")
+                    expected_hash = metadata.get("hash_sha256") or metadata.get("sha256")
+                    has_expected_hash = isinstance(expected_hash, str) and bool(expected_hash)
+                    if (
+                        has_expected_hash
+                        and isinstance(expected_size, int)
+                        and expected_size >= 0
+                        and copied != expected_size
+                    ):
+                        raise ProjectImportError(f"PROJECT_ASSET_HASH_MISMATCH: {internal_path} size")
+                    if has_expected_hash and digest.hexdigest().lower() != expected_hash.lower():
+                        raise ProjectImportError(f"PROJECT_ASSET_HASH_MISMATCH: {internal_path}")
+                    metadata["size_bytes"] = copied
+                    metadata["hash_sha256"] = digest.hexdigest()
+                    metadata["filePath"] = str(target)
+                    metadata.pop("url", None)
+                    metadata.pop("backend_asset_path", None)
+        except ProjectImportError:
+            if staging_dir is not None:
+                shutil.rmtree(staging_dir, ignore_errors=True)
+            raise
+        except ValueError as exc:
+            if staging_dir is not None:
+                shutil.rmtree(staging_dir, ignore_errors=True)
+            raise ProjectImportError(str(exc)) from exc
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError) as exc:
+            if staging_dir is not None:
+                shutil.rmtree(staging_dir, ignore_errors=True)
+            if isinstance(exc, OSError) and exc.errno == errno.ENOSPC:
+                raise ProjectImportError("PROJECT_DISK_FULL") from exc
+            raise ProjectImportError("PROJECT_CONTAINER_INVALID") from exc
+        finally:
+            if archive is not None:
+                archive.close()
+
+        if not isinstance(project, dict):
+            raise ProjectImportError("The .vnproj root must be an object.")
+        required_string_fields = ("schema_version", "project_id", "title", "author", "memory_mode")
+        if any(not isinstance(project.get(field), str) for field in required_string_fields):
+            raise ProjectImportError("The file is not a valid AgentVN project.")
+        required_list_fields = ("nodes", "edges", "asset_manifest")
+        if any(not isinstance(project.get(field), list) for field in required_list_fields):
+            raise ProjectImportError("The file is not a valid AgentVN project.")
+        if not isinstance(project.get("viewport"), dict) or not isinstance(project.get("editor_settings"), dict):
+            raise ProjectImportError("The file is not a valid AgentVN project.")
+
+        created_files: list[Path] = []
+        persisted = False
+        try:
+            source_root = project_path.parent.resolve()
+            allowed_roots = (source_root, staging_dir.resolve()) if staging_dir is not None else (source_root,)
+            self._externalize_embedded_asset_payloads_in_place(
+                project,
+                project["project_id"],
+                created_files,
+                allowed_file_roots=allowed_roots,
+                file_reference_base=source_root,
+            )
+            normalized = self._normalize_project_file(project)
+            persisted_project = self._persist_externalized_project(
+                normalized,
+                size_bytes_override=source_size_bytes if source_size_bytes is not None else project_path.stat().st_size,
+                size_source="container",
+            )
+            persisted = True
+            return persisted_project
+        except ProjectImportError:
+            raise
+        except Exception as exc:
+            self.conn.rollback()
+            if isinstance(exc, OSError) and exc.errno == errno.ENOSPC:
+                raise ProjectImportError("PROJECT_DISK_FULL") from exc
+            raise ProjectImportError("The project could not be imported safely.") from exc
+        finally:
+            if not persisted:
+                for created_file in created_files:
+                    try:
+                        created_file.unlink(missing_ok=True)
+                    except OSError:
+                        logger.warning("Failed to clean up an imported project asset: %s", created_file)
+            if staging_dir is not None:
+                shutil.rmtree(staging_dir, ignore_errors=True)
+
+    def _persist_externalized_project(
+        self,
+        externalized: dict[str, Any],
+        *,
+        size_bytes_override: int | None = None,
+        size_source: str | None = None,
+    ) -> dict[str, Any]:
+        project_id = externalized["project_id"]
+        self._upsert_project_summary(
+            externalized,
+            has_detail=True,
+            size_bytes_override=size_bytes_override,
+            size_source=size_source,
+        )
         self.conn.execute(
             """
             INSERT INTO editor_project_details (project_id, project_json, updated_at)
@@ -253,10 +453,47 @@ class ProjectStateService:
         return saved
 
     def delete_project(self, project_id: str) -> bool:
-        cursor = self.conn.execute("DELETE FROM editor_project_summaries WHERE project_id = ?", (project_id,))
-        self.conn.execute("DELETE FROM editor_project_details WHERE project_id = ?", (project_id,))
-        self.conn.commit()
-        return cursor.rowcount > 0
+        try:
+            summary_cursor = self.conn.execute(
+                "DELETE FROM editor_project_summaries WHERE project_id = ?",
+                (project_id,),
+            )
+            detail_cursor = self.conn.execute(
+                "DELETE FROM editor_project_details WHERE project_id = ?",
+                (project_id,),
+            )
+
+            recent_projects = self._read_shared_value(RECENT_PROJECTS_KEY)
+            removed_recent_reference = False
+            if isinstance(recent_projects, list):
+                remaining_recent_projects = [
+                    project
+                    for project in recent_projects
+                    if not (isinstance(project, dict) and project.get("project_id") == project_id)
+                ]
+                removed_recent_reference = len(remaining_recent_projects) != len(recent_projects)
+                if removed_recent_reference:
+                    self._write_value(RECENT_PROJECTS_KEY, remaining_recent_projects)
+
+            metadata = self._read_shared_value(PROJECT_METADATA_KEY)
+            current_project_id = None
+            if isinstance(metadata, dict):
+                current_project_id = metadata.get("projectId") or metadata.get("project_id")
+            removed_current_reference = current_project_id == project_id
+            if removed_current_reference:
+                self._write_value(PROJECT_GRAPH_KEY, _default_project_graph())
+                self._write_value(PROJECT_METADATA_KEY, {})
+
+            self.conn.commit()
+            return (
+                summary_cursor.rowcount > 0
+                or detail_cursor.rowcount > 0
+                or removed_recent_reference
+                or removed_current_reference
+            )
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def resolve_asset_file(self, asset_path: str) -> Path | None:
         normalized = asset_path.replace("\\", "/")
@@ -335,6 +572,30 @@ class ProjectStateService:
                 unique.append(resolved)
         return unique
 
+    def _project_with_updated_metadata(self, metadata: Any) -> dict[str, Any] | None:
+        """Metadata autosave updates the same persisted project, never a shared graph.
+
+        AI layout merges do not dirty the graph, so their normal save contains
+        only metadata. Home/restart loads project details, which must receive
+        this update too. A missing detail cannot be synthesized from another
+        project's currently shared graph.
+        """
+        if not isinstance(metadata, dict) or not isinstance(metadata.get("projectId"), str):
+            return None
+        row = self.conn.execute(
+            "SELECT project_json FROM editor_project_details WHERE project_id = ?",
+            (metadata["projectId"],),
+        ).fetchone()
+        project = self._decode_value(row["project_json"]) if row else None
+        if not isinstance(project, dict):
+            return None
+        mapping = {
+            "title": "title", "author": "author", "createdAt": "created_at",
+            "updatedAt": "updated_at", "schemaVersion": "schema_version",
+            "assetManifest": "asset_manifest", "settings": "editor_settings",
+        }
+        return {**project, **{target: metadata[source] for source, target in mapping.items() if source in metadata}}
+
     def _project_from_normalized_payload(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         graph = payload.get(PROJECT_GRAPH_KEY)
         metadata = payload.get(PROJECT_METADATA_KEY)
@@ -382,9 +643,18 @@ class ProjectStateService:
             "updated_at": updated_at,
         }
 
-    def _project_summary_from_project(self, project: dict[str, Any], has_detail: bool) -> dict[str, Any]:
+    def _project_summary_from_project(
+        self,
+        project: dict[str, Any],
+        has_detail: bool,
+        *,
+        size_bytes_override: int | None = None,
+        size_source: str | None = None,
+    ) -> dict[str, Any]:
         normalized = self._normalize_project_file(project)
-        return {
+        serialized_size = self._normalized_project_data_size_bytes(normalized)
+        storage_size = serialized_size + self._project_asset_size_bytes(normalized["project_id"], normalized) if has_detail else 0
+        summary = {
             "project_id": normalized["project_id"],
             "title": normalized["title"],
             "author": normalized["author"],
@@ -392,9 +662,16 @@ class ProjectStateService:
             "updated_at": normalized["updated_at"],
             "node_count": len(normalized["nodes"]),
             "edge_count": len(normalized["edges"]),
+            "size_bytes": storage_size,
             "schema_version": normalized["schema_version"],
             "has_detail": has_detail,
+            "size_source": "storage" if has_detail else "unknown",
         }
+        if size_bytes_override is not None:
+            summary["container_size_bytes"] = int(size_bytes_override)
+        if size_source:
+            summary["container_size_source"] = size_source
+        return summary
 
     def _upsert_project_summary(
         self,
@@ -402,8 +679,15 @@ class ProjectStateService:
         *,
         has_detail: bool,
         display_order: int | None = None,
+        size_bytes_override: int | None = None,
+        size_source: str | None = None,
     ) -> None:
-        summary = self._project_summary_from_project(project, has_detail)
+        summary = self._project_summary_from_project(
+            project,
+            has_detail,
+            size_bytes_override=size_bytes_override,
+            size_source=size_source,
+        )
         self._upsert_project_summary_data(summary, has_detail=has_detail, display_order=display_order)
 
     def _upsert_project_summary_data(
@@ -422,9 +706,9 @@ class ProjectStateService:
             """
             INSERT INTO editor_project_summaries (
                 project_id, title, author, created_at, updated_at, node_count, edge_count,
-                schema_version, has_detail, display_order, summary_json
+                size_bytes, schema_version, has_detail, display_order, summary_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(project_id) DO UPDATE SET
                 title = excluded.title,
                 author = excluded.author,
@@ -432,6 +716,7 @@ class ProjectStateService:
                 updated_at = excluded.updated_at,
                 node_count = excluded.node_count,
                 edge_count = excluded.edge_count,
+                size_bytes = excluded.size_bytes,
                 schema_version = excluded.schema_version,
                 has_detail = excluded.has_detail,
                 display_order = excluded.display_order,
@@ -445,6 +730,7 @@ class ProjectStateService:
                 summary["updated_at"],
                 summary["node_count"],
                 summary["edge_count"],
+                summary.get("size_bytes", 0),
                 summary["schema_version"],
                 1 if has_detail else 0,
                 next_display_order,
@@ -465,11 +751,110 @@ class ProjectStateService:
                 "updated_at": row["updated_at"],
                 "node_count": int(row["node_count"] or 0),
                 "edge_count": int(row["edge_count"] or 0),
+                "size_bytes": int(row["size_bytes"] or 0) if "size_bytes" in row.keys() else int(summary.get("size_bytes", 0) or 0),
                 "schema_version": row["schema_version"],
                 "has_detail": bool(row["has_detail"]),
             }
         )
+        if summary.get("size_source") not in {"storage", "container", "unknown"}:
+            summary["size_source"] = "unknown"
         return summary
+
+    def _normalized_project_data_size_bytes(self, project: dict[str, Any]) -> int:
+        """Return stable UTF-8 bytes for persisted project data, excluding runtime asset handles."""
+
+        def normalize(value: Any) -> Any:
+            if isinstance(value, dict):
+                return {
+                    key: normalize(child)
+                    for key, child in sorted(value.items())
+                    if key not in STORAGE_TRANSIENT_METADATA_KEYS
+                }
+            if isinstance(value, list):
+                return [normalize(child) for child in value]
+            return value
+
+        canonical = normalize(project)
+        encoded = json.dumps(canonical, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        return len(encoded.encode("utf-8"))
+
+    def project_storage_size_bytes(self, project: dict[str, Any]) -> int:
+        normalized = self._normalize_project_file(project)
+        return (
+            self._normalized_project_data_size_bytes(normalized)
+            + self._project_asset_size_bytes(normalized["project_id"], normalized)
+        )
+
+    def _refresh_storage_summaries(self) -> None:
+        rows = self.conn.execute(
+            "SELECT project_id, summary_json FROM editor_project_summaries WHERE has_detail = 1"
+        ).fetchall()
+        changed = False
+        for row in rows:
+            summary = self._decode_value(row["summary_json"])
+            if not isinstance(summary, dict) or summary.get("size_source") == "storage":
+                continue
+            project_row = self.conn.execute(
+                "SELECT project_json FROM editor_project_details WHERE project_id = ?",
+                (row["project_id"],),
+            ).fetchone()
+            project = self._decode_value(project_row["project_json"]) if project_row else None
+            if not isinstance(project, dict):
+                continue
+            refreshed = self._project_summary_from_project(project, has_detail=True)
+            self._upsert_project_summary_data(refreshed, has_detail=True)
+            changed = True
+        if changed:
+            self.conn.commit()
+
+    def _project_asset_size_bytes(self, project_id: str, project: dict[str, Any] | None = None) -> int:
+        safe_project_id = _safe_path_segment(project_id, "project")
+        roots = [self.asset_root, *self._legacy_asset_roots()]
+        total = 0
+        seen: set[str] = set()
+        for root in roots:
+            project_dir = root / safe_project_id
+            if not project_dir.is_dir():
+                continue
+            try:
+                for path in project_dir.rglob("*"):
+                    if not path.is_file():
+                        continue
+                    key = str(path.resolve()).lower()
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    try:
+                        total += path.stat().st_size
+                    except OSError:
+                        continue
+            except OSError:
+                continue
+        if isinstance(project, dict):
+            def visit(value: Any) -> None:
+                nonlocal total
+                if isinstance(value, list):
+                    for item in value:
+                        visit(item)
+                    return
+                if not isinstance(value, dict):
+                    return
+                metadata = value.get("metadata") if isinstance(value.get("metadata"), dict) else value
+                file_path = metadata.get("filePath") if isinstance(metadata, dict) else None
+                if isinstance(file_path, str) and file_path.strip():
+                    candidate = Path(file_path).expanduser()
+                    try:
+                        resolved = candidate.resolve()
+                        key = str(resolved).lower()
+                        if key not in seen and resolved.is_file():
+                            seen.add(key)
+                            total += resolved.stat().st_size
+                    except OSError:
+                        pass
+                for child in value.values():
+                    visit(child)
+            visit(project)
+        return total
 
     def _shared_value_length(self, key: str) -> int:
         row = self.conn.execute(
@@ -613,44 +998,88 @@ class ProjectStateService:
 
         project_id = self._project_id_from_payload(payload)
         normalized: dict[str, Any] = {}
-        for key in EDITOR_SHARED_STATE_KEYS:
-            if key not in payload:
-                continue
-            value = payload[key]
-            if key == PROJECT_GRAPH_KEY:
-                normalized[key] = self._externalize_embedded_asset_payloads(
-                    self._normalize_project_graph(value),
-                    project_id,
-                )
-            elif key in {RECENT_PROJECTS_KEY, PROVIDER_CONNECTIONS_KEY, PROVIDER_MODELS_KEY}:
-                normalized_list = self._normalize_list(value)
-                normalized[key] = (
-                    self._externalize_recent_projects(normalized_list)
-                    if key == RECENT_PROJECTS_KEY
-                    else normalized_list
-                )
-            else:
-                normalized_object = self._normalize_object(value)
-                normalized[key] = (
-                    self._externalize_embedded_asset_payloads(normalized_object, project_id)
-                    if key == PROJECT_METADATA_KEY
-                    else normalized_object
-                )
+        created_files: list[Path] = []
+        try:
+            for key in EDITOR_SHARED_STATE_KEYS:
+                if key not in payload:
+                    continue
+                value = payload[key]
+                if key == PROJECT_GRAPH_KEY:
+                    normalized[key] = self._externalize_embedded_asset_payloads(
+                        self._normalize_project_graph(value), project_id, created_files,
+                    )
+                elif key in {RECENT_PROJECTS_KEY, PROVIDER_CONNECTIONS_KEY, PROVIDER_MODELS_KEY}:
+                    normalized_list = self._normalize_list(value)
+                    normalized[key] = (
+                        self._externalize_recent_projects(normalized_list, created_files)
+                        if key == RECENT_PROJECTS_KEY
+                        else normalized_list
+                    )
+                else:
+                    normalized_object = self._normalize_object(value)
+                    normalized[key] = (
+                        self._externalize_embedded_asset_payloads(normalized_object, project_id, created_files)
+                        if key == PROJECT_METADATA_KEY
+                        else normalized_object
+                    )
+        except Exception:
+            self._cleanup_new_payload_files(created_files)
+            raise
         return normalized
 
-    def _externalize_recent_projects(self, projects: list[Any]) -> list[Any]:
+    def _externalize_recent_projects(self, projects: list[Any], created_files: list[Path] | None = None) -> list[Any]:
         externalized: list[Any] = []
         for index, project in enumerate(projects):
             if not isinstance(project, dict):
                 externalized.append(project)
                 continue
             project_id = project.get("project_id") if isinstance(project.get("project_id"), str) else f"recent_{index}"
-            externalized.append(self._externalize_embedded_asset_payloads(project, project_id))
+            externalized.append(self._externalize_embedded_asset_payloads(project, project_id, created_files))
         return externalized
 
-    def _externalize_embedded_asset_payloads(self, value: Any, project_id: str | None) -> Any:
-        cloned = _json_clone(value)
+    def _refresh_backend_asset_urls(self, value: Any) -> None:
+        """Rebind managed references to this request's sidecar, without rewriting stored bytes."""
+        if isinstance(value, list):
+            for child in value:
+                self._refresh_backend_asset_urls(child)
+        elif isinstance(value, dict):
+            asset_path = value.get("backend_asset_path")
+            if is_safe_project_path(asset_path):
+                public_path = asset_path.replace("\\", "/")
+                value["url"] = f"{self.asset_public_url_prefix}/{quote(public_path, safe='/')}"
+            for child in value.values():
+                self._refresh_backend_asset_urls(child)
 
+    @staticmethod
+    def _cleanup_new_payload_files(created_files: list[Path]) -> None:
+        for created_file in created_files:
+            try:
+                created_file.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Failed to clean up a rejected embedded project asset: %s", created_file)
+
+    def _externalize_embedded_asset_payloads(
+        self, value: Any, project_id: str | None, created_files: list[Path] | None = None,
+    ) -> Any:
+        cloned = _json_clone(value)
+        local_files: list[Path] = [] if created_files is None else created_files
+        try:
+            self._externalize_embedded_asset_payloads_in_place(cloned, project_id, local_files)
+        except Exception:
+            if created_files is None:
+                self._cleanup_new_payload_files(local_files)
+            raise
+        return cloned
+
+    def _externalize_embedded_asset_payloads_in_place(
+        self,
+        value: Any,
+        project_id: str | None,
+        created_files: list[Path] | None = None,
+        allowed_file_roots: tuple[Path, ...] | None = None,
+        file_reference_base: Path | None = None,
+    ) -> None:
+        self._refresh_backend_asset_urls(value)
         def visit(item: Any, asset_id: str | None = None, asset_type: str | None = None) -> None:
             if isinstance(item, list):
                 for child in item:
@@ -668,19 +1097,40 @@ class ProjectStateService:
             if embedded_url is None and isinstance(blob_url, str) and blob_url.startswith("data:"):
                 embedded_url = blob_url
             if embedded_url is not None:
-                self._externalize_metadata_payload(item, embedded_url, project_id, next_asset_id, next_asset_type)
+                self._externalize_metadata_payload(
+                    item,
+                    embedded_url,
+                    project_id,
+                    next_asset_id,
+                    next_asset_type,
+                    created_files,
+                )
             elif not item.get("url") and not item.get("backend_asset_path"):
-                self._copy_file_asset_reference(item, project_id, next_asset_id, next_asset_type)
+                self._copy_file_asset_reference(
+                    item,
+                    project_id,
+                    next_asset_id,
+                    next_asset_type,
+                    created_files,
+                    allowed_file_roots,
+                    file_reference_base,
+                )
 
             inline_data_url = item.get("dataUrl")
             if isinstance(inline_data_url, str) and inline_data_url.startswith("data:"):
-                self._externalize_inline_payload(item, inline_data_url, project_id, next_asset_id, next_asset_type)
+                self._externalize_inline_payload(
+                    item,
+                    inline_data_url,
+                    project_id,
+                    next_asset_id,
+                    next_asset_type,
+                    created_files,
+                )
 
             for child in item.values():
                 visit(child, next_asset_id, next_asset_type)
 
-        visit(cloned)
-        return cloned
+        visit(value)
 
     def _externalize_metadata_payload(
         self,
@@ -689,13 +1139,11 @@ class ProjectStateService:
         project_id: str | None,
         asset_id: str | None,
         asset_type: str | None,
+        created_files: list[Path] | None = None,
     ) -> None:
         decoded = _decode_data_url(data_url)
         if decoded is None:
-            metadata.pop("data_url", None)
-            if isinstance(metadata.get("blob_url"), str) and metadata["blob_url"].startswith("data:"):
-                metadata.pop("blob_url", None)
-            return
+            raise ProjectImportError("PROJECT_ASSET_DATA_URL_INVALID: 内嵌素材编码无效，工程未写入。")
 
         mime_type, payload = decoded
         digest = hashlib.sha256(payload).hexdigest()[:16]
@@ -708,6 +1156,8 @@ class ProjectStateService:
         absolute_path.parent.mkdir(parents=True, exist_ok=True)
         if not absolute_path.exists():
             absolute_path.write_bytes(payload)
+            if created_files is not None:
+                created_files.append(absolute_path)
 
         public_path = relative_path.as_posix()
         metadata["mime_type"] = metadata.get("mime_type") or mime_type
@@ -725,12 +1175,33 @@ class ProjectStateService:
         project_id: str | None,
         asset_id: str | None,
         asset_type: str | None,
+        created_files: list[Path] | None = None,
+        allowed_file_roots: tuple[Path, ...] | None = None,
+        file_reference_base: Path | None = None,
     ) -> None:
         raw_file_path = metadata.get("filePath")
         if not isinstance(raw_file_path, str) or not raw_file_path.strip():
             return
         source_path = Path(raw_file_path).expanduser()
+        if not source_path.is_absolute() and file_reference_base is not None:
+            source_path = file_reference_base / source_path
+        source_path = source_path.resolve()
+        if allowed_file_roots is not None:
+            allowed = False
+            for root in allowed_file_roots:
+                try:
+                    source_path.relative_to(root)
+                    allowed = True
+                    break
+                except ValueError:
+                    continue
+            if not allowed:
+                metadata.pop("filePath", None)
+                return
         if not source_path.is_file():
+            if allowed_file_roots is not None:
+                metadata.pop("filePath", None)
+                return
             backend_asset_path = metadata.get("backend_asset_path")
             resolved_asset = self.resolve_asset_file(backend_asset_path) if isinstance(backend_asset_path, str) else None
             if resolved_asset is None:
@@ -738,7 +1209,12 @@ class ProjectStateService:
             source_path = resolved_asset
 
         try:
-            payload = source_path.read_bytes()
+            source_size = source_path.stat().st_size
+            digest_builder = hashlib.sha256()
+            with source_path.open("rb") as source:
+                while chunk := source.read(1024 * 1024):
+                    digest_builder.update(chunk)
+            digest_full = digest_builder.hexdigest()
         except OSError as exc:
             logger.warning(
                 "工程素材读取失败，已保留原引用：project_id=%s asset_id=%s path=%s error=%s",
@@ -754,7 +1230,13 @@ class ProjectStateService:
             if isinstance(metadata.get("mime_type"), str)
             else mimetypes.guess_type(source_path.name)[0] or "application/octet-stream"
         )
-        digest = hashlib.sha256(payload).hexdigest()[:16]
+        expected_size = metadata.get("size_bytes")
+        if isinstance(expected_size, int) and expected_size >= 0 and source_size != expected_size:
+            raise ProjectImportError(f"PROJECT_ASSET_HASH_MISMATCH: {source_path} size")
+        expected_hash = metadata.get("hash_sha256") or metadata.get("sha256")
+        if isinstance(expected_hash, str) and expected_hash and digest_full.lower() != expected_hash.lower():
+            raise ProjectImportError(f"PROJECT_ASSET_HASH_MISMATCH: {source_path}")
+        digest = digest_full[:16]
         safe_project_id = _safe_path_segment(project_id, "project")
         safe_asset_type = _safe_path_segment(asset_type, "asset")
         safe_asset_id = _safe_path_segment(asset_id or metadata.get("display_name") or source_path.stem, "asset")
@@ -763,11 +1245,15 @@ class ProjectStateService:
         absolute_path = self.asset_root / relative_path
         absolute_path.parent.mkdir(parents=True, exist_ok=True)
         if not absolute_path.exists():
-            absolute_path.write_bytes(payload)
+            with source_path.open("rb") as source, absolute_path.open("wb") as destination:
+                shutil.copyfileobj(source, destination, length=1024 * 1024)
+            if created_files is not None:
+                created_files.append(absolute_path)
 
         public_path = relative_path.as_posix()
         metadata["mime_type"] = metadata.get("mime_type") or mime_type
-        metadata["size_bytes"] = metadata.get("size_bytes") or len(payload)
+        metadata["size_bytes"] = source_size
+        metadata["hash_sha256"] = digest_full
         metadata["filePath"] = str(absolute_path)
         metadata["url"] = f"{self.asset_public_url_prefix}/{quote(public_path, safe='/')}"
         metadata["backend_asset_path"] = public_path
@@ -779,11 +1265,11 @@ class ProjectStateService:
         project_id: str | None,
         asset_id: str | None,
         asset_type: str | None,
+        created_files: list[Path] | None = None,
     ) -> None:
         decoded = _decode_data_url(data_url)
         if decoded is None:
-            payload_owner.pop("dataUrl", None)
-            return
+            raise ProjectImportError("PROJECT_ASSET_DATA_URL_INVALID: 内嵌素材编码无效，工程未写入。")
 
         mime_type, payload = decoded
         digest = hashlib.sha256(payload).hexdigest()[:16]
@@ -796,6 +1282,8 @@ class ProjectStateService:
         absolute_path.parent.mkdir(parents=True, exist_ok=True)
         if not absolute_path.exists():
             absolute_path.write_bytes(payload)
+            if created_files is not None:
+                created_files.append(absolute_path)
 
         public_path = relative_path.as_posix()
         payload_owner["mimeType"] = payload_owner.get("mimeType") or mime_type

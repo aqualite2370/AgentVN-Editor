@@ -3,6 +3,26 @@ import type { SaveData, SaveKind, SaveSlotRef } from "../types/save";
 import { isTauriRuntime } from "../utils/platform";
 import { reportFrontendError } from "../../../shared/logging/frontendErrorLogger";
 
+export interface SaveStorageInfo {
+  portable: boolean;
+  sourceDirectory: string | null;
+  targetDirectory: string;
+  availableFiles: string[];
+  conflictFiles: string[];
+  skippedFiles: string[];
+  copiedFiles: string[];
+}
+
+export async function getSaveStorageInfo(installId: string): Promise<SaveStorageInfo | undefined> {
+  if (!isTauriRuntime()) return undefined;
+  return invoke<SaveStorageInfo>("get_save_storage_info", { installId });
+}
+
+export async function migrateLegacySaves(installId: string, gameId: string): Promise<SaveStorageInfo> {
+  if (!isTauriRuntime()) throw new Error("旧存档迁移仅适用于Windows独立游戏。");
+  return invoke<SaveStorageInfo>("migrate_legacy_saves", { installId, gameId, confirmed: true });
+}
+
 function saveKey(installId: string): string {
   return `agentvn.gamecli.saves.${installId}`;
 }
@@ -25,7 +45,12 @@ function writeWebSaves(installId: string, saves: SaveData[]): void {
   } catch (error) {
     reportFrontendError("player.save", error, { operation: "local-storage-full-save", key });
     // A thumbnail must never make a real game save fail. Retry with visual metadata removed.
-    const compact = saves.map(({ preview_image: _previewImage, preview_choices: _previewChoices, ...save }) => save);
+    const compact = saves.map(({
+      preview_image: _previewImage,
+      preview_version: _previewVersion,
+      preview_choices: _previewChoices,
+      ...save
+    }) => save);
     try {
       window.localStorage.setItem(key, JSON.stringify(compact));
     } catch {
@@ -35,7 +60,8 @@ function writeWebSaves(installId: string, saves: SaveData[]): void {
 }
 
 function saveKind(save: SaveData): SaveKind {
-  return save.save_kind === "auto" ? "auto" : "manual";
+  if (save.save_kind === "auto" || save.save_kind === "quick") return save.save_kind;
+  return "manual";
 }
 
 function matchesSlot(save: SaveData, ref: SaveSlotRef): boolean {

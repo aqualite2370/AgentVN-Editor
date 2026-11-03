@@ -24,6 +24,7 @@ from app.mcp.tools import agentvn_tool_registry, generation_schema_for_model
 from app.models.memory import MemoryUpdate
 from app.models.novel_import import NovelAiChapterScenePlan
 from app.models.scene import SceneBeat
+from app.models.assistant_creation import AssistantComponentDraftBatch
 from app.schemas.requests import ProviderSelectionParameters, ProviderSelectionRequest
 from app.schemas.responses import DiscoveredProviderModel, TestProviderConnectionResponse, TestProviderGenerationResponse
 
@@ -35,6 +36,20 @@ DEFAULT_EMBEDDING_TIMEOUT_SECONDS = 12.0
 STRUCTURED_TRANSPORT_MAX_ATTEMPTS = 2
 STRUCTURED_TRANSPORT_RETRY_DELAY_SECONDS = 0.2
 TransportRetryCallback = Callable[[dict[str, object]], None]
+
+
+def _structured_json_instructions(response_model: type[BaseModel]) -> str:
+    schema = generation_schema_for_model(response_model)
+    # Keep the root contract first without losing definitions or cutting JSON.
+    ordered_schema = {key: value for key, value in schema.items() if key != "$defs"}
+    if "$defs" in schema:
+        ordered_schema["$defs"] = schema["$defs"]
+    return (
+        "Return only a valid JSON object that matches the following JSON schema. "
+        "Include every required field and use only supported command types and fields. "
+        "Do not wrap the JSON in Markdown fences and do not include explanatory text.\n"
+        f"Target JSON schema:\n{json.dumps(ordered_schema, ensure_ascii=False, separators=(',', ':'))}"
+    )
 
 
 class AIProvider:
@@ -322,6 +337,7 @@ class AIProvider:
                 try:
                     return json.loads(block.strip())
                 except json.JSONDecodeError:
+                    # error-log-ignore: Truncated structured output is handled by the outer parser.
                     # error-log-ignore: 这是从模型文本中逐个尝试提取 JSON 代码块，失败后还会继续尝试其他候选。
                     continue
             decoder = json.JSONDecoder()
@@ -332,6 +348,7 @@ class AIProvider:
                     payload, _ = decoder.raw_decode(stripped[first_index:])
                     return payload
                 except json.JSONDecodeError:
+                    # error-log-ignore: Truncated structured output is handled by the outer parser.
                     # Do not keep scanning nested values. A truncated outer object can contain a
                     # complete command object or tags array; accepting that child as the whole
                     # response hides output truncation and can silently discard story content.
@@ -463,6 +480,91 @@ class AIProvider:
             selection=selection,
             allow_json_fallback=allow_json_fallback,
         )
+
+    def create_agent_tools(self, system_prompt, user_prompt, tools, execute, *, selection=None,
+                           cancelled=None, max_steps=12, validate=None, terminal_tool=None):
+        """Serial native calls with whole-batch preflight and a total execution budget."""
+        api_key, base_url, model_name, parameters = self._resolve_llm_config(selection)
+        if not api_key: raise AIProviderError("LLM API key is required for generation.")
+        self._apply_deepseek_generation_defaults(parameters, model_name)
+        client = OpenAI(api_key=api_key, base_url=base_url, timeout=self._client_timeout(parameters), max_retries=0)
+        messages = [{"role": "system", "content": self._merge_system_prompt(system_prompt, parameters)},
+                    {"role": "user", "content": user_prompt}]
+        # This agent accepts only native calls, not a textual final answer.
+        # "auto" permits a perfectly valid text-only reply and contradicts the
+        # executor contract. Require a call, but leave the choice of allowed
+        # tool to the model (no fixed read/build/validate/submit choreography).
+        kwargs = {"model": model_name, "temperature": parameters.get("temperature", 0.4),
+                  "tools": tools, "tool_choice": "required", "parallel_tool_calls": False}
+        for key in ("top_p", "max_tokens"):
+            if key in parameters: kwargs[key] = parameters[key]
+        self._apply_structured_token_floor(AssistantComponentDraftBatch, kwargs)
+        self._apply_provider_extra_body(kwargs, base_url, model_name, parameters)
+        self._force_disable_deepseek_thinking_for_tools(kwargs, base_url, model_name)
+        call_limit = max(1, min(max_steps, 12))
+        executed = 0
+        seen_ids = set()
+        allowed_names = {tool["function"]["name"] for tool in tools}
+        for _step in range(call_limit):
+            if cancelled and cancelled(): raise AIProviderError("创造任务已取消；没有继续模型调用。")
+            try:
+                response = client.chat.completions.create(**kwargs, messages=messages)
+            except Exception as exc:
+                raise AIProviderError(self._format_provider_error(exc, base_url, model_name)) from exc
+            if not response.choices: raise AIProviderError("模型没有返回创造工具调用。")
+            choice = response.choices[0]
+            if choice.finish_reason == "length": raise AIProviderError("创造工具参数被模型输出上限截断；未自动重复调用。")
+            message = choice.message
+            calls = list(message.tool_calls or [])
+            # Providers may return several native calls even when parallel
+            # calling is disabled. Validate the complete batch before executing
+            # any of it, then run in order against the same isolated draft.
+            # Diagnostics contain bounded protocol metadata, never arguments.
+            finish_reason = choice.finish_reason if choice.finish_reason in {
+                "stop", "tool_calls", "length", "content_filter", "function_call",
+            } else "unknown"
+            metadata = f"step={_step + 1}, tool_calls={len(calls)}, finish_reason={finish_reason}"
+            if not calls:
+                raise AIProviderError(
+                    f"模型没有返回受限创造工具调用。（{metadata}；未执行本批工具，未自动重试。）"
+                )
+            if len(calls) > call_limit - executed:
+                raise AIProviderError(
+                    f"创造工具批次超过剩余调用额度。（{metadata}；总上限{call_limit}次，未执行本批工具，未自动重试。）"
+                )
+            batch_ids = set()
+            for index, call in enumerate(calls):
+                if (call.type != "function" or call.function.name not in allowed_names
+                        or not isinstance(call.id, str) or not call.id.strip() or len(call.id) > 256
+                        or call.id in seen_ids or call.id in batch_ids):
+                    raise AIProviderError(
+                        f"创造工具类型、名称或调用标识无效。（{metadata}；未执行本批工具，未自动重试。）"
+                    )
+                batch_ids.add(call.id)
+                if terminal_tool and call.function.name == terminal_tool and index != len(calls) - 1:
+                    raise AIProviderError(
+                        f"最终提交必须是批次最后一个调用且只能出现一次。（{metadata}；未执行本批工具，未自动重试。）"
+                    )
+                if validate:
+                    validate(call.function.name, call.function.arguments)
+                elif len(calls) > 1:
+                    raise AIProviderError("创造工具缺少批次参数校验；未执行本批工具，未自动重试。")
+            seen_ids.update(batch_ids)
+            messages.append({"role": "assistant", "content": None, "tool_calls": [{
+                "id": call.id, "type": "function",
+                "function": {"name": call.function.name, "arguments": call.function.arguments},
+            } for call in calls]})
+            for call in calls:
+                if cancelled and cancelled():
+                    raise AIProviderError("创造任务已取消；没有继续执行批次工具或模型调用。")
+                output, final = execute(call.function.name, call.function.arguments)
+                executed += 1
+                if final: return output
+                messages.append({"role": "tool", "tool_call_id": call.id,
+                    "content": json.dumps(output, ensure_ascii=False)})
+            if executed >= call_limit:
+                break
+        raise AIProviderError(f"创造工具达到{call_limit}次调用上限，未生成最终提案；工程未修改。")
 
     def stream_with_tools(
         self,
@@ -673,11 +775,7 @@ class AIProvider:
             "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        f"{system_prompt}\n\n"
-                        "Return only a valid JSON object that matches the requested schema. "
-                        "Do not wrap the JSON in Markdown fences and do not include explanatory text."
-                    ),
+                    "content": f"{system_prompt}\n\n{_structured_json_instructions(response_model)}",
                 },
                 {"role": "user", "content": user_prompt},
             ],
@@ -1149,11 +1247,7 @@ class AIProvider:
             "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        f"{system_prompt}\n\n"
-                        "Return only a valid JSON object that matches the requested schema. "
-                        "Do not wrap the JSON in Markdown fences and do not include explanatory text."
-                    ),
+                    "content": f"{system_prompt}\n\n{_structured_json_instructions(response_model)}",
                 },
                 {"role": "user", "content": user_prompt},
             ],
@@ -1223,14 +1317,14 @@ class AIProvider:
                         "You are repairing a previous structured output for AgentVN. "
                         "Return only one valid JSON object. Do not include Markdown or explanations. "
                         "The corrected JSON must validate against the provided schema exactly; remove unknown fields, "
-                        "rename obvious aliases to schema fields, and preserve user-visible story meaning."
+                        "rename obvious aliases to schema fields, and preserve user-visible story meaning.\n\n"
+                        f"{_structured_json_instructions(response_model)}"
                     ),
                 },
                 {
                     "role": "user",
                     "content": (
                         f"Original user request:\n{user_prompt}\n\n"
-                        f"Target Pydantic schema:\n{json.dumps(generation_schema_for_model(response_model), ensure_ascii=False)[:12000]}\n\n"
                         f"Validation errors:\n{self._validation_error_text(validation_error)}\n\n"
                         f"Invalid JSON/content to repair:\n{invalid_content[:12000]}"
                     ),
@@ -1464,6 +1558,7 @@ class AIProvider:
             scene_schema_ok = True
             diagnostics.append(f"SceneBeat Tool Call ok: {result.title}")
         except Exception as exc:
+            # error-log-ignore: Tool capability probes record diagnostics and continue to the fallback mode.
             tool_unsupported = self._is_explicit_tool_unsupported(exc)
             fallback_reason = str(exc)[:500] if tool_unsupported else None
             first_error = first_error or str(exc)
@@ -1486,6 +1581,7 @@ class AIProvider:
                 memory_schema_ok = True
                 diagnostics.append(f"MemoryUpdate Tool Call ok: {result.summary_100}")
             except Exception as exc:
+                # error-log-ignore: Tool capability probes record diagnostics and continue to the fallback mode.
                 tool_unsupported = self._is_explicit_tool_unsupported(exc)
                 fallback_reason = str(exc)[:500] if tool_unsupported else fallback_reason
                 first_error = first_error or str(exc)
@@ -1511,6 +1607,7 @@ class AIProvider:
                 complex_schema_ok = True
                 diagnostics.append(f"Complex Tool Call ok: {result.chapter_id}")
             except Exception as exc:
+                # error-log-ignore: Tool capability probes record diagnostics and continue to the fallback mode.
                 tool_unsupported = self._is_explicit_tool_unsupported(exc)
                 fallback_reason = str(exc)[:500] if tool_unsupported else fallback_reason
                 first_error = first_error or str(exc)
@@ -1535,6 +1632,7 @@ class AIProvider:
                 json_mode_ok = True
                 diagnostics.append(f"JSON compatibility ok: {result.title}")
             except Exception as exc:
+                # error-log-ignore: JSON compatibility probing records diagnostics and returns a structured failure.
                 json_mode_ok = False
                 first_error = first_error or str(exc)
                 diagnostics.append(f"JSON compatibility failed: {str(exc)[:500]}")

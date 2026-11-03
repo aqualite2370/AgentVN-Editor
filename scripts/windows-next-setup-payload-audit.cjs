@@ -1,0 +1,12 @@
+"use strict";
+const fs = require("node:fs"), path = require("node:path"), assert = require("node:assert/strict");
+const Module = require("node:module"), vm = require("node:vm");
+const { sha } = require("./lib/installed-runtime-session.cjs");
+const original = path.join(__dirname, "windows-setup-payload-audit.cjs");
+assert.equal(sha(original), "35dcdfbeae59a2e62b44f9b185699c5f90287590ec0b78be833245504634e5fe");
+let source = fs.readFileSync(original, "utf8");
+assert.equal(source.split("lib/windows-current-native-source.cjs").length - 1, 1);
+source = source.replace("lib/windows-current-native-source.cjs", "lib/windows-next-native-source.cjs");
+new vm.Script(Module.wrap(source));
+const worker = new Module(__filename, module); worker.filename = __filename; worker.paths = module.paths;
+worker._compile(source, __filename);

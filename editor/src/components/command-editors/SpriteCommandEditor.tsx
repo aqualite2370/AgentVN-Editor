@@ -1,12 +1,19 @@
-import { ArrowLeftRight, PersonStanding } from "lucide-react";
+import { Move3d } from "lucide-react";
+import { useState } from "react";
 import { defaultCharacterAnimationConfig, legacySpriteAnimationToConfig } from "../../../../shared/animation/characterAnimation";
 import { MAX_SPRITE_LAYER, MIN_SPRITE_LAYER } from "../../../../shared/cartridge/spriteLayer";
-import type { SpriteCommand } from "../../types/commands";
+import { sanitizeSpriteOffsetX, sanitizeSpriteOffsetY } from "../../../../shared/cartridge/spritePlacement";
+import { DEFAULT_SPRITE_SCALE, sanitizeSpriteScale, spriteScalePercent } from "../../../../shared/cartridge/spriteScale";
+import type { GameCommand, SpriteCommand } from "../../types/commands";
+import { useEditorStore } from "../../store/editorStore";
+import { useProjectStore } from "../../store/projectStore";
+import { applySpritePlacementToCommand, applySpritePlacementToNodes } from "../../utils/spritePlacementApply";
 import { spriteAnimationOptions, spritePositionOptions } from "../../utils/localizedOptions";
 import { AssetPicker } from "../common/AssetPicker";
 import { FieldHelp } from "../common/FieldHelp";
 import { LocalizedValueSelect } from "../common/LocalizedValueSelect";
 import { CharacterAnimationControls } from "./CharacterAnimationControls";
+import { SpritePlacementStudioDialog } from "./SpritePlacementStudioDialog";
 import { SpriteScaleControl } from "./SpriteScaleControl";
 import { VisualTransitionControls } from "./VisualTransitionControls";
 
@@ -25,11 +32,25 @@ function replacementContextHint(command: SpriteCommand): string {
 
 export function SpriteCommandEditor({
   command,
+  commands = [command],
+  commandIndex = 0,
+  sceneId = "",
+  sceneTitle,
   onChange,
 }: {
   command: SpriteCommand;
+  commands?: GameCommand[];
+  commandIndex?: number;
+  sceneId?: string;
+  sceneTitle?: string;
   onChange: (command: SpriteCommand) => void;
 }) {
+  const [placementOpen, setPlacementOpen] = useState(false);
+  const nodes = useEditorStore((state) => state.nodes);
+  const setNodes = useEditorStore((state) => state.setNodes);
+  const setNotice = useEditorStore((state) => state.setNotice);
+  const projectSettings = useProjectStore((state) => state.settings);
+  const setCharacterSpriteLayout = useProjectStore((state) => state.setCharacterSpriteLayout);
   const animationConfig =
     command.animation_config ??
     legacySpriteAnimationToConfig(command.animation, command.animation_display_name, command.visible) ??
@@ -48,6 +69,25 @@ export function SpriteCommandEditor({
           onChange={(event) => onChange({ ...command, character_id: event.target.value })}
         />
       </label>
+      <section className="sprite-placement-summary" aria-label="立绘位置与缩放">
+        <div>
+          <strong>立绘位置与缩放</strong>
+          <span>
+            {command.position || "继承位置"} · X {sanitizeSpriteOffsetX(command.offset_x).toFixed(1)}%
+            {" · "}Y {sanitizeSpriteOffsetY(command.offset_y).toFixed(1)}%
+            {" · "}{spriteScalePercent(sanitizeSpriteScale(command.scale, projectSettings.defaultSpriteScale ?? DEFAULT_SPRITE_SCALE))}
+          </span>
+        </div>
+        <button type="button" data-help-key="command.sprite.placementStudio" onClick={() => setPlacementOpen(true)}>
+          <Move3d size={16} />
+          调整立绘
+        </button>
+      </section>
+      <SpriteScaleControl
+        characterId={command.character_id}
+        value={command.scale}
+        onChange={(scale) => onChange({ ...command, scale })}
+      />
       <AssetPicker
         label="立绘素材"
         field="sprite_id"
@@ -103,23 +143,6 @@ export function SpriteCommandEditor({
         显示立绘
       </label>
 
-      <SpriteScaleControl
-        characterId={command.character_id}
-        value={command.scale}
-        onChange={(scale) => onChange({ ...command, scale })}
-      />
-
-      <section className="sprite-motion-guide" aria-label="立绘动作分工">
-        <header>
-          <strong>两类动作各司其职</strong>
-          <span>避免入退场动画与换装过场重复驱动同一层</span>
-        </header>
-        <div>
-          <span><PersonStanding size={15} aria-hidden="true" /><b>角色出入场动画</b>首次出现、退出和强调</span>
-          <span><ArrowLeftRight size={15} aria-hidden="true" /><b>立绘替换过场</b>同角色换装或表情切换</span>
-        </div>
-      </section>
-
       <CharacterAnimationControls
         value={animationConfig}
         visible={command.visible}
@@ -155,7 +178,7 @@ export function SpriteCommandEditor({
           </label>
           <label>
             旧版动画代称 <FieldHelp field="animation_display_name" />
-            <input
+            <input data-help-key="editor.control"
               value={command.animation_display_name ?? ""}
               placeholder="例如：左滑入场、轻推退场"
               onChange={(event) => onChange({ ...command, animation_display_name: event.target.value || null })}
@@ -163,6 +186,45 @@ export function SpriteCommandEditor({
           </label>
         </div>
       </details>
+      {placementOpen && (
+        <SpritePlacementStudioDialog
+          command={command}
+          commands={commands}
+          commandIndex={commandIndex}
+          sceneId={sceneId}
+          sceneTitle={sceneTitle}
+          onClose={() => setPlacementOpen(false)}
+          onApply={(layout, scope) => {
+            const result = sceneId
+              ? applySpritePlacementToNodes(nodes, sceneId, command.character_id, layout, scope, projectSettings)
+              : undefined;
+            if (result && result.changedCommands > 0) {
+              setNodes(result.nodes);
+            } else {
+              onChange(applySpritePlacementToCommand(command, layout));
+            }
+            if (scope === "character") {
+              const ids = result?.matchingCharacterIds.length
+                ? result.matchingCharacterIds
+                : [command.character_id];
+              ids.filter(Boolean).forEach((characterId) => setCharacterSpriteLayout(characterId, layout));
+            }
+            const targetLabel = result?.targetDisplayName || command.character_id || "当前角色";
+            const changedCount = result?.changedCommands ?? 1;
+            setNotice({
+              message: scope === "character"
+                ? `已应用到全部「${targetLabel}」立绘。`
+                : `已应用到当前场景的「${targetLabel}」立绘。`,
+              tone: "success",
+              source: "立绘位置与缩放",
+              detail: scope === "character"
+                ? `更新 ${Math.max(1, changedCount)} 条命令，并保存为角色默认布局。`
+                : `更新 ${Math.max(1, changedCount)} 条命令。`,
+            });
+            setPlacementOpen(false);
+          }}
+        />
+      )}
     </div>
   );
 }

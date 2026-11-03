@@ -1,7 +1,7 @@
 import JSZip from "jszip";
 import { verifyChecksumManifest } from "./checksum";
 import { validateCartridgeStructure, validateChecksumManifest, validateFileSizeLimits, validateNoExecutableFiles, validateSafePaths } from "./validators";
-import { DEFAULT_UI_LAYOUT_PATH, validateUISkinLayout } from "./uiSkin";
+import { DEFAULT_UI_LAYOUT_PATH, normalizeUISkinLayoutForRuntime, validateUISkinLayout } from "./uiSkin";
 import { assetIdFromUILayoutReference } from "./uiAssetReference";
 import type { CartridgeImportOptions, CartridgePackage, ChecksumManifest, GalleryManifest, GameManifest, RuntimeScript } from "./types";
 import type { UISkinLayout } from "./uiSkin";
@@ -61,7 +61,8 @@ export async function loadCartridgeFromArrayBuffer(buffer: ArrayBuffer, options:
   const manifest = await readCartridgeManifest(zip);
   const script = await readCartridgeScript(zip);
   const gallery = await readCartridgeGallery(zip);
-  const uiSkin = await readCartridgeUISkin(zip, manifest);
+  const rawUISkin = await readCartridgeUISkin(zip, manifest);
+  const uiSkin = rawUISkin ? normalizeUISkinLayoutForRuntime(rawUISkin).layout : undefined;
   if (uiSkin) {
     const uiValidation = validateUISkinLayout(uiSkin);
     if (!uiValidation.ok) throw new Error(uiValidation.errors.map((error) => error.message).join("; "));

@@ -10,6 +10,8 @@
   border: 0;
 }
 
+
+
 .panel-kicker {
   color: var(--cart-gold);
   text-transform: uppercase;
@@ -23,7 +25,7 @@
   padding: 0 calc(14px * var(--runtime-ui-scale, 1));
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: var(--runtime-control, var(--surface-2));
+  background-color: var(--runtime-control-solid, var(--runtime-control, var(--surface-2)));
   color: var(--runtime-control-text, var(--ink));
   display: inline-flex;
   align-items: center;
@@ -34,8 +36,8 @@
   white-space: nowrap;
   position: relative;
   overflow: hidden;
+  opacity: 1;
   transition:
-    transform var(--motion-fast) var(--ease),
     opacity var(--motion-fast) var(--ease),
     border-color var(--control-focus-exit-duration) var(--ease),
     background var(--control-focus-exit-duration) var(--ease),
@@ -59,16 +61,15 @@
   filter: none;
 }
 
-.ui-button:hover:not(:disabled),
-.ui-button:focus:not(:disabled) {
-  transform: translateY(-2px);
+:root .ui-skin-scope[data-ui-screen] .runtime-layout-frame button:hover:not(:disabled):not([aria-disabled="true"]) {
+  transform: none;
+}
+
+.ui-button:focus-visible:not(:disabled) {
   border-color: var(--line-strong);
-  background: var(--runtime-control-hover, var(--surface-2));
-  box-shadow:
-    var(--focus-ring),
-    0 14px 34px color-mix(in srgb, var(--accent) 18%, transparent);
+  background-color: var(--runtime-control-hover-solid, var(--runtime-control-hover, var(--surface-2)));
+  box-shadow: var(--focus-ring);
   transition-duration:
-    var(--motion-fast),
     var(--motion-fast),
     calc(420ms * var(--runtime-skin-motion-scale, 1)),
     var(--control-focus-enter-duration),
@@ -76,25 +77,35 @@
   transition-timing-function: var(--ease-emphasis);
 }
 
+.ui-button:focus-visible:not(:disabled):where(:not(.choice-option[data-renpy-role-opacity="true"])) {
+  opacity: 1 !important;
+}
+
 .ui-button:active:not(:disabled) {
   transform: translateY(0) scale(0.96);
+  opacity: 1;
   transition-duration: 80ms;
 }
 
 .ui-button.active,
 .ui-button[aria-pressed="true"] {
   border-color: color-mix(in srgb, var(--runtime-control-active, var(--cart-gold)) 68%, transparent);
-  background: color-mix(in srgb, var(--runtime-control-active, var(--cart-gold)) 22%, var(--runtime-control, var(--surface-2)));
+  background-color: color-mix(in srgb, var(--runtime-control-active-solid, var(--runtime-control-active, var(--cart-gold))) 22%, var(--runtime-control-solid, var(--runtime-control, var(--surface-2))));
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--runtime-control-active, var(--cart-gold)) 14%, transparent);
 }
 
 .ui-button:disabled {
   cursor: not-allowed;
-  opacity: 0.45;
+  opacity: 1;
+  color: color-mix(in srgb, var(--runtime-control-text, var(--ink)) 58%, var(--runtime-panel-solid, var(--bg)));
+  background-color: color-mix(in srgb, var(--runtime-control-solid, var(--runtime-control, var(--surface-2))) 72%, var(--runtime-panel-solid, var(--bg)));
+  border-color: color-mix(in srgb, var(--line) 44%, var(--runtime-control-solid, var(--surface-2)));
+  box-shadow: none;
 }
 
 .ui-button.primary {
-  background: linear-gradient(135deg, var(--runtime-choice, var(--cart-gold)), color-mix(in srgb, var(--runtime-choice, var(--cart-gold)) 78%, var(--accent-2)));
+  background-color: var(--runtime-choice-solid, var(--runtime-choice, var(--cart-gold)));
+  background-image: linear-gradient(135deg, var(--runtime-choice-solid, var(--runtime-choice, var(--cart-gold))), color-mix(in srgb, var(--runtime-choice-solid, var(--runtime-choice, var(--cart-gold))) 78%, var(--accent-2)));
   color: var(--runtime-choice-text, #041013);
   border-color: transparent;
   font-weight: 760;
@@ -102,7 +113,7 @@
 }
 
 .ui-button.ghost {
-  background: color-mix(in srgb, var(--runtime-control, var(--surface-2)) 62%, transparent);
+  background-color: color-mix(in srgb, var(--runtime-control-solid, var(--runtime-control, var(--surface-2))) 92%, var(--runtime-panel-solid, var(--surface-2)));
 }
 
 .ui-button.icon-button {
@@ -126,7 +137,14 @@
   min-height: 0;
   padding: var(--runtime-page-padding, 28px);
   overflow: hidden;
-  animation: runtime-screen-enter var(--motion-emphasis) var(--ease-emphasis) both;
+  /*
+   * Page changes are owned by .runtime-screen-transition. The historical
+   * translate/scale/filter enter animation ran after the black seam and
+   * produced the one-frame page jump reported in real navigation.
+   */
+  animation: none;
+  transform: none;
+  filter: none;
 }
 
 .main-menu.runtime-animation-settled,
@@ -136,6 +154,125 @@
   transform: none;
   filter: none;
   will-change: auto;
+}
+
+.runtime-screen-transition {
+  position: fixed;
+  inset: 0;
+  z-index: var(--overlay-z-screen, 10);
+  overflow: hidden;
+  isolation: isolate;
+  pointer-events: auto;
+  background: var(--bg, #050810);
+}
+
+/* Android may expose one portrait WebView sample while the native surface is
+ * still rotating back to sensor-landscape. Keep the authored UI unpainted
+ * until the compositor reports a stable landscape viewport. */
+.ui-skin-scope[data-ui-viewport-ready="false"] .runtime-layout-frame {
+  visibility: hidden;
+}
+
+.runtime-screen-transition::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: #000;
+  opacity: 0;
+  transition-property: opacity;
+  transition-duration: var(--runtime-screen-cover-duration, 100ms);
+  transition-timing-function: var(--ease-out);
+}
+
+.runtime-screen-transition-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  opacity: 1;
+  transform: none;
+  filter: none;
+}
+
+.runtime-screen-transition.is-active:not(.is-crossfading) .runtime-screen-transition-layer {
+  pointer-events: none;
+}
+
+.runtime-screen-transition.is-active:not(.is-crossfading) .runtime-screen-transition-layer * {
+  pointer-events: none !important;
+}
+
+.runtime-screen-transition[data-runtime-transition-style="crossfade"]::before {
+  opacity: 0 !important;
+  transition: none !important;
+}
+
+[data-runtime-transition-snapshot],
+[data-runtime-transition-snapshot] * {
+  pointer-events: none !important;
+}
+
+.runtime-navigation-status {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  z-index: 6;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: calc(100% - 32px);
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.runtime-screen-transition.is-active.is-covering::before {
+  opacity: 1;
+  transition-duration: var(--runtime-screen-cover-duration, 748ms);
+}
+
+.runtime-screen-transition.is-active.is-swap::before {
+  opacity: 1;
+  transition: none;
+}
+
+.runtime-screen-transition.is-active.is-revealing::before {
+  opacity: 0;
+  transition-duration: var(--runtime-screen-reveal-duration, 884ms);
+}
+
+.runtime-screen-transition-layer > .ui-skin-scope {
+  position: absolute;
+  inset: 0;
+}
+
+.runtime-screen-transition.is-active .runtime-screen-transition-layer .main-menu,
+.runtime-screen-transition.is-active .runtime-screen-transition-layer .screen-panel,
+.runtime-screen-transition.is-active .runtime-screen-transition-layer .library-shell {
+  animation: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .runtime-screen-transition::before {
+    transition-property: opacity !important;
+    transition-duration: var(--runtime-screen-cover-duration, 408ms) !important;
+    transition-timing-function: var(--ease-out) !important;
+  }
+
+  .runtime-screen-transition.is-active.is-covering::before {
+    transition-duration: var(--runtime-screen-cover-duration, 408ms) !important;
+  }
+
+  .runtime-screen-transition.is-active.is-revealing::before {
+    transition-duration: var(--runtime-screen-reveal-duration, 408ms) !important;
+  }
 }
 
 .main-menu {
@@ -193,6 +330,47 @@
   z-index: 2;
 }
 
+.main-menu-title-hero-background {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  box-sizing: border-box;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.main-menu-title-mask {
+  position: absolute;
+  box-sizing: border-box;
+  pointer-events: none;
+  z-index: 20;
+}
+
+.main-menu-title-actions-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  pointer-events: none;
+}
+
+.main-menu.has-cartridge-background .menu-actions,
+.main-menu .menu-actions.menu-actions-individual {
+  z-index: 30;
+}
+
+.main-menu.has-cartridge-background .menu-actions.menu-actions-individual {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.main-menu-title-actions-layer .menu-actions {
+  pointer-events: none;
+}
+
 .menu-hero span,
 .library-topbar span,
 .launch-copy span {
@@ -204,13 +382,24 @@
 }
 
 .menu-hero.ui-layouted {
-  color: var(--runtime-main-menu-hero-color, inherit);
+  /* Resolve the skin token here: inherited body color was computed before
+     this screen's token scope, so it can still be the light-theme dark ink. */
+  color: var(--runtime-main-menu-hero-color, var(--ink));
+  pointer-events: none;
 }
 
 .menu-hero.ui-layouted span {
   color: var(--runtime-main-menu-hero-color, var(--cart-gold));
   font-size: var(--runtime-main-menu-hero-label-font-size, var(--runtime-small-font-size, 12px));
   font-weight: var(--runtime-main-menu-hero-font-weight, 760);
+}
+
+.menu-hero.ui-layouted a,
+.menu-hero.ui-layouted button,
+.menu-hero.ui-layouted input,
+.menu-hero.ui-layouted select,
+.menu-hero.ui-layouted textarea {
+  pointer-events: auto;
 }
 
 .main-menu-cartridge-icon {
@@ -278,16 +467,77 @@
   min-height: 0;
   width: auto;
   height: auto;
+  container-type: inline-size;
   pointer-events: auto;
   white-space: normal;
 }
 
+.menu-actions.menu-actions-individual .menu-action-label {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+}
+
+/* Built-in title actions have no inherited control surface. Authored inline
+   layout styles can still supply a background, border or image. */
+.menu-actions.menu-actions-individual .title-text-button {
+  container-type: size;
+  background-image: none;
+  box-shadow: none;
+  padding: 0;
+  gap: 0;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+}
+
+.menu-actions.menu-actions-individual .title-text-button .menu-action-label {
+  font-size: min(1em, 13cqi, 72cqb);
+  white-space: nowrap;
+}
+
+.menu-actions.menu-actions-individual .title-text-button:focus-visible {
+  outline: none;
+  text-decoration: underline;
+  text-underline-offset: 0.25em;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .menu-actions.menu-actions-individual .title-text-button:hover:not(:disabled) .menu-action-label {
+    text-decoration: underline;
+    text-underline-offset: 0.25em;
+  }
+}
+
+.menu-actions.menu-actions-individual .menu-action-button > .precision-icon {
+  width: 1em;
+  height: 1em;
+  flex: 0 0 1em;
+}
+
 .menu-actions.menu-actions-individual .settings-entry-image {
-  width: calc(20px * var(--runtime-ui-scale, 1));
-  height: calc(20px * var(--runtime-ui-scale, 1));
+  width: 1em;
+  height: 1em;
   object-fit: contain;
-  flex: 0 0 auto;
+  flex: 0 0 1em;
   border-radius: 4px;
+}
+
+.main-menu-exit-status {
+  position: absolute;
+  left: 50%;
+  bottom: max(4%, var(--runtime-safe-bottom, 0px));
+  z-index: var(--overlay-z-toast);
+  max-width: min(520px, calc(100% - 32px));
+  margin: 0;
+  padding: 9px 13px;
+  transform: translateX(-50%);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  box-shadow: var(--shadow-soft);
+  text-align: center;
 }
 
 .menu-actions.menu-actions-individual .custom-title-button.has-background-image:not(.is-image-owned)::before {
@@ -300,8 +550,8 @@
 }
 
 .menu-actions.menu-actions-individual .custom-title-button {
-  min-width: var(--runtime-touch-size, 42px);
-  min-height: var(--runtime-touch-size, 42px);
+  min-width: 0;
+  min-height: 0;
   touch-action: manipulation;
 }
 
@@ -333,6 +583,23 @@
   background-image: none;
 }
 
+.menu-entry-error {
+  position: absolute;
+  left: 50%;
+  bottom: max(18px, 4vh);
+  z-index: 5;
+  max-width: min(620px, calc(100vw - 40px));
+  margin: 0;
+  padding: 10px 14px;
+  transform: translateX(-50%);
+  border: 1px solid color-mix(in srgb, var(--danger) 62%, transparent);
+  border-radius: var(--radius);
+  color: var(--danger);
+  background: color-mix(in srgb, var(--runtime-panel, var(--surface)) 92%, black 8%);
+  box-shadow: var(--shadow-soft);
+  text-align: center;
+}
+
 .library-shell {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -347,6 +614,352 @@
   gap: calc(12px * var(--runtime-ui-scale, 1));
   margin-bottom: 0;
   font-size: var(--runtime-body-font-size, 15px);
+}
+
+.screen-panel > header {
+  pointer-events: none;
+  position: relative;
+  z-index: 100;
+  isolation: isolate;
+}
+
+.screen-panel > header button,
+.screen-panel > header a,
+.screen-panel > header input,
+.screen-panel > header select,
+.screen-panel > header textarea {
+  pointer-events: auto;
+}
+
+.screen-panel > header nav {
+  pointer-events: none;
+}
+
+.screen-panel > header nav button,
+.screen-panel > header nav a,
+.screen-panel > header nav input,
+.screen-panel > header nav select,
+.screen-panel > header nav textarea {
+  pointer-events: auto;
+}
+
+.settings-screen .settings-exit-link {
+  min-width: auto !important;
+  min-height: 32px;
+  padding: 4px 10px;
+  border: 1px solid color-mix(in srgb, var(--line) 58%, var(--runtime-control-solid, var(--surface-2))) !important;
+  border-radius: var(--radius);
+  background-color: color-mix(in srgb, var(--runtime-control-solid, var(--runtime-control, var(--surface-2))) 82%, var(--runtime-panel-solid, var(--bg))) !important;
+  box-shadow: none !important;
+  color: color-mix(in srgb, var(--muted) 84%, var(--runtime-panel-text, var(--ink)));
+  font-size: clamp(11px, calc(13px * var(--runtime-ui-scale, 1)), 15px);
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.settings-screen .settings-exit-link:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--line) 58%, var(--runtime-control-solid, var(--surface-2))) !important;
+  background-color: color-mix(in srgb, var(--runtime-control-solid, var(--runtime-control, var(--surface-2))) 82%, var(--runtime-panel-solid, var(--bg))) !important;
+  color: color-mix(in srgb, var(--muted) 84%, var(--runtime-panel-text, var(--ink)));
+  box-shadow: none !important;
+}
+
+.settings-screen .settings-exit-link:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 72%, transparent);
+  outline-offset: 3px;
+}
+
+.settings-screen > .settings-renpy {
+  position: absolute !important;
+  left: 50% !important;
+  right: auto !important;
+  top: 50% !important;
+  bottom: auto !important;
+  transform: translate(-50%, -50%) !important;
+  width: min(78%, calc(1280px * var(--runtime-ui-scale, 1))) !important;
+  height: 76% !important;
+  max-width: calc(100% - max(24px, var(--runtime-safe-left)) - max(24px, var(--runtime-safe-right))) !important;
+  max-height: calc(100% - max(24px, var(--runtime-safe-top)) - max(24px, var(--runtime-safe-bottom))) !important;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.settings-screen > .settings-renpy .settings-tabs,
+.settings-screen > .settings-renpy .settings-content,
+.settings-screen > .settings-renpy .settings-footer,
+.settings-screen > .settings-renpy button,
+.settings-screen > .settings-renpy a,
+.settings-screen > .settings-renpy input,
+.settings-screen > .settings-renpy select,
+.settings-screen > .settings-renpy textarea {
+  pointer-events: auto;
+}
+
+/* Scrollable/content layers are positioned above the panel header on mobile.
+ * Keep them click-through wherever they overlap the header; their own
+ * interactive descendants remain clickable inside the content area. */
+.screen-panel > .gallery-grid,
+.screen-panel > .library-grid,
+.screen-panel > .save-grid,
+.screen-panel > .history-list,
+.screen-panel > .about-card {
+  pointer-events: none;
+}
+
+.screen-panel > .gallery-grid a,
+.screen-panel > .gallery-grid button,
+.screen-panel > .library-grid a,
+.screen-panel > .library-grid button,
+.screen-panel > .save-grid a,
+.screen-panel > .save-grid button,
+.screen-panel > .history-list a,
+.screen-panel > .history-list button,
+.screen-panel > .about-card a,
+.screen-panel > .about-card button {
+  pointer-events: auto;
+}
+
+.about-screen-shell {
+  display: block;
+  min-width: 0;
+  min-height: 0;
+  padding: clamp(18px, 2.2vw, 34px);
+  overflow: hidden;
+}
+
+.about-screen-shell > header {
+  min-width: 0;
+}
+
+.about-screen-shell > header h2 {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.about-screen-shell > .about-card {
+  position: absolute !important;
+  left: clamp(18px, 2.2vw, 34px) !important;
+  right: clamp(18px, 2.2vw, 34px) !important;
+  top: clamp(72px, 9vh, 96px) !important;
+  bottom: clamp(12px, 2vh, 24px) !important;
+  transform: none !important;
+  min-width: 0;
+  min-height: 0;
+  width: auto !important;
+  height: auto !important;
+  max-width: none !important;
+  max-height: none !important;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  padding: 0;
+  overflow: hidden;
+  pointer-events: auto;
+}
+
+.about-card-content {
+  min-width: 0;
+  min-height: 0;
+  max-width: 100%;
+  max-height: 100%;
+  display: grid;
+  align-content: start;
+  gap: clamp(16px, calc(20px * var(--runtime-ui-scale, 1)), 28px);
+  padding: clamp(18px, calc(24px * var(--runtime-ui-scale, 1)), 34px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  pointer-events: auto;
+}
+
+/*
+ * Runtime surfaces use the same themed scrollbar language as the editor:
+ * a thin pill thumb with a striped accent and a recessed gradient track.
+ * Keep this contract shared across the long-form shell screens so the
+ * visual system does not fall back to browser-default scrollbars.
+ */
+.about-card-content,
+.gallery-grid,
+.save-grid,
+.history-list,
+.settings-screen .settings-content,
+.settings-screen .settings-tabs {
+  scrollbar-width: thin;
+  scrollbar-color:
+    color-mix(in srgb, var(--ink, #f4f7fb) 36%, var(--accent, #8cb0c9) 18%)
+    color-mix(in srgb, var(--bg, #070d14) 78%, var(--surface, #121b27) 22%);
+  scrollbar-gutter: stable;
+}
+
+.about-card-content::-webkit-scrollbar,
+.gallery-grid::-webkit-scrollbar,
+.save-grid::-webkit-scrollbar,
+.history-list::-webkit-scrollbar,
+.settings-screen .settings-content::-webkit-scrollbar,
+.settings-screen .settings-tabs::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+}
+
+.about-card-content::-webkit-scrollbar-track,
+.gallery-grid::-webkit-scrollbar-track,
+.save-grid::-webkit-scrollbar-track,
+.history-list::-webkit-scrollbar-track,
+.settings-screen .settings-content::-webkit-scrollbar-track,
+.settings-screen .settings-tabs::-webkit-scrollbar-track {
+  border: 1px solid color-mix(in srgb, var(--line, #8fa1b4) 58%, transparent);
+  border-radius: 999px;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--surface, #121b27) 58%, transparent),
+      color-mix(in srgb, var(--bg, #070d14) 82%, transparent)
+    );
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--ink, #f4f7fb) 4%, transparent),
+    inset 0 8px 18px color-mix(in srgb, #000 12%, transparent);
+}
+
+.about-card-content::-webkit-scrollbar-thumb,
+.gallery-grid::-webkit-scrollbar-thumb,
+.save-grid::-webkit-scrollbar-thumb,
+.history-list::-webkit-scrollbar-thumb,
+.settings-screen .settings-content::-webkit-scrollbar-thumb,
+.settings-screen .settings-tabs::-webkit-scrollbar-thumb {
+  min-height: 28px;
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background:
+    repeating-linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--ink, #f4f7fb) 52%, var(--accent, #8cb0c9) 18%) 0 7px,
+      color-mix(in srgb, var(--muted, #a8b4c2) 42%, transparent) 7px 13px
+    )
+    border-box;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--ink, #f4f7fb) 18%, transparent),
+    0 0 18px color-mix(in srgb, var(--accent, #8cb0c9) 18%, transparent);
+}
+
+.about-card-content::-webkit-scrollbar-thumb:hover,
+.gallery-grid::-webkit-scrollbar-thumb:hover,
+.save-grid::-webkit-scrollbar-thumb:hover,
+.history-list::-webkit-scrollbar-thumb:hover,
+.settings-screen .settings-content::-webkit-scrollbar-thumb:hover,
+.settings-screen .settings-tabs::-webkit-scrollbar-thumb:hover {
+  background:
+    repeating-linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--ink, #f4f7fb) 72%, var(--accent, #8cb0c9) 22%) 0 7px,
+      color-mix(in srgb, var(--accent, #8cb0c9) 34%, var(--muted, #a8b4c2)) 7px 13px
+    )
+    border-box;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--ink, #f4f7fb) 30%, transparent),
+    0 0 24px color-mix(in srgb, var(--accent, #8cb0c9) 26%, transparent);
+}
+
+.about-card-content::-webkit-scrollbar-corner,
+.gallery-grid::-webkit-scrollbar-corner,
+.save-grid::-webkit-scrollbar-corner,
+.history-list::-webkit-scrollbar-corner,
+.settings-screen .settings-content::-webkit-scrollbar-corner,
+.settings-screen .settings-tabs::-webkit-scrollbar-corner {
+  background: color-mix(in srgb, var(--bg, #070d14) 86%, var(--surface, #121b27) 14%);
+}
+
+.about-intro {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.about-intro h1,
+.about-intro p,
+.about-note {
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.about-intro h1 {
+  font-size: clamp(24px, calc(34px * var(--runtime-font-scale, 1)), 46px);
+  line-height: 1.12;
+  text-wrap: balance;
+}
+
+.about-intro p,
+.about-note {
+  line-height: 1.72;
+}
+
+.about-field-list {
+  min-width: 0;
+  max-width: 100%;
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  overflow-wrap: anywhere;
+}
+
+.about-card dl.about-field-list {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.about-field-list .about-field-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(112px, 0.28fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 14px;
+  padding: 12px 0;
+  border-top: 1px solid color-mix(in srgb, var(--line) 68%, transparent);
+}
+
+.about-field-list .about-field-row:last-child {
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 68%, transparent);
+}
+
+.about-field-list dt,
+.about-field-list dd {
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.about-field-list dt {
+  color: var(--muted);
+  font-size: var(--runtime-small-font-size, 12px);
+  font-weight: 720;
+  letter-spacing: 0.04em;
+}
+
+.about-field-list dd {
+  line-height: 1.58;
+}
+
+.about-note {
+  padding-left: 14px;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 54%, transparent);
+}
+
+.runtime-about-fields-empty {
+  margin: 0;
+  padding: 14px 0;
+  border-block: 1px solid color-mix(in srgb, var(--line) 58%, transparent);
+  color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
 .library-topbar nav,
@@ -500,8 +1113,9 @@
   color: var(--ink);
   text-align: left;
   cursor: pointer;
+  opacity: 0.78;
   transition:
-    transform var(--motion-fast) var(--ease),
+    opacity var(--motion-fast) var(--ease),
     border-color var(--motion-fast) var(--ease),
     background var(--motion-fast) var(--ease),
     box-shadow var(--motion-fast) var(--ease);
@@ -518,9 +1132,7 @@
 
 .cartridge-spine:hover,
 .cartridge-spine:focus-visible {
-  transform: translateY(-1px);
-  border-color: rgba(217, 164, 65, 0.76);
-  box-shadow: 0 14px 32px rgba(217, 164, 65, 0.14);
+  opacity: 1;
 }
 
 .cartridge-spine span {
@@ -774,6 +1386,27 @@
   align-items: center;
 }
 
+.save-page-navigation {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-width: 0;
+  flex: none;
+  padding-block: 4px;
+}
+.save-operation-error {
+  flex: none;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+  margin: 4px 0;
+}
+@media (max-width: 600px) {
+  .save-load-screen .save-load-toolbar { display: flex; flex-wrap: wrap; }
+  .save-load-screen .save-kind-tabs { flex-wrap: wrap; }
+}
+
 .save-mode-switch {
   display: flex;
   gap: 3px;
@@ -792,7 +1425,7 @@
 }
 
 .save-mode-switch .ui-button.active {
-  background: color-mix(in srgb, var(--runtime-control-active, var(--accent)) 20%, var(--surface-2));
+  background-color: color-mix(in srgb, var(--runtime-control-active-solid, var(--runtime-control-active, var(--accent))) 20%, var(--runtime-control-solid, var(--surface-2)));
   color: var(--ink);
 }
 
@@ -808,7 +1441,7 @@
   padding: 0 14px;
   border: 0;
   border-bottom: 2px solid transparent;
-  background: transparent;
+  background-color: var(--runtime-control-solid, var(--runtime-control, var(--surface-2)));
   color: var(--muted-2);
   font: inherit;
   font-size: 12px;
@@ -828,7 +1461,9 @@
 
 .save-kind-tabs button:disabled {
   cursor: not-allowed;
-  opacity: 0.42;
+  opacity: 1;
+  color: color-mix(in srgb, var(--muted) 64%, var(--runtime-panel-solid, var(--bg)));
+  background-color: color-mix(in srgb, var(--runtime-control-solid, var(--runtime-control, var(--surface-2))) 72%, var(--runtime-panel-solid, var(--bg)));
 }
 
 .save-operation-status {
@@ -873,18 +1508,17 @@
   border-color: color-mix(in srgb, var(--line) 86%, transparent);
   border-radius: min(var(--radius), 8px);
   background: color-mix(in srgb, var(--runtime-panel, var(--surface)) 92%, #111722 8%);
-  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.22);
+  box-shadow: none;
+  opacity: 1;
   transition:
+    opacity var(--motion-fast) var(--ease),
     border-color var(--motion-fast) var(--ease),
-    box-shadow var(--motion-fast) var(--ease),
-    transform var(--motion-fast) var(--ease);
+    box-shadow var(--motion-fast) var(--ease);
 }
 
 .save-load-screen .save-slot:hover,
 .save-load-screen .save-slot:focus-within {
-  border-color: color-mix(in srgb, var(--runtime-control-active, var(--accent)) 72%, var(--line));
-  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.3);
-  transform: translateY(-2px);
+  opacity: 1;
 }
 
 .save-card-main {
@@ -892,8 +1526,9 @@
   min-width: 0;
   padding: 0;
   border: 0;
-  background: transparent;
-  color: inherit;
+  background-color: var(--runtime-panel-solid, var(--runtime-control-solid, var(--runtime-control, var(--surface-2))));
+  color: var(--runtime-control-text, var(--ink));
+  --global-control-focus-shadow: none;
   text-align: left;
   cursor: pointer;
 }
@@ -934,11 +1569,6 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
-  transition: transform var(--motion-emphasis) var(--ease-emphasis);
-}
-
-.save-slot:hover .save-preview-frame > img {
-  transform: scale(1.025);
 }
 
 .save-preview-placeholder {
@@ -986,6 +1616,7 @@
   display: grid;
   gap: 5px;
   padding: 11px 12px 12px;
+  background-color: var(--runtime-control-solid, var(--surface-2));
 }
 
 .save-card-copy strong,
@@ -1000,11 +1631,11 @@
 .save-card-copy strong {
   padding-right: 28px;
   font-size: 13px;
-  color: var(--ink);
+  color: var(--runtime-control-text, var(--ink));
 }
 
 .save-card-copy > span {
-  color: var(--muted-2);
+  color: color-mix(in srgb, var(--runtime-control-text, var(--ink)) 88%, var(--runtime-control-solid, var(--surface-2)));
   font-size: 11px;
 }
 
@@ -1012,7 +1643,7 @@
   display: flex;
   justify-content: space-between;
   gap: 10px;
-  color: var(--muted);
+  color: color-mix(in srgb, var(--runtime-control-text, var(--ink)) 82%, var(--runtime-control-solid, var(--surface-2)));
   font-family: ui-monospace, "Cascadia Mono", monospace;
   font-size: 9px;
 }
@@ -1042,10 +1673,6 @@
   opacity: 1;
 }
 
-.save-delete-button:hover {
-  color: #ff8585;
-}
-
 .save-slot.is-busy {
   pointer-events: none;
   opacity: 0.62;
@@ -1053,6 +1680,220 @@
 
 @keyframes save-status-spin {
   to { transform: rotate(360deg); }
+}
+
+/* Save/load and gallery are single-flow screens.  The header only reserves
+ * the safe top row; controls and content never rely on a magic absolute
+ * offset that can overlap after a resume or a narrow viewport resize. */
+.save-load-screen {
+  display: flex;
+  flex-direction: column;
+  gap: calc(12px * var(--runtime-ui-scale, 1));
+  min-height: 0;
+}
+
+.save-load-screen > .save-load-header {
+  justify-content: flex-start;
+  min-height: calc(38px * var(--runtime-ui-scale, 1));
+}
+
+.screen-back-button {
+  min-height: 36px;
+  padding-inline: 12px;
+  border-radius: var(--radius);
+}
+
+.save-load-toolbar {
+  position: relative;
+  inset: auto;
+  z-index: 20;
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  gap: calc(10px * var(--runtime-ui-scale, 1));
+  align-items: center;
+  min-width: 0;
+}
+
+/* The grid alone slides. Toolbar, return and bottom corner actions stay still. */
+.save-page-viewport {
+  --save-page-duration: var(--motion-emphasis);
+  --save-page-distance: 36;
+  position: relative;
+  isolation: isolate;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  overflow: hidden;
+}
+.save-page-current {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.save-page-viewport .save-grid {
+  width: 100% !important;
+  height: 100% !important;
+  margin: 0;
+  grid-template-rows: repeat(var(--save-grid-rows, 2), minmax(0, 1fr));
+}
+.save-page-viewport .save-slot {
+  height: 100%;
+  min-height: 0;
+  align-content: stretch;
+}
+.save-page-viewport .save-card-main {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.save-page-viewport .save-preview-frame {
+  flex: 1 1 0;
+  min-height: 0;
+  aspect-ratio: auto;
+  /* Intrinsic image dimensions must not grow an implicit track past the card. */
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+}
+.save-page-viewport .save-preview-frame > img {
+  object-fit: contain;
+}
+.save-page-viewport .save-card-copy {
+  flex: 0 0 auto;
+}
+.save-load-screen .save-page-navigation {
+  order: 3;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  width: 100%;
+}
+.save-page-navigation > :first-child { justify-self: start; }
+.save-page-navigation > :last-child { justify-self: end; }
+.about-page-title { margin: 0; color: inherit; }
+.screen-panel > header > .screen-back-button { margin-right: auto; }
+@media (prefers-reduced-motion: reduce) {
+  .save-page-viewport {
+    --save-page-duration: var(--motion);
+    --save-page-distance: 12;
+  }
+}
+
+.save-kind-tabs {
+  gap: 4px;
+  border: 0;
+}
+
+.save-kind-tabs .save-kind-tab {
+  min-height: 36px;
+  padding-inline: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background-color: var(--runtime-control-solid, var(--runtime-control, var(--surface-2)));
+}
+
+.save-kind-tabs .save-kind-tab[aria-selected="true"] {
+  border-color: var(--runtime-control-active, var(--accent));
+  background-color: color-mix(in srgb, var(--runtime-control-active-solid, var(--accent)) 20%, var(--runtime-control-solid, var(--surface-2)));
+  color: var(--ink);
+}
+
+.save-load-screen .save-grid {
+  flex: 1 1 0;
+  min-height: 0;
+  height: auto !important;
+  max-height: none;
+  position: relative !important;
+  inset: auto !important;
+}
+
+.ui-skin-scope .is-compact-save-layout.save-load-screen {
+  gap: 4px;
+  padding: 6px;
+}
+.is-compact-save-layout .save-load-header,
+.is-compact-save-layout .save-load-toolbar,
+.is-compact-save-layout .save-page-navigation {
+  flex: none;
+}
+.is-compact-save-layout .save-load-header { min-height: 24px; }
+.is-compact-save-layout .save-load-toolbar { display: flex; flex-wrap: wrap; gap: 4px; }
+.is-compact-save-layout :is(.save-mode-switch .ui-button, .save-kind-tabs .save-kind-tab,
+  .save-page-navigation .ui-button, .screen-back-button) {
+  min-height: 24px;
+  padding: 3px 6px;
+  gap: 3px;
+  font-size: 12px;
+  line-height: 1.2;
+}
+.is-compact-save-layout :is(.save-mode-switch, .save-page-navigation) { padding: 0; gap: 4px; }
+.is-compact-save-layout .save-mode-switch svg { width: 12px; height: 12px; }
+.is-compact-save-layout .save-card-main {
+  display: grid;
+  grid-template-columns: minmax(0, 35%) minmax(0, 1fr);
+  align-items: stretch;
+}
+.is-compact-save-layout .save-preview-frame { height: 100%; min-height: 48px; aspect-ratio: auto; }
+.is-compact-save-layout .save-card-copy { min-width: 0; padding: 4px; gap: 2px; }
+.is-compact-save-layout .save-card-copy strong { font-size: 13px; }
+.is-compact-save-layout .save-card-copy :is(span, small) { font-size: 10px; overflow-wrap: anywhere; }
+
+.save-card-copy strong {
+  padding-right: 0;
+  font-size: clamp(17px, calc(20px * var(--runtime-ui-scale, 1)), 26px);
+  line-height: 1.15;
+}
+
+.save-card-copy > span,
+.save-card-copy small {
+  font-size: clamp(11px, calc(12px * var(--runtime-ui-scale, 1)), 14px);
+}
+
+/* The runtime uses a flat scrollbar material across every long-form panel. */
+.about-card-content,
+.gallery-grid,
+.save-grid,
+.history-list,
+.settings-screen .settings-content,
+.settings-screen .settings-tabs {
+  scrollbar-color: var(--runtime-scrollbar-thumb, #8cb0c9) var(--runtime-scrollbar-track, #121b27);
+}
+
+.about-card-content::-webkit-scrollbar-track,
+.gallery-grid::-webkit-scrollbar-track,
+.save-grid::-webkit-scrollbar-track,
+.history-list::-webkit-scrollbar-track,
+.settings-screen .settings-content::-webkit-scrollbar-track,
+.settings-screen .settings-tabs::-webkit-scrollbar-track {
+  border: 0;
+  border-radius: 0;
+  background: var(--runtime-scrollbar-track, #121b27);
+  box-shadow: none;
+}
+
+.about-card-content::-webkit-scrollbar-thumb,
+.gallery-grid::-webkit-scrollbar-thumb,
+.save-grid::-webkit-scrollbar-thumb,
+.history-list::-webkit-scrollbar-thumb,
+.settings-screen .settings-content::-webkit-scrollbar-thumb,
+.settings-screen .settings-tabs::-webkit-scrollbar-thumb {
+  min-height: 28px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--runtime-scrollbar-thumb, #8cb0c9);
+  box-shadow: none;
+}
+
+.about-card-content::-webkit-scrollbar-thumb:hover,
+.gallery-grid::-webkit-scrollbar-thumb:hover,
+.save-grid::-webkit-scrollbar-thumb:hover,
+.history-list::-webkit-scrollbar-thumb:hover,
+.settings-screen .settings-content::-webkit-scrollbar-thumb:hover,
+.settings-screen .settings-tabs::-webkit-scrollbar-thumb:hover {
+  background: var(--runtime-scrollbar-thumb-hover, #b6d6e8);
+  box-shadow: none;
 }
 
 .settings-grid {
@@ -1124,18 +1965,64 @@
   justify-content: flex-start;
 }
 
+.settings-tabs > .ui-button,
+.settings-footer-actions > .ui-button,
+.settings-footer > .ui-button {
+  gap: 0.4em;
+}
+
+/* Use each action's final font size, including authored role and viewport
+   scaling, so the glyph and its spacing never retain a fixed pixel size. */
+.settings-tabs > .ui-button > .precision-icon,
+.settings-footer .ui-button > .precision-icon {
+  flex: none;
+  width: 1.2em;
+  height: 1.2em;
+}
+
+/* PrecisionIcon paths have different built-in whitespace. Normalize their
+   visible bounds only in settings so each glyph reads at the same scale as
+   the adjacent label without changing the icon's layout box. */
+.settings-tabs .precision-icon > g,
+.settings-footer .precision-icon > g {
+  transform-box: fill-box;
+  transform-origin: center;
+  vector-effect: none;
+}
+
+.settings-tabs .precision-icon[data-precision-icon="display"] > g { transform: scale(1.04); }
+.settings-tabs .precision-icon[data-precision-icon="text"] > g { transform: scale(1.31); }
+.settings-tabs .precision-icon[data-precision-icon="audio"] > g { transform: scale(1.09); }
+.settings-tabs .precision-icon[data-precision-icon="skip"] > g { transform: scale(1.25); }
+.settings-tabs .precision-icon[data-precision-icon="settings"] > g { transform: scale(1.14); }
+.settings-footer .precision-icon[data-precision-icon="reset"] > g { transform: scale(1); }
+.settings-footer .precision-icon[data-precision-icon="check"] > g { transform: scale(1.02); }
+
+.settings-tabs button .precision-icon {
+  color: color-mix(in srgb, currentColor 86%, var(--runtime-control-active, var(--accent)) 14%);
+}
+
 .settings-tabs button.is-active {
   border-color: var(--runtime-control-active, var(--accent));
-  background: color-mix(in srgb, var(--runtime-control-active, var(--accent)) 18%, transparent);
+  background-color: color-mix(in srgb, var(--runtime-control-active-solid, var(--runtime-control-active, var(--accent))) 18%, var(--runtime-control-solid, var(--runtime-control, var(--surface-2))));
 }
 
 .settings-content {
+  position: relative;
   min-height: 0;
   overflow: auto;
   display: grid;
   align-content: start;
   gap: calc(18px * var(--runtime-ui-scale, 1));
   padding: calc(18px * var(--runtime-ui-scale, 1));
+}
+
+.settings-category-content {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: inherit;
+  outline: none;
 }
 
 .settings-section-title {
@@ -1151,12 +2038,113 @@
   min-height: calc(34px * var(--runtime-ui-scale, 1));
 }
 
+.settings-row > span:first-child {
+  font-size: calc(2em * var(--runtime-ui-scale, 1));
+  line-height: 1.2;
+}
+
+.settings-aspect-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(8px * var(--runtime-ui-scale, 1));
+  min-width: 0;
+  grid-column: 2 / -1;
+}
+
+.settings-aspect-options .ui-button {
+  flex: 1 1 auto;
+}
+
+.settings-select {
+  position: relative;
+  display: block;
+  min-width: 0;
+  width: 100%;
+}
+
+.settings-select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: calc(40px * var(--runtime-ui-scale, 1));
+  padding: calc(8px * var(--runtime-ui-scale, 1)) calc(12px * var(--runtime-ui-scale, 1));
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--line));
+  border-radius: calc(6px * var(--runtime-ui-scale, 1));
+  color: var(--runtime-control-text, var(--ink));
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--runtime-control, var(--surface-2)) 92%, transparent), color-mix(in srgb, var(--runtime-panel, var(--surface)) 82%, transparent));
+  background-color: var(--runtime-control-solid, var(--runtime-control, var(--surface-2)));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--ink) 10%, transparent),
+    0 8px 18px color-mix(in srgb, var(--accent) 8%, transparent);
+  cursor: pointer;
+  text-align: left;
+}
+
+.settings-select-trigger:focus-visible,
+.settings-select.is-open .settings-select-trigger {
+  outline: 2px solid color-mix(in srgb, var(--runtime-focus, var(--accent)) 72%, transparent);
+  outline-offset: 3px;
+  border-color: color-mix(in srgb, var(--runtime-focus, var(--accent)) 72%, var(--line));
+}
+
+.settings-select-chevron {
+  color: var(--muted);
+  font-size: 1.1em;
+  line-height: 1;
+}
+
+.settings-select-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  border: 0;
+  background: transparent;
+  cursor: default;
+}
+
+.settings-select-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  left: 0;
+  z-index: 21;
+  display: grid;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--line));
+  border-radius: calc(8px * var(--runtime-ui-scale, 1));
+  background:
+    linear-gradient(155deg, color-mix(in srgb, var(--runtime-panel, var(--surface)) 96%, transparent), color-mix(in srgb, var(--runtime-control, var(--surface-2)) 88%, transparent));
+  box-shadow: 0 18px 38px color-mix(in srgb, #000 46%, transparent);
+}
+
+.settings-select-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: calc(34px * var(--runtime-ui-scale, 1));
+  padding: 7px 9px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--runtime-control-text, var(--ink));
+  background-color: var(--runtime-control-solid, var(--runtime-control, var(--surface-2)));
+  cursor: pointer;
+  text-align: left;
+}
+
+.settings-select-option.is-selected {
+  color: var(--runtime-control-active, var(--accent));
+}
+
 .settings-slider {
-  --range-track: var(--runtime-slider-track, color-mix(in srgb, #6edee4 18%, var(--runtime-control, var(--surface-2))));
-  --range-active: var(--runtime-slider-active, #6edee4);
-  --range-thumb: var(--runtime-slider-thumb, #eaffff);
-  --range-thumb-border: color-mix(in srgb, var(--range-active) 70%, var(--line));
-  --range-glow: #8df3f0;
+  --range-track: var(--runtime-slider-track, color-mix(in srgb, #b9c8df 20%, var(--runtime-control, var(--surface-2))));
+  --range-active: var(--runtime-slider-active, #4d8cff);
+  --range-track-height: clamp(10px, calc(10px * var(--runtime-ui-scale, 1)), 12px);
+  --range-press-scale: 1.22;
+  --range-press-duration: 480ms;
+  --range-release-duration: 360ms;
   position: relative;
   display: grid;
   align-items: center;
@@ -1164,52 +2152,82 @@
   min-width: 0;
   min-height: calc(44px * var(--runtime-ui-scale, 1));
   border-radius: 999px;
-  transition:
-    transform calc(150ms * var(--runtime-skin-motion-scale, 1)) var(--ease),
-    filter calc(150ms * var(--runtime-skin-motion-scale, 1)) var(--ease);
+  transition: opacity 140ms var(--ease);
 }
 
-.settings-slider::before {
-  content: "";
+.settings-slider-track {
   position: absolute;
-  inset: calc(12px * var(--runtime-ui-scale, 1)) 0;
+  z-index: 0;
+  inset-inline: 0;
+  top: 50%;
+  height: var(--range-track-height);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--range-glow) 10%, transparent);
-  box-shadow: 0 0 0 0 color-mix(in srgb, var(--range-glow) 0%, transparent);
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.16), transparent 24% 74%, rgba(0, 0, 0, 0.13)),
+    var(--range-track);
+  box-shadow: inset 0 1px 1px rgb(0 0 0 / 20%);
+  pointer-events: none;
+  opacity: 0.88;
+  transition:
+    opacity 140ms var(--ease),
+    background-color 140ms var(--ease),
+    box-shadow 140ms var(--ease),
+    transform var(--range-release-duration) var(--ease-out);
+  transform: translateY(-50%);
+  transform-origin: center center;
+}
+
+.settings-slider-fill {
+  display: block;
+  width: var(--range-progress);
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--range-active), color-mix(in srgb, var(--range-active) 72%, white));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 24%);
+  opacity: 0.92;
+  transition:
+    opacity 140ms var(--ease),
+    background-color 140ms var(--ease);
+}
+
+.settings-slider::after {
+  content: var(--range-label);
+  position: absolute;
+  z-index: 2;
+  top: calc(50% - 31px);
+  right: 0;
+  min-width: 38px;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--range-active) 24%, var(--line));
+  border-radius: 9px;
+  color: color-mix(in srgb, var(--runtime-panel-text, var(--ink)) 92%, white);
+  background: color-mix(in srgb, var(--runtime-panel, var(--surface)) 91%, transparent);
+  box-shadow: 0 8px 20px rgb(0 0 0 / 17%);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  text-align: center;
   opacity: 0;
   pointer-events: none;
+  transform: translateY(4px) scale(0.96);
+  transform-origin: bottom right;
   transition:
-    opacity calc(150ms * var(--runtime-skin-motion-scale, 1)) var(--ease),
-    box-shadow calc(150ms * var(--runtime-skin-motion-scale, 1)) var(--ease),
-    background calc(150ms * var(--runtime-skin-motion-scale, 1)) var(--ease);
+    opacity 200ms var(--ease-out),
+    transform 240ms var(--ease-out);
 }
 
-.settings-slider:has(input[type="range"]:not(:disabled):hover),
-.settings-slider:has(input[type="range"]:not(:disabled):focus-visible) {
-  transform: translateY(-1.5px);
-  filter: drop-shadow(0 8px 14px color-mix(in srgb, var(--range-glow) 14%, transparent));
-}
-
-.settings-slider:has(input[type="range"]:not(:disabled):hover)::before,
-.settings-slider:has(input[type="range"]:not(:disabled):focus-visible)::before {
+.settings-slider.is-interacting .settings-slider-track {
   opacity: 1;
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--range-glow) 22%, transparent),
-    0 8px 22px color-mix(in srgb, var(--range-glow) 18%, transparent);
 }
 
-.settings-slider:has(input[type="range"]:not(:disabled):active) {
-  transform: translateY(-1.5px);
-  filter: drop-shadow(0 10px 22px color-mix(in srgb, var(--range-glow) 28%, transparent));
-}
-
-.settings-slider:has(input[type="range"]:not(:disabled):active)::before {
+.settings-slider.is-interacting .settings-slider-fill {
   opacity: 1;
-  background: color-mix(in srgb, var(--range-glow) 18%, transparent);
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--range-glow) 38%, transparent),
-    0 0 18px color-mix(in srgb, var(--range-glow) 38%, transparent),
-    0 12px 30px color-mix(in srgb, var(--range-active) 26%, transparent);
+}
+
+.settings-slider.is-interacting::after {
+  opacity: 1;
+  transform: translateY(0) scale(1);
 }
 
 .settings-slider input[type="range"] {
@@ -1217,7 +2235,7 @@
   z-index: 1;
   width: 100%;
   min-width: 0;
-  height: calc(40px * var(--runtime-ui-scale, 1));
+  height: calc(44px * var(--runtime-ui-scale, 1));
   margin: 0;
   padding: 0;
   border: 0;
@@ -1229,134 +2247,63 @@
 }
 
 .settings-slider input[type="range"]::-webkit-slider-runnable-track {
-  height: calc(6px * var(--runtime-ui-scale, 1));
+  height: var(--range-track-height);
   border-radius: 999px;
-  background: linear-gradient(90deg, var(--range-active) 0 var(--range-progress), var(--range-track) var(--range-progress) 100%);
-  box-shadow:
-    inset 0 1px 1px rgb(0 0 0 / 22%),
-    0 0 0 1px color-mix(in srgb, var(--range-glow) 14%, transparent);
+  background: transparent;
+  box-shadow: none;
 }
 
 .settings-slider input[type="range"]::-webkit-slider-thumb {
-  width: calc(18px * var(--runtime-ui-scale, 1));
-  height: calc(18px * var(--runtime-ui-scale, 1));
-  margin-top: calc(-6px * var(--runtime-ui-scale, 1));
-  border: 2px solid var(--range-thumb-border);
-  border-radius: 999px;
-  background: var(--range-thumb);
-  box-shadow:
-    0 2px 9px rgb(0 0 0 / 30%),
-    0 0 0 calc(3px * var(--runtime-ui-scale, 1)) color-mix(in srgb, var(--range-glow) 8%, transparent);
+  width: 1px;
+  height: 1px;
+  margin-top: -4px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
   appearance: none;
   -webkit-appearance: none;
-  transition:
-    transform var(--motion-fast) var(--ease),
-    box-shadow var(--motion-fast) var(--ease),
-    border-color var(--motion-fast) var(--ease);
 }
 
 .settings-slider input[type="range"]::-moz-range-track {
-  height: calc(6px * var(--runtime-ui-scale, 1));
+  height: var(--range-track-height);
   border: 0;
   border-radius: 999px;
-  background: var(--range-track);
-  box-shadow:
-    inset 0 1px 1px rgb(0 0 0 / 22%),
-    0 0 0 1px color-mix(in srgb, var(--range-glow) 14%, transparent);
+  background: transparent;
+  box-shadow: none;
 }
 
 .settings-slider input[type="range"]::-moz-range-progress {
-  height: calc(6px * var(--runtime-ui-scale, 1));
+  height: var(--range-track-height);
   border-radius: 999px;
-  background: var(--range-active);
+  background: transparent;
 }
 
 .settings-slider input[type="range"]::-moz-range-thumb {
-  width: calc(18px * var(--runtime-ui-scale, 1));
-  height: calc(18px * var(--runtime-ui-scale, 1));
-  border: 2px solid var(--range-thumb-border);
-  border-radius: 999px;
-  background: var(--range-thumb);
-  box-shadow:
-    0 2px 9px rgb(0 0 0 / 30%),
-    0 0 0 calc(3px * var(--runtime-ui-scale, 1)) color-mix(in srgb, var(--range-glow) 8%, transparent);
-  transition:
-    transform var(--motion-fast) var(--ease),
-    box-shadow var(--motion-fast) var(--ease),
-    border-color var(--motion-fast) var(--ease);
+  width: 1px;
+  height: 1px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
-.settings-slider input[type="range"]:hover::-webkit-slider-thumb,
-.settings-slider input[type="range"]:focus-visible::-webkit-slider-thumb {
-  border-color: var(--range-active);
-  box-shadow:
-    0 0 0 calc(5px * var(--runtime-ui-scale, 1)) color-mix(in srgb, var(--range-glow) 18%, transparent),
-    0 6px 16px color-mix(in srgb, var(--range-active) 24%, transparent);
-  transform: scale(1.08);
-}
-
-.settings-slider input[type="range"]:hover::-moz-range-thumb,
-.settings-slider input[type="range"]:focus-visible::-moz-range-thumb {
-  border-color: var(--range-active);
-  box-shadow:
-    0 0 0 calc(5px * var(--runtime-ui-scale, 1)) color-mix(in srgb, var(--range-glow) 18%, transparent),
-    0 6px 16px color-mix(in srgb, var(--range-active) 24%, transparent);
-  transform: scale(1.08);
-}
-
-.settings-slider input[type="range"]:active::-webkit-slider-thumb {
-  border-color: var(--range-glow);
-  box-shadow:
-    0 0 0 calc(7px * var(--runtime-ui-scale, 1)) color-mix(in srgb, var(--range-glow) 28%, transparent),
-    0 0 22px color-mix(in srgb, var(--range-glow) 40%, transparent),
-    0 8px 20px color-mix(in srgb, var(--range-active) 34%, transparent);
-  transform: scale(1.12);
-}
-
-.settings-slider input[type="range"]:active::-moz-range-thumb {
-  border-color: var(--range-glow);
-  box-shadow:
-    0 0 0 calc(7px * var(--runtime-ui-scale, 1)) color-mix(in srgb, var(--range-glow) 28%, transparent),
-    0 0 22px color-mix(in srgb, var(--range-glow) 40%, transparent),
-    0 8px 20px color-mix(in srgb, var(--range-active) 34%, transparent);
-  transform: scale(1.12);
-}
-
+.settings-slider input[type="range"]:focus,
 .settings-slider input[type="range"]:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--range-active) 72%, transparent);
-  outline-offset: 5px;
-  border-radius: 999px;
+  outline: none;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .settings-slider,
-  .settings-slider::before,
-  .settings-slider input[type="range"]::-webkit-slider-thumb,
-  .settings-slider input[type="range"]::-moz-range-thumb {
-    transition: none;
-  }
-
-  .settings-slider:has(input[type="range"]:not(:disabled):hover),
-  .settings-slider:has(input[type="range"]:not(:disabled):focus-visible),
-  .settings-slider:has(input[type="range"]:not(:disabled):active) {
-    filter: none !important;
-    transform: none !important;
-  }
-
-  .settings-slider input[type="range"]:hover::-webkit-slider-thumb,
-  .settings-slider input[type="range"]:focus-visible::-webkit-slider-thumb,
-  .settings-slider input[type="range"]:active::-webkit-slider-thumb {
-    transform: none !important;
-  }
-
-  .settings-slider input[type="range"]:hover::-moz-range-thumb,
-  .settings-slider input[type="range"]:focus-visible::-moz-range-thumb,
-  .settings-slider input[type="range"]:active::-moz-range-thumb {
-    transform: none !important;
+@media (hover: hover) and (pointer: fine) {
+  .settings-slider:has(input[type="range"]:not(:disabled):hover) .settings-slider-track,
+  .settings-slider:has(input[type="range"]:not(:disabled):hover) .settings-slider-fill {
+    opacity: 1;
   }
 }
 
-.settings-row:has(input[type="checkbox"]) {
+.settings-row:has(input[type="checkbox"]):not(:has(.settings-slider)) {
   grid-template-columns: minmax(112px, max-content) max-content auto;
   justify-content: start;
   justify-self: start;
@@ -1365,7 +2312,7 @@
   gap: calc(10px * var(--runtime-ui-scale, 1));
 }
 
-.settings-row:has(input[type="checkbox"]) small {
+.settings-row:has(input[type="checkbox"]):not(:has(.settings-slider)) small {
   min-width: 40px;
 }
 
@@ -1378,15 +2325,29 @@
 
 .settings-footer {
   grid-column: 1 / -1;
-  display: flex;
-  justify-content: flex-end;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
   gap: calc(8px * var(--runtime-ui-scale, 1));
   padding: calc(12px * var(--runtime-ui-scale, 1)) calc(16px * var(--runtime-ui-scale, 1));
   border-top: 1px solid var(--line);
   background: color-mix(in srgb, var(--runtime-panel) 78%, transparent);
 }
 
-@media (max-width: 680px) {
+.settings-footer-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 7fr);
+  min-width: 0;
+  gap: calc(8px * var(--runtime-ui-scale, 1));
+}
+
+.settings-footer-actions > .ui-button,
+.settings-footer > .ui-button {
+  min-width: 0;
+  width: 100%;
+}
+
+@media (min-width: 100000px) {
   .settings-renpy {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr) auto;
@@ -1435,12 +2396,16 @@
   .settings-footer {
     position: sticky;
     bottom: 0;
-    justify-content: stretch;
+    grid-template-columns: minmax(0, 1fr);
     padding: 10px 12px;
   }
 
-  .settings-footer .button {
-    flex: 1 1 0;
+  .settings-footer-actions {
+    width: 100%;
+  }
+
+  .settings-footer > .ui-button {
+    width: 100%;
   }
 }
 
@@ -1453,6 +2418,217 @@
   margin: -6px 0 2px;
   color: var(--muted);
   line-height: 1.65;
+}
+
+/* Settings polish: keep the enlarged labels readable and controls geometrically stable. */
+.settings-screen .settings-row {
+  min-height: calc(48px * var(--runtime-ui-scale, 1));
+  align-items: center;
+}
+
+.settings-screen .settings-row > span:first-child {
+  font-size: clamp(16px, calc(18px * var(--runtime-ui-scale, 1)), 24px);
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.settings-screen .settings-row input[type="checkbox"] {
+  --settings-checkbox-size: calc(26px * var(--runtime-ui-scale, 1));
+  flex: 0 0 var(--settings-checkbox-size);
+  width: var(--settings-checkbox-size);
+  min-width: var(--settings-checkbox-size);
+  height: var(--settings-checkbox-size);
+  min-height: var(--settings-checkbox-size);
+  border-radius: clamp(7px, calc(8px * var(--runtime-ui-scale, 1)), 10px);
+}
+
+.settings-screen .settings-row input[type="checkbox"]::before {
+  width: calc(12px * var(--runtime-ui-scale, 1));
+  height: calc(7px * var(--runtime-ui-scale, 1));
+  border-left-width: calc(2.5px * var(--runtime-ui-scale, 1));
+  border-bottom-width: calc(2.5px * var(--runtime-ui-scale, 1));
+}
+
+.settings-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.settings-check > span {
+  color: color-mix(in srgb, var(--runtime-panel-text, var(--ink)) 72%, var(--muted));
+  font-size: clamp(12px, calc(13px * var(--runtime-ui-scale, 1)), 15px);
+  font-weight: 620;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  transition:
+    color 140ms var(--ease),
+    opacity 140ms var(--ease);
+}
+
+.settings-check:has(input:checked) > span {
+  color: var(--runtime-control-active, var(--accent));
+}
+
+.settings-screen .settings-slider::before,
+.settings-screen .settings-slider:hover::before,
+.settings-screen .settings-slider:active::before,
+.settings-screen .settings-slider:focus-within::before {
+  display: none !important;
+  content: none !important;
+  opacity: 0 !important;
+  box-shadow: none !important;
+}
+
+.settings-screen .settings-slider input[type="range"]:hover::-webkit-slider-thumb,
+.settings-screen .settings-slider input[type="range"]:active::-webkit-slider-thumb,
+.settings-screen .settings-slider input[type="range"]:focus-visible::-webkit-slider-thumb,
+.settings-screen .settings-slider input[type="range"]:hover::-moz-range-thumb,
+.settings-screen .settings-slider input[type="range"]:active::-moz-range-thumb,
+.settings-screen .settings-slider input[type="range"]:focus-visible::-moz-range-thumb {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  transform: none !important;
+  transition: none !important;
+}
+
+/* Adaptive iOS volume treatment: the persistent percentage is intentionally
+ * absent; only the transient value bubble appears while the range is active. */
+.settings-screen .settings-row:has(.settings-slider) {
+  grid-template-columns: minmax(130px, 0.3fr) minmax(0, 1fr);
+}
+
+.settings-screen .settings-row.settings-audio-row:has(.settings-slider) {
+  grid-template-columns: minmax(130px, 0.3fr) minmax(0, 1fr) auto;
+  width: 100%;
+  max-width: none;
+  justify-self: stretch;
+}
+
+.settings-screen .settings-row:has(.settings-slider) > output {
+  display: none;
+}
+
+.settings-screen .settings-slider:has(input[type="range"]:focus-visible) {
+  outline: none;
+}
+
+.settings-screen .settings-slider:has(input[type="range"]:focus-visible) .settings-slider-track {
+  opacity: 1;
+  box-shadow:
+    inset 0 1px 1px rgb(0 0 0 / 20%),
+    0 0 0 2px color-mix(in srgb, var(--range-active) 66%, transparent);
+}
+
+.settings-screen .settings-slider-track {
+  transition:
+    opacity 140ms var(--ease),
+    background-color 140ms var(--ease),
+    box-shadow 140ms var(--ease),
+    transform var(--range-release-duration) var(--ease-out) !important;
+}
+
+.settings-screen .settings-slider:has(input[type="range"]:not(:disabled):active) .settings-slider-track {
+  transform: translateY(-50%) scaleY(var(--range-press-scale));
+  transition:
+    opacity 140ms var(--ease),
+    background-color 140ms var(--ease),
+    box-shadow 140ms var(--ease),
+    transform var(--range-press-duration) var(--ease-in-out) !important;
+}
+
+.settings-screen .settings-slider::after {
+  transition:
+    opacity 200ms var(--ease-out),
+    transform 240ms var(--ease-out) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-screen .settings-slider,
+  .settings-screen .settings-slider-track,
+  .settings-screen .settings-slider::after,
+  .settings-screen .settings-slider-fill {
+    transition: opacity 80ms linear !important;
+  }
+
+  .settings-screen .settings-slider::after {
+    transform: none !important;
+  }
+
+  .settings-screen .settings-slider-track {
+    transform: translateY(-50%) !important;
+  }
+}
+
+.settings-screen .settings-content,
+.settings-screen .settings-tabs {
+  scrollbar-width: thin;
+  scrollbar-color:
+    color-mix(in srgb, var(--ink, #f4f7fb) 36%, var(--accent, #8cb0c9) 18%)
+    color-mix(in srgb, var(--bg, #070d14) 78%, var(--surface, #121b27) 22%);
+  scrollbar-gutter: stable;
+}
+
+.settings-screen .settings-content::-webkit-scrollbar,
+.settings-screen .settings-tabs::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+}
+
+.settings-screen .settings-content::-webkit-scrollbar-track,
+.settings-screen .settings-tabs::-webkit-scrollbar-track {
+  border: 1px solid color-mix(in srgb, var(--line, #8fa1b4) 58%, transparent);
+  border-radius: 999px;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--surface, #121b27) 58%, transparent),
+      color-mix(in srgb, var(--bg, #070d14) 82%, transparent)
+    );
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--ink, #f4f7fb) 4%, transparent),
+    inset 0 8px 18px color-mix(in srgb, #000 12%, transparent);
+}
+
+.settings-screen .settings-content::-webkit-scrollbar-thumb,
+.settings-screen .settings-tabs::-webkit-scrollbar-thumb {
+  min-height: 28px;
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background:
+    repeating-linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--ink, #f4f7fb) 52%, var(--accent, #8cb0c9) 18%) 0 7px,
+      color-mix(in srgb, var(--muted, #a8b4c2) 42%, transparent) 7px 13px
+    )
+    border-box;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--ink, #f4f7fb) 18%, transparent),
+    0 0 18px color-mix(in srgb, var(--accent, #8cb0c9) 18%, transparent);
+}
+
+.settings-screen .settings-content::-webkit-scrollbar-thumb:hover,
+.settings-screen .settings-tabs::-webkit-scrollbar-thumb:hover {
+  background:
+    repeating-linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--ink, #f4f7fb) 72%, var(--accent, #8cb0c9) 22%) 0 7px,
+      color-mix(in srgb, var(--accent, #8cb0c9) 34%, var(--muted, #a8b4c2)) 7px 13px
+    )
+    border-box;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--ink, #f4f7fb) 30%, transparent),
+    0 0 24px color-mix(in srgb, var(--accent, #8cb0c9) 26%, transparent);
+}
+
+.settings-screen .settings-content::-webkit-scrollbar-corner,
+.settings-screen .settings-tabs::-webkit-scrollbar-corner {
+  background: color-mix(in srgb, var(--bg, #070d14) 86%, var(--surface, #121b27) 14%);
 }
 
 .check-row {
@@ -1468,7 +2644,73 @@
 }
 
 .gallery-item.locked {
-  opacity: 0.55;
+  position: relative;
+  overflow: hidden;
+  border-top-color: transparent;
+}
+
+.gallery-item.locked > button {
+  filter: blur(8px);
+  transform: scale(1.035);
+  opacity: 1;
+}
+
+.gallery-item > button {
+  background-color: var(--runtime-panel-solid, var(--runtime-control-solid, var(--runtime-control, var(--surface-2))));
+}
+
+.gallery-item > .gallery-replay {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  padding: 12px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: start;
+}
+
+.gallery-replay > img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+}
+
+.gallery-resource-status {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  min-width: 0;
+}
+
+.gallery-resource-status > p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.gallery-resource-status > .ui-button {
+  white-space: normal;
+}
+
+.gallery-item-lock {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  color: color-mix(in srgb, var(--ink) 88%, var(--accent) 12%);
+  pointer-events: none;
+  text-shadow: 0 3px 18px color-mix(in srgb, #000 70%, transparent);
+}
+
+.gallery-item-lock svg {
+  width: clamp(28px, 4vw, 42px);
+  height: clamp(28px, 4vw, 42px);
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--line) 58%, transparent);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--surface) 62%, transparent);
+  box-shadow: 0 10px 28px color-mix(in srgb, #000 38%, transparent);
 }
 
 .inline-error {
@@ -1509,10 +2751,60 @@
   gap: 10px;
 }
 
+.modal-panel header strong {
+  color: var(--ink);
+}
+
 .modal-panel p {
   margin: 0;
   color: var(--muted);
   line-height: 1.7;
+}
+
+.modal-content {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.modal-panel[data-confirmation-layout-source="override"] {
+  box-sizing: border-box;
+  max-width: calc(100% - 24px);
+  max-height: calc(100% - 24px);
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-panel[data-confirmation-layout-source="override"] > header {
+  flex-shrink: 0;
+}
+
+.modal-panel[data-confirmation-layout-source="override"] .modal-content {
+  overflow: auto;
+}
+
+.modal-panel[data-confirmation-layout-source="override"] .modal-content > p {
+  color: inherit;
+}
+
+.modal-panel .runtime-exit-status {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  max-block-size: min(96px, 12dvh);
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+
+.modal-actions .ui-button.exit-confirm-button {
+  border-color: color-mix(in srgb, var(--danger) 72%, transparent);
+  color: #fff;
+  background: color-mix(in srgb, var(--danger) 82%, #6d1420 18%);
+}
+
+.modal-actions .ui-button.exit-confirm-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--danger) 72%, transparent);
+  background: color-mix(in srgb, var(--danger) 82%, #6d1420 18%);
 }
 
 .boot-overlay {
@@ -1559,6 +2851,20 @@
   overflow: hidden;
   border: 0;
   border-radius: 999px;
+}
+
+.boot-card.boot-card-line-only {
+  width: auto;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.boot-card.boot-card-line-only .project-entry-loader {
+  margin: 0;
 }
 
 .project-entry-loader {
@@ -1775,6 +3081,54 @@
 .custom-loading-animation.is-complete {
   opacity: 0;
   transform: scale(0.92);
+}
+
+/* A separate portal stage, outside the loader card and all authored UI frames. */
+.runtime-opening-screen {
+  --opening-fade-duration: var(--motion-emphasis);
+  position: fixed;
+  inset: 0;
+  z-index: var(--overlay-z-toast);
+  overflow: hidden;
+  background: #000;
+  outline: none;
+  touch-action: none;
+  opacity: 1;
+}
+
+.runtime-opening-media {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+}
+
+.runtime-opening-screen .custom-loading-animation.is-fullscreen {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  aspect-ratio: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: #000;
+  box-shadow: none;
+  transform: none;
+  transition: none;
+}
+
+.runtime-opening-screen .custom-loading-animation video,
+.runtime-opening-screen .custom-loading-animation img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .runtime-opening-screen {
+    --opening-fade-duration: 180ms;
+  }
 }
 
 .runtime-screen-loading {
@@ -2092,4 +3446,422 @@
 
 .project-entry-cycle-sentinel {
   animation: project-entry-rose-cycle var(--project-entry-cycle, 5200ms) linear infinite;
+}
+
+/* Deterministic handheld landscape shell layout. The editor's percentage
+ * rectangles remain available for the stage, while shell controls use flow
+ * layout so project skins cannot make controls overlap or disappear. */
+@media (min-width: 100000px) {
+  .ui-skin-scope[data-ui-form-factor="handheld"] .about-screen-shell {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: clamp(8px, 2vh, 14px);
+    padding: clamp(12px, 2.6vw, 24px);
+    overflow: hidden;
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .about-screen-shell > header {
+    min-height: 44px;
+    align-items: center;
+    flex-direction: row;
+    pointer-events: auto;
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .about-screen-shell > header h2 {
+    margin: 0;
+    font-size: clamp(20px, 3vw, 32px);
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .about-screen-shell > .about-card.ui-layouted {
+    position: relative !important;
+    inset: auto !important;
+    left: auto !important;
+    top: auto !important;
+    right: auto !important;
+    bottom: auto !important;
+    transform: none !important;
+    width: 100% !important;
+    height: 100% !important;
+    min-width: 0;
+    min-height: 0;
+    max-width: none !important;
+    max-height: none !important;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    overflow: hidden;
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .about-card-content {
+    gap: clamp(12px, 2.2vh, 20px);
+    padding: 4px 10px 14px 16px;
+    border-left: 1px solid color-mix(in srgb, var(--line) 62%, transparent);
+    scrollbar-width: thin;
+    scrollbar-color:
+      color-mix(in srgb, var(--ink, #f4f7fb) 36%, var(--accent, #8cb0c9) 18%)
+      color-mix(in srgb, var(--bg, #070d14) 78%, var(--surface, #121b27) 22%);
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .about-card-content::-webkit-scrollbar {
+    width: 11px;
+    height: 11px;
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .about-card-content::-webkit-scrollbar-track {
+    border: 1px solid color-mix(in srgb, var(--line, #8fa1b4) 58%, transparent);
+    border-radius: 999px;
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in srgb, var(--surface, #121b27) 58%, transparent),
+        color-mix(in srgb, var(--bg, #070d14) 82%, transparent)
+      );
+    box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, var(--ink, #f4f7fb) 4%, transparent),
+      inset 0 8px 18px color-mix(in srgb, #000 12%, transparent);
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .about-card-content::-webkit-scrollbar-thumb {
+    min-height: 28px;
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background:
+      repeating-linear-gradient(
+        135deg,
+        color-mix(in srgb, var(--ink, #f4f7fb) 52%, var(--accent, #8cb0c9) 18%) 0 7px,
+        color-mix(in srgb, var(--muted, #a8b4c2) 42%, transparent) 7px 13px
+      )
+      border-box;
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--ink, #f4f7fb) 18%, transparent),
+      0 0 18px color-mix(in srgb, var(--accent, #8cb0c9) 18%, transparent);
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .about-card-content::-webkit-scrollbar-thumb:hover {
+    background:
+      repeating-linear-gradient(
+        135deg,
+        color-mix(in srgb, var(--ink, #f4f7fb) 72%, var(--accent, #8cb0c9) 22%) 0 7px,
+        color-mix(in srgb, var(--accent, #8cb0c9) 34%, var(--muted, #a8b4c2)) 7px 13px
+      )
+      border-box;
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--ink, #f4f7fb) 30%, transparent),
+      0 0 24px color-mix(in srgb, var(--accent, #8cb0c9) 26%, transparent);
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .about-intro {
+    gap: 7px;
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .about-intro h1 {
+    font-size: clamp(21px, 3.8vw, 34px);
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .about-intro p,
+  .ui-skin-scope[data-ui-form-factor="handheld"] .about-note,
+  .ui-skin-scope[data-ui-form-factor="handheld"] .about-field-list dd {
+    font-size: clamp(12px, 1.65vw, 16px);
+    line-height: 1.55;
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .about-field-list .about-field-row {
+    grid-template-columns: minmax(88px, 0.28fr) minmax(0, 1fr);
+    gap: 10px;
+    padding: 9px 0;
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .about-note {
+    padding-left: 10px;
+    border-left-width: 1px;
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .settings-screen {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr);
+    gap: 0;
+    padding: clamp(12px, 2.6vw, 24px);
+    overflow: hidden;
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .settings-screen .settings-exit-link {
+    min-height: 36px;
+    padding-inline: 3px;
+    font-size: clamp(11px, 2.5vw, 14px);
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .settings-screen > .settings-renpy {
+    position: relative !important;
+    inset: auto !important;
+    left: auto !important;
+    top: auto !important;
+    right: auto !important;
+    bottom: auto !important;
+    transform: none !important;
+    width: auto !important;
+    height: auto !important;
+    min-width: 0;
+    min-height: 0;
+    max-width: none !important;
+    max-height: none !important;
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) !important;
+    grid-template-rows: auto minmax(0, 1fr) auto !important;
+    gap: 0 !important;
+    overflow: hidden;
+    pointer-events: auto;
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .settings-tabs {
+    min-width: 0;
+    display: flex !important;
+    flex: 0 0 auto;
+    gap: 8px;
+    padding: 8px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .settings-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .settings-tabs button {
+    flex: 0 0 auto;
+    min-width: 84px;
+    min-height: 44px;
+    justify-content: center;
+    white-space: nowrap;
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .settings-content {
+    min-width: 0;
+    min-height: 0;
+    display: grid;
+    align-content: start;
+    gap: 10px;
+    padding: 12px 14px 16px;
+    overflow: auto;
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .settings-section-title {
+    margin: 0;
+    font-size: clamp(18px, 2.8vw, 28px);
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .settings-helper {
+    margin: 0 0 2px;
+    font-size: clamp(12px, 1.45vw, 16px);
+    line-height: 1.4;
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .settings-row,
+  .ui-skin-scope[data-ui-form-factor="handheld"] .settings-row:has(input[type="checkbox"]) {
+    width: auto !important;
+    max-width: none !important;
+    min-width: 0;
+    min-height: 44px;
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) auto !important;
+    grid-template-rows: auto auto;
+    align-items: center;
+    justify-self: stretch;
+    gap: 6px 12px;
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .settings-row > span:first-child {
+    min-width: 0;
+    font-size: clamp(14px, 1.8vw, 20px);
+    line-height: 1.25;
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .settings-row .settings-slider {
+    min-width: 0;
+    min-height: 40px;
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .settings-row:has(.settings-slider),
+  .ui-skin-scope[data-ui-form-factor="handheld"] .settings-row.settings-audio-row:has(.settings-slider) {
+    grid-template-columns: minmax(112px, 22%) minmax(0, 1fr) auto !important;
+    grid-template-rows: minmax(48px, auto);
+    min-height: 48px;
+    gap: 8px 14px;
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .settings-row:has(.settings-slider) > span:first-child {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .settings-row:has(.settings-slider) .settings-slider {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .settings-row:has(.settings-slider) output,
+  .ui-skin-scope[data-ui-form-factor="handheld"] .settings-audio-row .settings-check {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .settings-row output,
+  .ui-skin-scope[data-ui-form-factor="handheld"] .settings-row small,
+  .ui-skin-scope[data-ui-form-factor="handheld"] .settings-row strong {
+    min-width: 0;
+    text-align: right;
+    font-size: clamp(12px, 1.4vw, 16px);
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .settings-row input[type="checkbox"] {
+    width: 24px;
+    min-width: 24px;
+    height: 24px;
+    min-height: 24px;
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .settings-row .settings-check {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+    min-height: 44px;
+    white-space: nowrap;
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .settings-footer {
+    position: relative;
+    bottom: auto;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+    padding: 10px 12px;
+    border-top: 1px solid var(--line);
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .settings-footer-actions {
+    width: 100%;
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .settings-footer .ui-button {
+    width: 100%;
+    min-width: 0;
+    min-height: 44px;
+  }
+}
+
+/*
+ * Handheld settings use the safe runtime frame, not the authored
+ * settings_group rectangle.  Keep this contract outside the legacy
+ * responsive block above: playback still uses the PC-authored composition,
+ * but the settings surface is a shell page and must remain usable at the
+ * actual Android viewport size.
+ */
+.ui-skin-scope[data-ui-form-factor="handheld"] .settings-screen {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  gap: 0;
+  padding: clamp(12px, 2.6vw, 24px);
+  overflow: hidden;
+}
+
+.ui-skin-scope[data-ui-form-factor="handheld"] .settings-screen > .settings-renpy {
+  position: relative !important;
+  inset: auto !important;
+  left: auto !important;
+  top: auto !important;
+  right: auto !important;
+  bottom: auto !important;
+  transform: none !important;
+  width: auto !important;
+  height: auto !important;
+  min-width: 0;
+  min-height: 0;
+  max-width: none !important;
+  max-height: none !important;
+  display: grid !important;
+  grid-template-columns: minmax(136px, 0.32fr) minmax(0, 1fr) !important;
+  grid-template-rows: minmax(0, 1fr) auto !important;
+  gap: 0 !important;
+  overflow: hidden;
+  pointer-events: auto;
+}
+
+.ui-skin-scope[data-ui-form-factor="handheld"] .settings-tabs {
+  min-width: 0;
+  min-height: 0;
+  display: grid !important;
+  align-content: start;
+  gap: clamp(4px, 1.2vh, 8px);
+  padding: clamp(8px, 2vh, 16px);
+  border-right: 1px solid var(--line);
+  border-bottom: 0;
+  overflow-x: hidden;
+  overflow-y: hidden;
+}
+
+.ui-skin-scope[data-ui-form-factor="handheld"] .settings-tabs button {
+  min-width: 0;
+  min-height: clamp(36px, 10vh, 44px);
+  justify-content: flex-start;
+  white-space: nowrap;
+}
+
+.ui-skin-scope[data-ui-form-factor="handheld"] .settings-content {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: clamp(10px, 1.8vh, 18px);
+  padding: clamp(12px, 2.4vw, 18px);
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.ui-skin-scope[data-ui-form-factor="handheld"] .settings-footer {
+  position: relative;
+  bottom: auto;
+}
+
+/* A very short landscape WebView cannot keep five 44px rows inside the
+ * available frame.  Shrink the category rail as one unit instead of
+ * exposing a clipped scrollbar. */
+@media (max-height: 380px) and (orientation: landscape) {
+  .ui-skin-scope[data-ui-form-factor="handheld"] .settings-tabs {
+    gap: 4px;
+    padding: 6px;
+  }
+
+  .ui-skin-scope[data-ui-form-factor="handheld"] .settings-tabs button {
+    min-height: 32px;
+    height: 32px;
+    padding-block: 4px;
+    font-size: 12px;
+  }
+}
+
+/* Runtime buttons use a stable visual state. Hover is intentionally inert;
+   focus-visible and active remain the only transient feedback states. */
+.ui-skin-scope[data-ui-screen] :where(
+  .menu-actions button,
+  .settings-screen button,
+  .save-load-screen button,
+  .gallery-screen button,
+  .about-screen button,
+  .modal-actions button
+):hover:not(:disabled):not([aria-disabled="true"]):not(:focus-visible):not(:active) {
+  transform: none !important;
+  filter: none !important;
+}
+
+.ui-skin-scope[data-ui-screen] .settings-screen .settings-exit-link:hover:not(:disabled) {
+  color: color-mix(in srgb, var(--muted) 84%, var(--runtime-panel-text, var(--ink))) !important;
+}
+
+.ui-skin-scope[data-ui-screen] .modal-actions .ui-button.exit-confirm-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--danger) 72%, transparent) !important;
+  background: color-mix(in srgb, var(--danger) 82%, #6d1420 18%) !important;
 }

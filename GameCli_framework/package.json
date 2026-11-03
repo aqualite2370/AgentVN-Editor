@@ -6,19 +6,21 @@
   "type": "module",
   "scripts": {
     "dev": "vite --config vite.config.cjs --configLoader native --host 127.0.0.1 --port 6868",
-    "build": "tsc && vite build --config vite.config.cjs --configLoader native",
+    "build": "tsc && vite build --config vite.config.cjs --configLoader native && node ../scripts/prepare-runtime-compat-licenses.cjs",
     "preview": "vite preview --config vite.config.cjs --configLoader native",
     "tauri": "tauri"
   },
   "dependencies": {
+    "@juggle/resize-observer": "3.4.0",
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.0.0",
     "@tauri-apps/plugin-fs": "^2.0.0",
     "@tauri-apps/plugin-opener": "^2.5.4",
+    "core-js-pure": "3.50.0",
     "html-to-image": "^1.11.13",
     "jszip": "^3.10.1",
     "lucide-react": "^0.468.0",
-    "nanoid": "^5.0.9",
+    "nanoid": "^5.1.16",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "zod": "^3.24.1",

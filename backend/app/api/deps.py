@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncIterator
 from functools import lru_cache
+from fastapi import Request
 
 from app.ai.generator import AIGenerator
 from app.ai.provider import AIProvider
@@ -42,11 +43,15 @@ def get_memory_service() -> MemoryService:
     return MemoryService(get_memory_manager(), get_ai_provider())
 
 
-async def get_project_state_service() -> AsyncIterator[ProjectStateService]:
+async def get_project_state_service(request: Request) -> AsyncIterator[ProjectStateService]:
     settings = get_app_settings()
     conn = get_connection(settings)
     try:
-        yield ProjectStateService(conn, asset_root=settings.resolved_database_path.parent / "project_assets")
+        yield ProjectStateService(
+            conn,
+            asset_root=settings.resolved_database_path.parent / "project_assets",
+            asset_public_url_prefix=f"{str(request.base_url).rstrip('/')}/api/project/assets",
+        )
     finally:
         conn.close()
 

@@ -89,6 +89,7 @@ function deriveStartupIndex(game: LibraryGame): StartupIndex {
       cover: game.manifest.cover,
       shell: game.manifest.shell,
       loadingAnimation: game.script.loading_animation,
+      openingAudio: game.script.opening_audio,
       titleScreen,
     }, assets),
     entrySceneAssets: sceneAssets[game.script.entry_scene_id] ?? [],
@@ -215,22 +216,33 @@ class ProgressiveAssetLoader {
     timeoutMs: number,
     onProgress?: (progress: AssetPreparationProgress) => void,
   ): Promise<boolean> {
+    return this.prepareScene(this.game?.script.entry_scene_id ?? "", timeoutMs, onProgress);
+  }
+
+  async prepareScene(
+    sceneId: string,
+    timeoutMs = 10_000,
+    onProgress?: (progress: AssetPreparationProgress) => void,
+  ): Promise<boolean> {
     let acceptingProgress = true;
-    const preparation = this.prepareAssetIds(this.index?.entrySceneAssets ?? [], {
-      phase: "entry",
+    const preparation = this.prepareAssetIds(
+      sceneId ? (this.index?.sceneAssets[sceneId] ?? []) : [],
+      {
+      phase: sceneId === this.game?.script.entry_scene_id ? "entry" : "scene",
       budgetBytes: SCENE_PREWARM_BUDGET_BYTES,
       blockingOnly: true,
       onProgress: (progress) => {
         if (acceptingProgress) onProgress?.(progress);
       },
-    }).then(() => {
+      },
+    ).then(() => {
       acceptingProgress = false;
       return true;
     });
     const timedOut = new Promise<boolean>((resolve) => window.setTimeout(() => {
       acceptingProgress = false;
       resolve(false);
-    }, timeoutMs));
+    }, Math.max(0, timeoutMs)));
     return Promise.race([preparation, timedOut]);
   }
 

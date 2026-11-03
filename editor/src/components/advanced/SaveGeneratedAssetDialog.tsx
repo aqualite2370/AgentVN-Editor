@@ -54,7 +54,6 @@ export function SaveGeneratedAssetDialog({
     <section className="advanced-card">
       <h3>保存生成素材</h3>
       <img src={candidate.blob_url} alt={candidate.image_id} className="asset-preview-image" />
-      <p className="inline-status">保存前会统一转成可导出的 data_url，并写入 provider/model/prompt 元数据。</p>
       <label>
         素材类型
         <RichSelect value={selectedAssetType} options={generatedImageAssetTypeOptions} helpKey="asset.assetType" onChange={(nextAssetType) => setSelectedAssetType(nextAssetType as GeneratedAssetRecord["asset_type"])} />

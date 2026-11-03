@@ -1,14 +1,21 @@
-import { CARTRIDGE_FORMAT_VERSION, MANIFEST_VERSION, SUPPORTED_RUNTIME_VERSION } from "../../../shared/cartridge/constants";
+﻿import { CARTRIDGE_FORMAT_VERSION, MANIFEST_VERSION, SUPPORTED_RUNTIME_VERSION } from "../../../shared/cartridge/constants";
 import { packCartridgeToBlob } from "../../../shared/cartridge/packer";
-import { minimumRuntimeVersionForScript, runtimeScriptSchemaVersion } from "../../../shared/cartridge/runtimeCapabilities";
-import { DEFAULT_UI_LAYOUT_PATH, UI_LAYOUT_VERSION, migrateLegacyUISkinLayout, validateUISkinHealth, validateUISkinLayout } from "../../../shared/cartridge/uiSkin";
-import { validateAssetReferences, validateManifest, validateNoAIMetadata, validateNoEditorFields, validateRuntimeScript } from "../../../shared/cartridge/validators";
+import { minimumRuntimeVersionForLayout, minimumRuntimeVersionForScript, runtimeScriptSchemaVersion } from "../../../shared/cartridge/runtimeCapabilities";
+import { DEFAULT_UI_LAYOUT_PATH, UI_LAYOUT_VERSION, normalizeUISkinLayoutForRuntime, validateUISkinHealth, validateUISkinLayout } from "../../../shared/cartridge/uiSkin";
+import { validateAssetReferences, validateGallery, validateManifest, validateNoAIMetadata, validateNoEditorFields, validateRuntimeScript } from "../../../shared/cartridge/validators";
 import type { AssetManifestItem, BackgroundFit, DialogVisualStyle, GalleryManifest, GameManifest, RuntimeScript } from "../../../shared/cartridge/types";
+import { buildGalleryManifestFromScript } from "../../../shared/cartridge/gallery";
 import type { UISkinLayout } from "../../../shared/cartridge/uiSkin";
+import { dialogueModeStyleGroups } from "../../../shared/cartridge/dialogueModeLayout";
+import { confirmationStyleGroups } from "../../../shared/cartridge/confirmationLayout";
+import { assetIdFromUILayoutReference } from "../../../shared/cartridge/uiAssetReference";
+import { collectUILayoutAssetIds, filterRuntimeLayoutAssets, resolveRuntimeUILayoutSettings, type RuntimeUILayoutProfiles } from "../../../shared/cartridge/uiLayoutProfiles";
 import type { AssetRef } from "../types/assets";
 import type { PackageAppearanceSettings } from "../types/project";
 import { collectProjectAssets } from "./collectProjectAssets";
 import { normalizeAssetManifestPath } from "../utils/projectAssets";
+import { reportFrontendError } from "../../../shared/logging/frontendErrorLogger";
+import { compileControlPresentation, layoutPresentationTargets, resolveLayoutPresentations } from "../../../shared/cartridge/controlPresentation";
 
 export interface EditorCartridgeExportInput {
   script: RuntimeScript;
@@ -23,6 +30,7 @@ export interface EditorCartridgeExportInput {
   projectAssets?: AssetManifestItem[];
   projectAssetRefs?: AssetRef[];
   uiSkin?: UISkinLayout;
+  uiLayoutProfiles?: RuntimeUILayoutProfiles;
   packageAppearance?: PackageAppearanceSettings;
   characterDialogStyles?: Record<string, DialogVisualStyle>;
 }
@@ -102,7 +110,7 @@ async function readDesktopAssetFile(filePath: string | undefined): Promise<Uint8
     return new Uint8Array(bytes);
   } catch (error) {
     if (isMissingTauriCommand(error, "read_project_asset_file_bytes")) {
-      throw new Error("当前 AgentVN 桌面宿主尚未更新，缺少本地素材读取能力。请重启桌面端；如果仍然出现，请重新构建/安装最新桌面端后再启动预览。");
+      throw new Error("当前 AgentVN 桌面宿主尚未更新，缺少本地素材读取能力。请重启桌面端；如果仍然出现，请重新构建或安装最新桌面端后再启动预览。");
     }
     throw error;
   }
@@ -145,6 +153,37 @@ function buildPlaceholderAsset(manifestItem: AssetManifestItem): string {
   return `AgentVN placeholder asset: ${manifestItem.asset_id}\n`;
 }
 
+function replaceAssetExtension(value: string, extension: string): string {
+  const stem = value.replace(/\.[^./]+$/, "").replace(/\.+$/, "");
+  return `${stem || "missing-asset"}.${extension}`;
+}
+
+function markManifestAssetAsPlaceholder(manifestItem: AssetManifestItem): void {
+  manifestItem.placeholder = true;
+  manifestItem.tags = Array.from(new Set([...(manifestItem.tags ?? []), "placeholder", "missing"]));
+  delete manifestItem.hash_sha256;
+  delete manifestItem.size_bytes;
+
+  if (["background", "sprite", "portrait", "ui"].includes(manifestItem.asset_type)) {
+    manifestItem.path = replaceAssetExtension(manifestItem.path, "placeholder.svg");
+    manifestItem.filename = replaceAssetExtension(manifestItem.filename, "placeholder.svg");
+    manifestItem.mime_type = "image/svg+xml";
+    manifestItem.width = 1280;
+    manifestItem.height = 720;
+    return;
+  }
+  if (manifestItem.asset_type === "animation") {
+    manifestItem.path = replaceAssetExtension(manifestItem.path, "placeholder.json");
+    manifestItem.filename = replaceAssetExtension(manifestItem.filename, "placeholder.json");
+    manifestItem.mime_type = "application/json";
+    return;
+  }
+  manifestItem.path = replaceAssetExtension(manifestItem.path, "placeholder.txt");
+  manifestItem.filename = replaceAssetExtension(manifestItem.filename, "placeholder.txt");
+  manifestItem.mime_type = "text/plain";
+  delete manifestItem.duration_ms;
+}
+
 function normalizeGameId(value?: string): string {
   const normalized = (value ?? "")
     .trim()
@@ -156,14 +195,22 @@ function normalizeGameId(value?: string): string {
 
 async function buildCartridgeAssets(manifestAssets: AssetManifestItem[], projectAssetRefs: AssetRef[] = []) {
   const refById = new Map(projectAssetRefs.map((asset) => [asset.asset_id, asset]));
-  const assets = [];
+  const assets: Array<{
+    path: string;
+    data: Uint8Array | string;
+    manifestItem: AssetManifestItem;
+    placeholder?: boolean;
+  }> = [];
   for (const manifestItem of manifestAssets) {
     const ref = refById.get(manifestItem.asset_id);
     const dataUrl = ref?.metadata.data_url;
+    const directBytes = ref?.metadata.bytes;
     const blobUrl = ref?.metadata.blob_url;
     const assetUrl = ref?.metadata.url;
     const filePath = ref?.metadata.filePath;
-    if (dataUrl) {
+    if (directBytes) {
+      assets.push({ path: manifestItem.path, data: directBytes, manifestItem });
+    } else if (dataUrl) {
       assets.push({ path: manifestItem.path, data: await dataUrlToBinary(dataUrl), manifestItem });
     } else if (blobUrl?.startsWith("blob:")) {
       assets.push({ path: manifestItem.path, data: new Uint8Array(await (await fetch(blobUrl)).arrayBuffer()), manifestItem });
@@ -171,23 +218,35 @@ async function buildCartridgeAssets(manifestAssets: AssetManifestItem[], project
       try {
         assets.push({ path: manifestItem.path, data: await urlToBinary(assetUrl), manifestItem });
       } catch (error) {
+        reportFrontendError("editor.cartridge-export", error, {
+          operation: "asset-url-fallback",
+          assetId: manifestItem.asset_id,
+          filePath,
+        });
         const fallbackData = await readDesktopAssetFile(filePath);
         if (fallbackData) {
           assets.push({ path: manifestItem.path, data: fallbackData, manifestItem });
           continue;
         }
-        const reason = error instanceof Error ? error.message : String(error);
-        throw new Error(`Failed to package asset ${manifestItem.asset_id} (${manifestItem.asset_type}) from ${assetUrl}: ${reason}`);
+        markManifestAssetAsPlaceholder(manifestItem);
+        assets.push({
+          path: manifestItem.path,
+          data: buildPlaceholderAsset(manifestItem),
+          manifestItem,
+          placeholder: true,
+        });
       }
     } else if (filePath) {
       const fallbackData = await readDesktopAssetFile(filePath);
       if (fallbackData) {
         assets.push({ path: manifestItem.path, data: fallbackData, manifestItem });
       } else {
-        assets.push({ path: manifestItem.path, data: buildPlaceholderAsset(manifestItem), manifestItem });
+        markManifestAssetAsPlaceholder(manifestItem);
+        assets.push({ path: manifestItem.path, data: buildPlaceholderAsset(manifestItem), manifestItem, placeholder: true });
       }
     } else {
-      assets.push({ path: manifestItem.path, data: buildPlaceholderAsset(manifestItem), manifestItem });
+      markManifestAssetAsPlaceholder(manifestItem);
+      assets.push({ path: manifestItem.path, data: buildPlaceholderAsset(manifestItem), manifestItem, placeholder: true });
     }
   }
   return assets;
@@ -199,10 +258,13 @@ async function buildPreviewDirectoryAssets(manifestAssets: AssetManifestItem[], 
   for (const manifestItem of manifestAssets) {
     const ref = refById.get(manifestItem.asset_id);
     const dataUrl = ref?.metadata.data_url;
+    const directBytes = ref?.metadata.bytes;
     const blobUrl = ref?.metadata.blob_url;
     const assetUrl = ref?.metadata.url;
     const filePath = ref?.metadata.filePath;
-    if (filePath) {
+    if (directBytes) {
+      assets.push({ cartridgePath: manifestItem.path, assetId: manifestItem.asset_id, data: directBytes, mimeType: manifestItem.mime_type, expectedSize: directBytes.byteLength });
+    } else if (filePath) {
       assets.push({
         cartridgePath: manifestItem.path,
         assetId: manifestItem.asset_id,
@@ -365,6 +427,9 @@ function buildUISkinFontAssets(
       if (typeof fontAssetId === "string" && fontAssetId.trim()) fontAssetIds.add(fontAssetId.trim());
     }
   }
+  for (const style of [...dialogueModeStyleGroups(uiSkin), ...confirmationStyleGroups(uiSkin)]) {
+    if (style.fontAssetId?.trim()) fontAssetIds.add(style.fontAssetId.trim());
+  }
 
   const assets: AssetManifestItem[] = [];
   const warnings: string[] = [];
@@ -432,6 +497,31 @@ export function applyCharacterDialogStylesToScript<T extends DialogStyleRuntimeS
 export async function exportEditorCartridge(input: EditorCartridgeExportInput): Promise<EditorCartridgeExportResult> {
   const packageData = await createEditorCartridgeData(input);
   const cartridgeAssets = await buildCartridgeAssets(packageData.manifestAssets, input.projectAssetRefs);
+  const unavailableAssets = cartridgeAssets
+    .filter((asset) => asset.placeholder)
+    .map((asset) => ({
+      asset_id: asset.manifestItem.asset_id,
+      asset_type: asset.manifestItem.asset_type,
+      source: input.projectAssetRefs?.find((ref) => ref.asset_id === asset.manifestItem.asset_id)?.metadata.url
+        ?? asset.manifestItem.path,
+    }));
+  const missingAssets = Array.from(new Map(
+    [...packageData.assetReport.missingAssets, ...unavailableAssets]
+      .map((asset) => [`${asset.asset_type}:${asset.asset_id}`, asset]),
+  ).values());
+  const placeholderAssets = Array.from(new Map(
+    [
+      ...packageData.assetReport.placeholderAssets,
+      ...unavailableAssets.map((asset) => {
+        const manifestItem = packageData.manifest.assets.find((item) => item.asset_id === asset.asset_id);
+        return {
+          asset_id: asset.asset_id,
+          asset_type: asset.asset_type,
+          path: manifestItem?.path ?? asset.asset_id,
+        };
+      }),
+    ].map((asset) => [`${asset.asset_type}:${asset.asset_id}`, asset]),
+  ).values());
   const blob = await packCartridgeToBlob({
     manifest: packageData.manifest,
     script: packageData.normalizedScript,
@@ -449,15 +539,33 @@ export async function exportEditorCartridge(input: EditorCartridgeExportInput): 
     fileName: packageData.fileName,
     manifest: packageData.manifest,
     gallery: packageData.gallery,
-    assetReport: packageData.assetReport,
+    assetReport: {
+      missingAssets,
+      placeholderAssets,
+    },
     errors: packageData.errors,
-    warnings: packageData.warnings,
+    warnings: [
+      ...packageData.warnings,
+      ...unavailableAssets.map((asset) =>
+        `Asset ${asset.asset_id} (${asset.asset_type}) could not be read from ${asset.source}; a placeholder was written.`,
+      ),
+    ],
   };
 }
 
 async function createEditorCartridgeData(input: EditorCartridgeExportInput) {
   const now = new Date().toISOString();
-  const uiSkin = input.uiSkin ? migrateLegacyUISkinLayout(input.uiSkin) : undefined;
+  const selectedSkin = input.uiLayoutProfiles
+    ? resolveRuntimeUILayoutSettings({ runtimeUILayoutProfiles: input.uiLayoutProfiles }).runtimeUILayout
+    : input.uiSkin;
+  if (selectedSkin) {
+    for (const target of layoutPresentationTargets(selectedSkin)) {
+      const result = compileControlPresentation(target.source);
+      if (!result.ok) throw new Error(`CONTROL_PRESENTATION_INVALID: ${target.path}：${result.issues.join("；")}`);
+    }
+  }
+  const uiSkinNormalization = selectedSkin ? normalizeUISkinLayoutForRuntime(resolveLayoutPresentations(selectedSkin)) : undefined;
+  const uiSkin = uiSkinNormalization?.layout;
   const preparedScript: RuntimeScript = applyCharacterDialogStylesToScript({
     ...input.script,
     game_id: normalizeGameId(input.gameId || input.script.game_id),
@@ -471,7 +579,20 @@ async function createEditorCartridgeData(input: EditorCartridgeExportInput) {
   const packageAppearance = buildPackageAppearanceAssets(input.packageAppearance, input.projectAssetRefs, input.projectAssets);
   const runtimeVisuals = buildRuntimeVisualAssets(input.packageAppearance, input.projectAssetRefs, input.projectAssets);
   const uiSkinFonts = buildUISkinFontAssets(uiSkin, input.projectAssetRefs, input.projectAssets);
-  const manifestAssets = sanitizeManifestAssetPaths(mergeManifestAssets(scan.manifestAssets, [...packageAppearance.assets, ...runtimeVisuals.assets, ...uiSkinFonts.assets]));
+  const modeImageIds = new Set(uiSkin ? [...dialogueModeStyleGroups(uiSkin), ...confirmationStyleGroups(uiSkin)]
+    .map(style => assetIdFromUILayoutReference(style.backgroundImage)).filter(Boolean) : []);
+  const modeImages = (input.projectAssets ?? []).filter(asset => modeImageIds.has(asset.asset_id));
+  // Per-choice image/font overrides are story dependencies too. They are not
+  // represented by the shared layout or the legacy script media scanner.
+  const choiceStyles = normalizedScript.scenes.flatMap(scene => scene.commands.flatMap(command =>
+    command.type === "choice" ? [command.button_style, ...command.choices.map(choice => choice.button_style)] : []));
+  const manifestAssets = sanitizeManifestAssetPaths(filterRuntimeLayoutAssets(
+    uiSkin,
+    mergeManifestAssets(scan.manifestAssets, [...packageAppearance.assets, ...runtimeVisuals.assets, ...uiSkinFonts.assets, ...modeImages]),
+    [...scan.references.map((ref) => ref.asset_id), ...packageAppearance.assets.map((asset) => asset.asset_id),
+      ...runtimeVisuals.assets.map((asset) => asset.asset_id),
+      ...collectUILayoutAssetIds(choiceStyles, scan.manifestAssets)],
+  ));
   const shell: NonNullable<GameManifest["shell"]> = {
     ...(packageAppearance.appearance.titleBackgroundAssetId ? { background: packageAppearance.appearance.titleBackgroundAssetId } : {}),
     ...(packageAppearance.appearance.titleBackgroundVideoAssetId ? { background_video: packageAppearance.appearance.titleBackgroundVideoAssetId } : {}),
@@ -487,7 +608,7 @@ async function createEditorCartridgeData(input: EditorCartridgeExportInput) {
   const manifest: GameManifest = {
     manifest_version: MANIFEST_VERSION,
     cartridge_version: CARTRIDGE_FORMAT_VERSION,
-    runtime_version: minimumRuntimeVersionForScript(normalizedScript),
+    runtime_version: minimumRuntimeVersionForLayout(minimumRuntimeVersionForScript(normalizedScript), uiSkin),
     game_id: normalizedScript.game_id,
     title: normalizedScript.title,
     author: input.author || "Unknown",
@@ -504,11 +625,12 @@ async function createEditorCartridgeData(input: EditorCartridgeExportInput) {
     updated_at: now,
     ...(uiSkin ? { ui_skin: { path: DEFAULT_UI_LAYOUT_PATH, version: UI_LAYOUT_VERSION, name: uiSkin.name } } : {})
   };
-  const gallery: GalleryManifest = { gallery_version: "1.0.0", items: [] };
+  const gallery: GalleryManifest = buildGalleryManifestFromScript(normalizedScript);
   const validations = [
     validateManifest(manifest),
     validateRuntimeScript(normalizedScript, manifest),
     validateAssetReferences(normalizedScript, manifest),
+    validateGallery(gallery),
     ...(uiSkin ? [validateUISkinLayout(uiSkin)] : []),
     ...(uiSkin ? [validateUISkinHealth(uiSkin, {
       availableAssetPaths: manifestAssets.map((asset) => asset.path),
@@ -521,6 +643,7 @@ async function createEditorCartridgeData(input: EditorCartridgeExportInput) {
   ];
   const errors = validations.flatMap((result) => result.errors.map((item) => item.message));
   const warnings = [
+    ...(uiSkinNormalization?.warnings ?? []),
     ...validations.flatMap((result) => result.warnings.map((item) => item.message)),
     ...packageAppearance.warnings,
     ...runtimeVisuals.warnings,
@@ -549,10 +672,17 @@ async function createEditorCartridgeData(input: EditorCartridgeExportInput) {
 
 export async function createEditorLivePreviewData(input: EditorCartridgeExportInput) {
   const packageData = await createEditorCartridgeData(input);
+  const selectedSkin = input.uiLayoutProfiles
+    ? resolveRuntimeUILayoutSettings({ runtimeUILayoutProfiles: input.uiLayoutProfiles }).runtimeUILayout
+    : input.uiSkin;
+  const uiSkinCompatibilityWarnings = selectedSkin
+    ? normalizeUISkinLayoutForRuntime(selectedSkin).warnings
+    : [];
   return {
     manifest: packageData.manifest,
     script: packageData.normalizedScript,
     uiSkin: packageData.uiSkin,
+    uiSkinCompatibilityWarnings,
   };
 }
 

@@ -1,6 +1,6 @@
 import type { JsonValue } from "./commands";
 import type { BackgroundFit } from "./manifest";
-import type { DialogState, FocusedImageState, SpriteState } from "./settings";
+import type { BgmState, DialogState, FocusedImageState, SpriteState } from "./settings";
 import type {
   CameraBlockingGate,
   CameraEventRef,
@@ -19,7 +19,7 @@ export interface HistoryEntry {
   timestamp: string;
 }
 
-export type SaveKind = "manual" | "auto";
+export type SaveKind = "manual" | "auto" | "quick";
 
 export interface SaveSlotRef {
   kind: SaveKind;
@@ -48,6 +48,11 @@ export interface CameraSaveStateV1 {
   blocking_gate?: CameraBlockingGate;
 }
 
+export interface NvlLineState extends DialogState {
+  scene_id: string;
+  command_index: number;
+}
+
 export interface SaveData {
   save_version?: 2 | 3;
   save_kind?: SaveKind;
@@ -57,6 +62,7 @@ export interface SaveData {
   slot: number;
   created_at: string;
   preview_image?: string;
+  preview_version?: 2;
   preview_choices?: string[];
   scene_id: string;
   command_index: number;
@@ -66,9 +72,15 @@ export interface SaveData {
   background_fit?: BackgroundFit;
   sprites: Record<string, SpriteState>;
   sprite_order?: string[];
+  bgm_state?: BgmState;
   dialog?: DialogState;
+  dialog_page_index?: number;
+  dialog_page_count?: number;
+  nvl_presentation_mode?: "dialog" | "nvl" | "bubble";
+  nvl_page?: NvlLineState[];
   focused_image?: FocusedImageState;
   unlocked_gallery: string[];
   playtime_seconds: number;
   camera?: CameraSaveStateV1;
+  gallery_anchor_id?: string;
 }

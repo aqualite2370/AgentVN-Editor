@@ -1,0 +1,541 @@
+/*
+ * Sole runtime owner for quick-menu geometry, material, interaction and
+ * motion. PlaybackControls supplies shared metrics as custom properties.
+ */
+
+.playback-controls {
+  position: absolute;
+  z-index: var(--overlay-z-quick-menu);
+  display: block;
+  box-sizing: border-box;
+  overflow: visible;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  --runtime-quick-menu-padding: 8px;
+  --runtime-quick-menu-gap: 4px;
+  --runtime-quick-menu-surface-radius: min(
+    var(--runtime-quick-menu-skin-radius, 10px),
+    calc(10px * var(--runtime-quick-menu-uniform-scale, 1))
+  );
+  --runtime-quick-menu-glass-background: color-mix(
+    in srgb,
+    var(--runtime-quick-menu-skin-background, var(--runtime-quick-menu, var(--surface-2, #686d72))) var(--runtime-quick-menu-material-alpha, 66%),
+    transparent
+  );
+  --runtime-quick-menu-glass-border: color-mix(
+    in srgb,
+    var(--runtime-quick-menu-skin-border, var(--line)) 64%,
+    transparent
+  );
+  --runtime-quick-menu-glass-blur: var(--runtime-quick-menu-skin-blur, 12px);
+  --runtime-quick-menu-glass-shadow:
+    0 12px 28px rgb(0 0 0 / 0.2),
+    inset 0 1px 0 rgb(255 255 255 / 0.08);
+  --runtime-quick-menu-surface-saturation: 0.5;
+  --runtime-quick-menu-toggle-expand-icon-size: 33px;
+  --runtime-quick-menu-toggle-close-icon-size: 22px;
+  opacity: 1;
+}
+
+.playback-controls.ui-layouted {
+  width: var(--runtime-quick-menu-root-width, var(--runtime-quick-menu-surface-width)) !important;
+  height: var(--runtime-quick-menu-root-height, var(--runtime-quick-menu-surface-height)) !important;
+  min-width: 0;
+  gap: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+.ui-skin-scope[data-ui-form-factor="handheld"] .playback-controls {
+  max-width: calc(100% - var(--runtime-safe-left) - var(--runtime-safe-right));
+  max-height: calc(100% - var(--runtime-safe-top) - var(--runtime-safe-bottom));
+}
+
+.playback-controls.is-collapsed {
+  pointer-events: none;
+}
+
+.playback-controls.is-expanded {
+  pointer-events: auto;
+}
+
+.playback-controls .quick-menu-surface {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: block;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+  border: var(--runtime-quick-menu-surface-border-width, 1px) solid transparent;
+  border-radius: var(--runtime-quick-menu-surface-radius);
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  clip-path: inset(
+    calc(100% - var(--runtime-quick-menu-toggle-size))
+    0
+    0
+    calc(100% - var(--runtime-quick-menu-toggle-size))
+    round 50%
+  );
+  opacity: 1;
+  pointer-events: none;
+  transition:
+    clip-path 220ms cubic-bezier(0.23, 1, 0.32, 1),
+    opacity 180ms cubic-bezier(0.23, 1, 0.32, 1),
+    background-color 180ms ease,
+    border-color 180ms ease,
+    box-shadow 180ms ease;
+  will-change: clip-path, opacity;
+}
+
+.playback-controls .quick-menu-surface::before,
+.playback-controls .quick-menu-surface::after {
+  display: none;
+  content: none;
+}
+
+.playback-controls .quick-menu-surface.is-expanded {
+  border-color: var(--runtime-quick-menu-glass-border);
+  background: var(--runtime-quick-menu-glass-background);
+  box-shadow: var(--runtime-quick-menu-glass-shadow);
+  -webkit-backdrop-filter: blur(var(--runtime-quick-menu-glass-blur)) saturate(var(--runtime-quick-menu-surface-saturation));
+  backdrop-filter: blur(var(--runtime-quick-menu-glass-blur)) saturate(var(--runtime-quick-menu-surface-saturation));
+  clip-path: inset(0 round var(--runtime-quick-menu-surface-radius));
+  pointer-events: auto;
+}
+
+.playback-controls .quick-menu-surface.is-collapsed {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  transition:
+    clip-path 220ms cubic-bezier(0.23, 1, 0.32, 1),
+    opacity 180ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.playback-controls[data-quick-menu-direction="down"] .quick-menu-surface {
+  clip-path: inset(
+    0
+    0
+    calc(100% - var(--runtime-quick-menu-toggle-size))
+    calc(100% - var(--runtime-quick-menu-toggle-size))
+    round 50%
+  );
+}
+
+.playback-controls[data-quick-menu-direction="down"] .quick-menu-surface.is-expanded,
+.playback-controls[data-quick-menu-direction="right"] .quick-menu-surface.is-expanded {
+  clip-path: inset(0 round var(--runtime-quick-menu-surface-radius));
+}
+
+.playback-controls[data-quick-menu-direction="right"] .quick-menu-surface {
+  clip-path: inset(
+    0
+    calc(100% - var(--runtime-quick-menu-toggle-size))
+    calc(100% - var(--runtime-quick-menu-toggle-size))
+    0
+    round 50%
+  );
+}
+
+.playback-controls .quick-menu-action-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  box-sizing: border-box;
+  gap: var(--runtime-quick-menu-gap);
+  pointer-events: none;
+}
+
+.playback-controls[data-quick-menu-variant="C"] .quick-menu-action-layer {
+  inset:
+    calc(var(--runtime-quick-menu-padding) - var(--runtime-quick-menu-surface-border-width, 1px))
+    calc(var(--runtime-quick-menu-padding) - var(--runtime-quick-menu-surface-border-width, 1px))
+    calc(
+      var(--runtime-quick-menu-padding)
+      + var(--runtime-quick-menu-toggle-size)
+      + var(--runtime-quick-menu-toggle-gap)
+      - var(--runtime-quick-menu-surface-border-width, 1px)
+    )
+    calc(var(--runtime-quick-menu-padding) - var(--runtime-quick-menu-surface-border-width, 1px));
+  grid-template-columns: minmax(0, var(--runtime-quick-menu-cell-width));
+  grid-template-rows: repeat(7, var(--runtime-quick-menu-action-hit-size));
+  align-content: start;
+  padding: 0;
+  gap: var(--runtime-quick-menu-toggle-gap) !important;
+  overflow: visible;
+}
+
+.playback-controls[data-quick-menu-variant="A"] .quick-menu-action-layer {
+  inset:
+    var(--runtime-quick-menu-padding)
+    calc(var(--runtime-quick-menu-toggle-size) + var(--runtime-quick-menu-padding))
+    var(--runtime-quick-menu-padding)
+    var(--runtime-quick-menu-padding);
+  grid-template-columns: repeat(7, var(--runtime-quick-menu-action-hit-size));
+  grid-template-rows: var(--runtime-quick-menu-action-hit-size);
+  align-content: center;
+  justify-content: start;
+}
+
+.playback-controls[data-quick-menu-variant="A"] .quick-menu-toggle-layer .quick-menu-toggle {
+  top: calc(50% - (var(--runtime-quick-menu-toggle-size) / 2));
+  right: var(--runtime-quick-menu-padding);
+  bottom: auto;
+}
+
+.playback-controls .quick-menu-action-layer > .quick-menu-button {
+  position: relative;
+  z-index: 1;
+  display: grid !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  height: var(--runtime-quick-menu-action-hit-size) !important;
+  min-height: var(--runtime-quick-menu-action-hit-size) !important;
+  max-height: var(--runtime-quick-menu-action-hit-size) !important;
+  box-sizing: border-box;
+  padding: 0 !important;
+  border: var(--runtime-quick-menu-action-border-width, 1px) solid color-mix(
+    in srgb,
+    var(--runtime-quick-menu-action-border, var(--line, #9aa1a6)) 72%,
+    transparent
+  ) !important;
+  background-color: color-mix(
+    in srgb,
+    var(--runtime-quick-menu-action-background, var(--runtime-control-solid, var(--surface-2, #74797e))) var(--runtime-quick-menu-action-alpha, 72%),
+    transparent
+  ) !important;
+  box-shadow: none !important;
+  color: var(--runtime-control-text, var(--ink)) !important;
+  filter: none !important;
+  -webkit-backdrop-filter: blur(var(--runtime-quick-menu-action-blur, 6px)) !important;
+  backdrop-filter: blur(var(--runtime-quick-menu-action-blur, 6px)) !important;
+  transform: none !important;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 180ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.playback-controls .quick-menu-action-layer > .quick-menu-button:not(.is-image-owned) {
+  background-color: color-mix(
+    in srgb,
+    var(--runtime-quick-menu-action-background, #74797e) var(--runtime-quick-menu-action-alpha, 72%),
+    transparent
+  ) !important;
+  background-image: none !important;
+}
+
+.playback-controls .quick-menu-action-layer > .quick-menu-button:not(.is-image-owned)::before {
+  content: none;
+  display: none;
+}
+
+.playback-controls[data-quick-menu-variant="C"] .quick-menu-action-layer > .quick-menu-button {
+  height: var(--runtime-quick-menu-cell-height) !important;
+  min-height: var(--runtime-quick-menu-cell-height) !important;
+  max-height: var(--runtime-quick-menu-cell-height) !important;
+  grid-template-columns:
+    var(--runtime-quick-menu-c-leading-track, 32px)
+    var(--runtime-quick-menu-c-icon-track, 46px)
+    minmax(0, 1fr) !important;
+  align-items: center;
+  justify-items: start;
+  border-radius: var(--runtime-quick-menu-action-radius, 10px) !important;
+  box-shadow: none !important;
+}
+
+.playback-controls[data-quick-menu-variant="C"] .quick-menu-action-layer > .quick-menu-button.is-image-owned {
+  box-shadow: none !important;
+}
+
+.playback-controls[data-quick-menu-variant="C"] .quick-menu-button > .precision-icon {
+  grid-column: 2;
+  justify-self: center;
+  width: var(--runtime-quick-menu-c-icon-size, 27px);
+  height: var(--runtime-quick-menu-c-icon-size, 27px);
+}
+
+.playback-controls[data-quick-menu-variant="C"] .quick-menu-button-label {
+  grid-column: 3;
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: inherit;
+  font-size: calc(16px * var(--runtime-quick-menu-uniform-scale, 1));
+  font-weight: 800;
+  line-height: 1.4;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.playback-controls[data-quick-menu-variant="A"] .quick-menu-action-layer > .quick-menu-button {
+  width: var(--runtime-quick-menu-action-hit-size) !important;
+  min-width: var(--runtime-quick-menu-action-hit-size) !important;
+  max-width: var(--runtime-quick-menu-action-hit-size) !important;
+  place-items: center;
+}
+
+.playback-controls[data-quick-menu-variant="A"] .quick-menu-action-layer > .quick-menu-button:not(.is-image-owned)::before {
+  content: none;
+  display: none;
+}
+
+.playback-controls[data-quick-menu-variant="A"] .quick-menu-button > .precision-icon {
+  width: 22px;
+  height: 22px;
+}
+
+.playback-controls[data-quick-menu-variant="A"] .quick-menu-button-label {
+  display: none;
+}
+
+.playback-controls .quick-menu-surface.is-expanded .quick-menu-action-layer {
+  pointer-events: auto;
+}
+
+.playback-controls .quick-menu-surface.is-expanded .quick-menu-action-layer > .quick-menu-button {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition-delay: 60ms;
+}
+
+.playback-controls .quick-menu-button:active:not(:disabled) {
+  filter: brightness(0.94) !important;
+}
+
+.playback-controls .quick-menu-button:focus-visible {
+  outline: 2px solid var(--runtime-focus, var(--accent));
+  outline-offset: 2px;
+}
+
+.playback-controls .quick-menu-button:disabled,
+.playback-controls .quick-menu-button[aria-disabled="true"] {
+  cursor: not-allowed;
+  color: color-mix(in srgb, var(--runtime-control-text, var(--ink)) 56%, var(--runtime-panel-solid, var(--bg))) !important;
+  background-color: color-mix(
+    in srgb,
+    var(--runtime-quick-menu-action-background, var(--runtime-control-solid, var(--surface-2, #74797e))) calc(var(--runtime-quick-menu-action-alpha, 72%) * 0.72),
+    transparent
+  ) !important;
+}
+
+.playback-controls .quick-menu-button.is-image-owned,
+.playback-controls .quick-menu-button.is-image-owned:hover,
+.playback-controls .quick-menu-button.is-image-owned:active {
+  border: 0 !important;
+  background-color: transparent !important;
+  box-shadow: none !important;
+  filter: none !important;
+}
+
+.playback-controls .quick-menu-button.is-image-owned::before {
+  content: none;
+  display: none;
+}
+
+.playback-controls .quick-menu-toggle-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.playback-controls .quick-menu-toggle-layer .quick-menu-toggle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  display: grid !important;
+  width: var(--runtime-quick-menu-toggle-size) !important;
+  min-width: var(--runtime-quick-menu-toggle-size) !important;
+  max-width: var(--runtime-quick-menu-toggle-size) !important;
+  height: var(--runtime-quick-menu-toggle-size) !important;
+  min-height: var(--runtime-quick-menu-toggle-size) !important;
+  max-height: var(--runtime-quick-menu-toggle-size) !important;
+  box-sizing: border-box;
+  padding: 0 !important;
+  place-items: center;
+  border: 0 !important;
+  border-radius: 50% !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  color: var(--runtime-quick-menu-toggle-color, var(--runtime-control-text, var(--ink))) !important;
+  opacity: 1 !important;
+  filter: none !important;
+  -webkit-backdrop-filter: blur(var(--runtime-quick-menu-toggle-blur, 6px)) !important;
+  backdrop-filter: blur(var(--runtime-quick-menu-toggle-blur, 6px)) !important;
+  transform: none !important;
+  pointer-events: auto;
+}
+
+.playback-controls .quick-menu-toggle::before {
+  content: "";
+  position: absolute;
+  right: calc((var(--runtime-quick-menu-toggle-size) - var(--runtime-quick-menu-toggle-visual-width)) / 2);
+  bottom: calc((var(--runtime-quick-menu-toggle-size) - var(--runtime-quick-menu-toggle-visual-height)) / 2);
+  width: var(--runtime-quick-menu-toggle-visual-width);
+  height: var(--runtime-quick-menu-toggle-visual-height);
+  box-sizing: border-box;
+  border: var(--runtime-quick-menu-toggle-border-width, 1px) solid color-mix(
+    in srgb,
+    var(--runtime-quick-menu-toggle-border, var(--line, #9aa1a6)) 82%,
+    transparent
+  );
+  border-radius: 50%;
+  background-color: color-mix(
+    in srgb,
+    var(--runtime-quick-menu-toggle-background, var(--runtime-control-solid, var(--surface-2, #74797e))) var(--runtime-quick-menu-toggle-alpha, 82%),
+    transparent
+  );
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--runtime-quick-menu-toggle-color, var(--ink)) 12%, transparent),
+    0 4px 12px color-mix(in srgb, var(--runtime-quick-menu-toggle-background, var(--surface-2)) 22%, transparent);
+  -webkit-backdrop-filter: blur(var(--runtime-quick-menu-toggle-blur, 6px));
+  backdrop-filter: blur(var(--runtime-quick-menu-toggle-blur, 6px));
+  pointer-events: none;
+  z-index: 0;
+}
+
+.playback-controls[data-quick-menu-variant="C"].is-expanded .quick-menu-toggle-layer .quick-menu-toggle {
+  right: var(--runtime-quick-menu-padding);
+  bottom: var(--runtime-quick-menu-padding);
+  left: var(--runtime-quick-menu-padding);
+  width: auto !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  height: var(--runtime-quick-menu-toggle-size) !important;
+  min-height: var(--runtime-quick-menu-toggle-size) !important;
+  max-height: var(--runtime-quick-menu-toggle-size) !important;
+  border-radius: 0 0 var(--runtime-quick-menu-surface-radius) var(--runtime-quick-menu-surface-radius) !important;
+  box-shadow: none !important;
+}
+
+.playback-controls[data-quick-menu-variant="C"][data-quick-menu-direction="down"].is-expanded .quick-menu-toggle-layer .quick-menu-toggle {
+  border-radius: var(--runtime-quick-menu-surface-radius) var(--runtime-quick-menu-surface-radius) 0 0 !important;
+}
+
+.playback-controls[data-quick-menu-direction="right"] .quick-menu-toggle-layer .quick-menu-toggle {
+  right: auto;
+  bottom: 0;
+  left: 0;
+}
+
+.playback-controls[data-quick-menu-anchor="top_center"] .quick-menu-toggle-layer .quick-menu-toggle,
+.playback-controls[data-quick-menu-anchor="center"] .quick-menu-toggle-layer .quick-menu-toggle,
+.playback-controls[data-quick-menu-anchor="bottom_center"] .quick-menu-toggle-layer .quick-menu-toggle {
+  right: calc(50% - (var(--runtime-quick-menu-toggle-size) / 2));
+}
+
+.playback-controls .quick-menu-toggle-icon {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  z-index: 1;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 220ms cubic-bezier(0.23, 1, 0.32, 1);
+  will-change: opacity;
+}
+
+.playback-controls .quick-menu-toggle-icon.is-visible {
+  opacity: 1;
+}
+
+.playback-controls .quick-menu-toggle-icon-expand > .precision-icon {
+  width: var(--runtime-quick-menu-toggle-expand-icon-size);
+  height: var(--runtime-quick-menu-toggle-expand-icon-size);
+}
+
+.playback-controls .quick-menu-toggle-icon-close > .precision-icon {
+  width: var(--runtime-quick-menu-toggle-close-icon-size);
+  height: var(--runtime-quick-menu-toggle-close-icon-size);
+}
+
+.playback-controls .quick-menu-toggle:focus-visible {
+  outline: 2px solid var(--runtime-focus, var(--accent));
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .playback-controls .quick-menu-surface,
+  .playback-controls .quick-menu-surface.is-expanded,
+  .playback-controls .quick-menu-surface.is-collapsed {
+    clip-path: none;
+    transition: opacity 80ms linear;
+  }
+
+  .playback-controls .quick-menu-action-layer > .quick-menu-button,
+  .playback-controls .quick-menu-surface.is-expanded .quick-menu-action-layer > .quick-menu-button,
+  .playback-controls .quick-menu-toggle-icon {
+    /* The global reduced-motion reset is !important. Preserve this scoped
+     * presentation handoff instead of letting it collapse to one millisecond. */
+    transition: opacity 80ms linear, visibility 0s linear 80ms !important;
+  }
+
+  .playback-controls .quick-menu-surface.is-expanded .quick-menu-action-layer > .quick-menu-button {
+    transition-delay: 0s !important;
+  }
+}
+
+/* Fixed runtime drawer: the surface always grows from the bottom-right
+ * toggle toward the upper-left.  Keep the toggle circular so the surface
+ * retains all four rounded corners instead of producing a clipped bottom
+ * strip. */
+.playback-controls[data-quick-menu-fixed="true"][data-quick-menu-variant="C"] .quick-menu-surface {
+  clip-path: inset(
+    calc(100% - var(--runtime-quick-menu-toggle-size))
+    0
+    0
+    calc(100% - var(--runtime-quick-menu-toggle-size))
+    round 50%
+  );
+  transform-origin: right bottom;
+}
+
+.playback-controls[data-quick-menu-fixed="true"][data-quick-menu-variant="C"] .quick-menu-surface.is-expanded {
+  clip-path: inset(0 round var(--runtime-quick-menu-surface-radius));
+}
+
+.playback-controls[data-quick-menu-fixed="true"][data-quick-menu-variant="C"].is-expanded .quick-menu-toggle-layer .quick-menu-toggle {
+  right: var(--runtime-quick-menu-padding);
+  bottom: var(--runtime-quick-menu-padding);
+  left: auto;
+  width: var(--runtime-quick-menu-toggle-size) !important;
+  min-width: var(--runtime-quick-menu-toggle-size) !important;
+  max-width: var(--runtime-quick-menu-toggle-size) !important;
+  height: var(--runtime-quick-menu-toggle-size) !important;
+  min-height: var(--runtime-quick-menu-toggle-size) !important;
+  max-height: var(--runtime-quick-menu-toggle-size) !important;
+  border-radius: 50% !important;
+}
+
+.playback-controls[data-quick-menu-fixed="true"][data-quick-menu-variant="C"].is-collapsed .quick-menu-toggle-layer .quick-menu-toggle {
+  border-radius: 50% !important;
+}
+
+.playback-controls[data-quick-menu-fixed="true"][data-quick-menu-direction="down"].is-expanded .quick-menu-toggle-layer .quick-menu-toggle {
+  top: var(--runtime-quick-menu-padding);
+  bottom: auto;
+}
+.playback-controls[data-quick-menu-fixed="true"][data-quick-menu-direction="down"] .quick-menu-action-layer {
+  top: calc(var(--runtime-quick-menu-padding) + var(--runtime-quick-menu-toggle-size) + var(--runtime-quick-menu-toggle-gap) - var(--runtime-quick-menu-surface-border-width, 1px));
+  bottom: calc(var(--runtime-quick-menu-padding) - var(--runtime-quick-menu-surface-border-width, 1px));
+}

@@ -9,6 +9,21 @@
   --motion-morph: calc(360ms * var(--motion-scale));
   --motion-ai-flow: calc(1600ms * var(--motion-scale));
   --ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-ui-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-ui-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-out: var(--ease-ui-out);
+  --ease-in-out: var(--ease-ui-in-out);
+  /* Workspace response has a quicker onset; the historical home/container
+     curve remains independent rather than changing every product surface. */
+  --ease-editor-container: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-editor-crossfade: var(--ease-ui-out);
+  /* Workbench navigation is 1.5x faster; home and Runtime have separate clocks. */
+  --editor-workspace-playback-rate: 1.5;
+  /* Same-footprint tool pages need a deliberate readable blend, independently
+     of the home curve and workbench geometry clocks (~667/467ms at 1.5x). */
+  --motion-editor-sibling: 1000ms;
+  --motion-editor-sibling-reduced: 700ms;
+  --ease-editor-sibling: var(--ease-standard);
   --ease-emphasis: cubic-bezier(0.18, 0.9, 0.18, 1);
   --ease-exit: cubic-bezier(0.4, 0, 0.2, 1);
   --input-focus-enter-duration: calc(520ms * var(--motion-scale));

@@ -1,3 +1,5 @@
+import { isTauriRuntime } from "../utils/platform";
+
 function runtimeWindowTitle(gameTitle?: string): string {
   const trimmedTitle = gameTitle?.trim();
   return trimmedTitle ? `${trimmedTitle} - AgentVN Player` : "AgentVN Player";
@@ -11,7 +13,7 @@ async function getTauriWindow() {
 export async function setRuntimeWindowTitle(gameTitle?: string): Promise<boolean> {
   const title = runtimeWindowTitle(gameTitle);
   document.title = title;
-  if (!("__TAURI_INTERNALS__" in window)) return true;
+  if (!isTauriRuntime()) return true;
   try {
     const currentWindow = await getTauriWindow();
     await currentWindow.setTitle(title);

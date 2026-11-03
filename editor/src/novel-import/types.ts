@@ -236,6 +236,8 @@ export interface SourceMapping {
 
 export interface AdaptedScene {
   adapted_scene_id: string;
+  /** Captured by the caller of the model, never supplied by the model itself. */
+  modelName?: string;
   source_scene_candidate_id: string;
   scene_beat: SceneBeat;
   source_mapping: SourceMapping;
@@ -261,6 +263,8 @@ export interface ImportOptions {
 
 export interface NovelImportSession {
   session_id: string;
+  /** Model captured when this session starts an actual generation request. */
+  modelName?: string;
   document?: SourceDocument;
   import_record?: BookImportRecord;
   chunks: TextChunk[];
@@ -465,6 +469,7 @@ export interface NovelPersistenceState {
 
 export interface NovelAiChunkAnalysis {
   chunk_id: string;
+  modelName?: string;
   index: number;
   summary: string;
   chapter_candidates: ChapterCandidate[];
@@ -498,6 +503,7 @@ export interface NovelAiChunkTimelineNotes {
 }
 
 export interface NovelAiChunkPartial {
+  modelName?: string;
   document_id?: string;
   chunk_id?: string;
   start_offset?: number;
@@ -565,6 +571,7 @@ export interface ProgressiveImportJob {
   total: number;
   generatedCount: number;
   failedSceneIds: string[];
+  retryCount?: number;
   skippedSceneIds?: string[];
   lastInsertedNodeId?: string;
   cancelRequested: boolean;

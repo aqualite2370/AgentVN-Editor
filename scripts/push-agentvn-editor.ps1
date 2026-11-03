@@ -13,6 +13,12 @@ $workspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
 $OutputEncoding = [Console]::OutputEncoding
 
+$approvedTestProjectFixtures = @{
+  "scripts/fixtures/dialog-presentation-isolated.vnproj" = "a5b6cbf71be0e84bc138ea3cc283868937c5b28f76231573eb62270436b97461"
+  "scripts/fixtures/editor-isolated-small.vnproj" = "1d26c92ff9de6d5923512cf415b18eec7c012567beed4fac75f5bbc0b6332f78"
+  "scripts/fixtures/installed-preview-isolated.vnproj" = "3ce769b80431882f6986dbff73269bf6e7624a980c888b192bc330801531dc73"
+}
+
 function Invoke-GitText {
   param([string[]]$GitArguments)
   $lines = @(& git -c core.quotepath=false @GitArguments)
@@ -28,10 +34,42 @@ function Get-GitPaths {
   return @($text.Split([char]0) | Where-Object { $_.Length -gt 0 })
 }
 
+function Get-FileSha256Hex {
+  param([string]$Path)
+  $stream = [System.IO.File]::OpenRead($Path)
+  $sha256 = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    return ([System.BitConverter]::ToString($sha256.ComputeHash($stream))).Replace("-", "").ToLowerInvariant()
+  }
+  finally {
+    $sha256.Dispose()
+    $stream.Dispose()
+  }
+}
+
 function Get-ForbiddenReason {
   param([string]$Relative)
+  # These local author-project helpers embed literary material or depend on it.
+  # Keep this boundary even if ignore rules are removed or files force-staged.
+  if ($Relative -match '^scripts/(?:[^/]*(?:angle-owl|night-king)[^/]*|fixtures/night-king-opening\.json)$' -or
+      $Relative -in @(
+        'scripts/agentvn-test-matrix.cjs',
+        'scripts/agentvn-test-matrix-contract-test.cjs',
+        'scripts/editor-horizontal-preview-layout-contract.cjs',
+        'scripts/full-real-agentvn-acceptance.cjs',
+        'scripts/gamecli-choice-nameplate-layout-acceptance.cjs',
+        'scripts/gamecli-preview-tauri-cdp-playwright.cjs',
+        'scripts/project-settings-and-opening-contract.cjs',
+        'scripts/provider-timeout-contract-test.cjs',
+        'scripts/release-asset-optimizer-test.cjs',
+        'scripts/runtime-fix-engineering-acceptance.cjs',
+        'scripts/sprite-scale-display-name-contract.cjs'
+      )) {
+    return "local author-project content or dependent workflow"
+  }
   if ($Relative -match '(^|/)(\.agents|\.claude|\.codex|\.playwright-cli|\.tmp|\.venv|venv|env|virtualenv|node_modules|data|output|releases|releases_test_contract|test_AgentVN|dist|target|gitpush)(/|$)' -or
-      $Relative -match '^(\$out|--help|artifacts)/' -or
+      $Relative -match '^(\$out|--help|artifacts|plans)/' -or
+      $Relative -eq 'AGENTS.md' -or
       $Relative -match '^(--help|--apk)\.inspection\.json$' -or
       $Relative -match '^backend/(build|temp|tempbuild|tempdist)/' -or
       $Relative -eq 'backend/creator-backend.spec' -or
@@ -47,6 +85,20 @@ function Get-ForbiddenReason {
     return "credential or signing file"
   }
   $offlineTool = $Relative -match '^windows-offline-tools/NSIS/.+\.(exe|dll)$'
+  if ($Relative -match '\.vnproj$') {
+    if (-not $approvedTestProjectFixtures.ContainsKey($Relative)) {
+      return "unreviewed project archive"
+    }
+    $fixturePath = Join-Path $workspaceRoot $Relative
+    if (-not (Test-Path -LiteralPath $fixturePath -PathType Leaf)) {
+      return "approved regression fixture is missing"
+    }
+    $actualHash = Get-FileSha256Hex -Path $fixturePath
+    if ($actualHash -ne $approvedTestProjectFixtures[$Relative]) {
+      return "approved regression fixture bytes changed; review before publishing"
+    }
+    return $null
+  }
   if (-not $offlineTool -and $Relative -match '\.(exe|dll|so|dylib|pdb|msi|apk|aab|avnenv|zip|7z|vnproj|vncart|agentvn|db|db-shm|db-wal|sqlite|sqlite3|log|tmp|bak)$') {
     return "binary, project, database or archive payload"
   }
@@ -81,6 +133,35 @@ function Get-GitObjectInfo {
       Where-Object { $_.Length -gt 0 })
   }
   finally { $process.Dispose() }
+}
+
+function Get-IndexedBlobSha256Hex {
+  param([string]$ObjectId)
+  if ($ObjectId -notmatch '^[0-9a-f]{40,64}$') { throw "Invalid indexed object ID." }
+  $start = New-Object System.Diagnostics.ProcessStartInfo
+  $start.FileName = "git"
+  $start.Arguments = "cat-file blob $ObjectId"
+  $start.WorkingDirectory = $workspaceRoot
+  $start.UseShellExecute = $false
+  $start.CreateNoWindow = $true
+  $start.RedirectStandardOutput = $true
+  $start.RedirectStandardError = $true
+  $process = New-Object System.Diagnostics.Process
+  $process.StartInfo = $start
+  $sha256 = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    if (-not $process.Start()) { throw "Unable to inspect indexed fixture." }
+    $errorRead = $process.StandardError.ReadToEndAsync()
+    # Hash raw Git bytes, without PowerShell text decoding or line conversion.
+    $digest = $sha256.ComputeHash($process.StandardOutput.BaseStream)
+    $process.WaitForExit()
+    if ($process.ExitCode -ne 0) { throw "Unable to inspect indexed fixture." }
+    return ([System.BitConverter]::ToString($digest)).Replace("-", "").ToLowerInvariant()
+  }
+  finally {
+    $sha256.Dispose()
+    $process.Dispose()
+  }
 }
 
 function Assert-PublishableFiles {
@@ -136,6 +217,9 @@ function Assert-PublishableFiles {
         $blocked[$entry.Path] = "unmerged index, symlink or submodule"
       } elseif ($sizes[$entry.Object] -gt ($MaxFileMiB * 1MB)) {
         $blocked[$entry.Path] = "indexed blob exceeds $MaxFileMiB MiB"
+      } elseif ($approvedTestProjectFixtures.ContainsKey($entry.Path) -and
+                (Get-IndexedBlobSha256Hex -ObjectId $entry.Object) -ne $approvedTestProjectFixtures[$entry.Path]) {
+        $blocked[$entry.Path] = "indexed regression fixture bytes changed; review before publishing"
       }
     }
   }
@@ -153,14 +237,16 @@ try {
   if ((Invoke-GitText @("rev-parse", "--show-toplevel")).Trim() -ne $workspaceRoot.Replace("\", "/")) {
     throw "The script must be inside its own repository root."
   }
-  if ((Invoke-GitText @("branch", "--show-current")).Trim() -ne "main") {
-    throw "Expected branch 'main'."
-  }
   Assert-PublishableFiles
   if ($CheckOnly) {
     # Deliberately before fetch/add/commit: works offline, preserves index bytes.
     Write-Host "[AgentVN] CHECK_ONLY_PASS - no fetch, staging, commit or push."
     exit 0
+  }
+  # Read-only validation also serves Codex worktrees and feature branches.
+  # Publishing retains the existing main-only contract before any remote I/O.
+  if ((Invoke-GitText @("branch", "--show-current")).Trim() -ne "main") {
+    throw "Expected branch 'main'."
   }
 
   # Staged-only by default. Bulk staging requires the user's explicit -StageAll.

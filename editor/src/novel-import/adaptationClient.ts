@@ -18,11 +18,17 @@ import type {
   SourceDocument,
 } from "./types";
 import type { ProviderSelectionPayload } from "../providers/types";
+import { backendClient } from "../api/backendClient";
 import { createSourceMapping } from "./sourceMapping";
 import { reportFrontendError } from "../../../shared/logging/frontendErrorLogger";
 
-const backendBaseUrl = (import.meta.env.VITE_BACKEND_URL as string | undefined) ?? "http://127.0.0.1:8278";
-const websocketBaseUrl = backendBaseUrl.replace(/^http/i, "ws");
+function getNovelBackendBaseUrl(): string {
+  return backendClient.getBaseUrl();
+}
+
+function getNovelWebsocketBaseUrl(): string {
+  return getNovelBackendBaseUrl().replace(/^http/i, "ws");
+}
 const defaultNovelAiRequestTimeoutSeconds = 300;
 const novelAiRequestTimeoutBufferSeconds = 30;
 const minNovelAiRequestTimeoutSeconds = 30;
@@ -116,7 +122,7 @@ async function parseBackendError(response: Response, path: string): Promise<stri
   return `${path} returned HTTP ${response.status}: ${redactError(detail || response.statusText || "unknown error")}`;
 }
 
-async function postJson<T>(path: string, payload: unknown, baseUrl = backendBaseUrl, timeoutMs = novelAiRequestTimeoutMs(payload)): Promise<T> {
+async function postJson<T>(path: string, payload: unknown, baseUrl = getNovelBackendBaseUrl(), timeoutMs = novelAiRequestTimeoutMs(payload)): Promise<T> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -162,7 +168,7 @@ async function postSse<T>(
   path: string,
   payload: unknown,
   handlers: NovelAiStreamHandlers = {},
-  baseUrl = backendBaseUrl,
+  baseUrl = getNovelBackendBaseUrl(),
   timeoutMs = novelAiRequestTimeoutMs(payload),
 ): Promise<T> {
   const controller = new AbortController();
@@ -256,7 +262,7 @@ async function postWs<T>(
   operation: NovelWsOperation,
   payload: unknown,
   handlers: NovelAiStreamHandlers = {},
-  baseUrl = websocketBaseUrl,
+  baseUrl = getNovelWebsocketBaseUrl(),
   timeoutMs = novelAiRequestTimeoutMs(payload),
 ): Promise<T> {
   const jobId = `novel_job_${nanoid(10)}`;
@@ -456,7 +462,7 @@ async function postRealtime<T>(
   }
 }
 
-export async function verifyNovelAiRoutes(baseUrl = backendBaseUrl): Promise<void> {
+export async function verifyNovelAiRoutes(baseUrl = getNovelBackendBaseUrl()): Promise<void> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 12_000);
   try {
@@ -559,7 +565,10 @@ export async function aiBuildNovelOutlineStream(payload: {
   partial_index?: NovelAiOutlineIndex;
   provider_selection?: ProviderSelectionPayload;
 }, handlers?: NovelAiStreamHandlers): Promise<NovelAiOutline> {
-  return postRealtime<NovelAiOutline>("build_outline", "/api/novel/import/ai_build_outline_stream", payload, handlers);
+  // modelName is local provenance, not part of the strict model-output schema.
+  const analyses = payload.analyses.map(({ modelName: _modelName, ...analysis }) => analysis);
+  return postRealtime<NovelAiOutline>("build_outline", "/api/novel/import/ai_build_outline_stream",
+    { ...payload, analyses }, handlers);
 }
 
 export async function aiPlanNovelChapter(request: AiPlanChapterRequest): Promise<AiScenePlanResponse> {

@@ -1,6 +1,7 @@
 import { nanoid } from "nanoid";
 import type { GameCommand, GameCommandType } from "../types/commands";
 import { defaultCharacterAnimationConfig } from "../../../shared/animation/characterAnimation";
+import { normalizeBgmCommandFields } from "../../../shared/cartridge/bgmTransition";
 import { choiceDisplayLabel, transitionDisplayLabel } from "./displayNames";
 import {
   createDefaultCameraCommand,
@@ -26,6 +27,7 @@ export const commandTypes: GameCommandType[] = [
   "sfx",
   "camera",
   "wait",
+  "gallery_anchor",
 ];
 
 export const commandLabels: Record<GameCommandType, string> = {
@@ -45,6 +47,8 @@ export const commandLabels: Record<GameCommandType, string> = {
   sfx: "音效",
   camera: "运镜",
   wait: "等待",
+  gallery_anchor: "画廊锚点",
+  rollback: "回退控制",
 };
 
 export function defaultCommand(type: GameCommandType): GameCommand {
@@ -81,6 +85,10 @@ export function defaultCommand(type: GameCommandType): GameCommand {
       return createDefaultCameraCommand("reframe");
     case "wait":
       return { type, duration_ms: 500 };
+    case "gallery_anchor":
+      return { type, anchor_id: `gallery_anchor_${nanoid(8)}`, title: "未命名画廊", asset_id: "", description: "" };
+    case "rollback":
+      return { type, action: "checkpoint", hard: true };
   }
 }
 
@@ -103,7 +111,6 @@ function animationTargetLabel(target?: string): string {
 
 function bgmActionLabel(action: Extract<GameCommand, { type: "bgm" }>["action"]): string {
   if (action === "stop") return "停止";
-  if (action === "fade") return "淡出";
   return "播放";
 }
 
@@ -171,13 +178,24 @@ export function commandSummary(command: GameCommand): string {
       return `跳转到 ${command.target_scene_id || "未设置目标"}`;
     case "animation":
       return `${animationSummaryLabel(command)} / 目标：${animationTargetLabel(command.target)}`;
-    case "bgm":
-      return `${bgmActionLabel(command.action)} ${command.bgm_id || "当前音乐"} / ${command.volume ?? 1}`;
+    case "bgm": {
+      const normalized = normalizeBgmCommandFields(command);
+      const effect = normalized.fade_ms > 0
+        ? `${normalized.action === "play" ? "淡入" : "淡出"} ${normalized.fade_ms}ms`
+        : normalized.action === "play" ? "立即播放" : "立即停止";
+      return `${bgmActionLabel(normalized.action)} ${command.bgm_id || "当前音乐"} / ${command.volume ?? 1} / ${effect}`;
+    }
     case "sfx":
       return `${command.sfx_id || "音效"} / ${command.volume ?? 1}`;
     case "camera":
       return cameraSummary(command);
     case "wait":
       return `${command.duration_ms} ms`;
+    case "gallery_anchor":
+      return `${command.title || "未命名画廊"} / ${command.anchor_id || "未设置 ID"}`;
+    case "rollback":
+      return command.action === "checkpoint"
+        ? `${command.hard === false ? "软检查点" : "硬检查点"}`
+        : `回退控制：${command.action}`;
   }
 }

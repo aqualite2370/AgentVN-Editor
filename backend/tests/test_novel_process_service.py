@@ -878,7 +878,7 @@ def test_v3_truncated_structured_output_splits_chunk_and_retries_only_children(t
             payload = _input_from_prompt(user_prompt)
             text = str(payload["chunkText"])
             self.seen_lengths.append(len(text))
-            if len(text) > 4000:
+            if len(text) > 3000:
                 raise RuntimeError("Unexpected EOF while parsing JSON response")
             yield (
                 "final",
@@ -894,7 +894,10 @@ def test_v3_truncated_structured_output_splits_chunk_and_retries_only_children(t
     provider = SplitProvider()
     request = _request(1, max_concurrency=1, max_retries=0)
     request.promptVersion = "novel-process-v3"
-    request.chunks[0].chunkText = ("第一段正文。" * 420) + "\n\n" + ("第二段正文。" * 420)
+    # Stay below proactive splitting's default 3,686-char limit, while the
+    # controlled provider rejects >3,000 chars. This must exercise the actual
+    # truncation/retry path rather than merely observe proactive child chunks.
+    request.chunks[0].chunkText = ("第一段正文。" * 292) + "\n\n" + ("第二段正文。" * 292)
     request.chunks[0].startOffset = 0
     request.chunks[0].endOffset = len(request.chunks[0].chunkText)
     service = NovelProcessService(provider=provider, storage_dir=tmp_path)
@@ -907,9 +910,56 @@ def test_v3_truncated_structured_output_splits_chunk_and_retries_only_children(t
     assert completed.completedChunks == 2
     assert sum(chunk.status == "superseded" for chunk in completed.chunks) == 1
     assert all(chunk.parentChunkId == "chunk_0" for chunk in completed.chunks if chunk.status != "superseded")
-    assert provider.seen_lengths[0] > 4000
-    assert all(length <= 4000 for length in provider.seen_lengths[1:])
+    children = sorted(
+        (chunk for chunk in completed.chunks if chunk.status != "superseded"),
+        key=lambda chunk: chunk.startOffset,
+    )
+    assert 3000 < provider.seen_lengths[0] < 3686
+    assert provider.seen_lengths == [
+        len(request.chunks[0].chunkText), *(len(chunk.chunkText) for chunk in children),
+    ]
+    assert all(length <= 3000 for length in provider.seen_lengths[1:])
+    assert "".join(chunk.chunkText for chunk in children) == request.chunks[0].chunkText
+    assert children[0].endOffset == children[1].startOffset
+    assert sum(event.eventType == "chunk_auto_split" for event in completed.eventLogs) == 1
+    assert not any(event.eventType == "chunk_pre_split" for event in completed.eventLogs)
     assert len(results.completedChapterResults) == 1
+
+
+def test_v3_proactive_split_preserves_all_text_without_sending_parent(tmp_path) -> None:
+    class PreSplitProvider(CapturingProvider):
+        def stream_with_tools(self, response_model, system_prompt, user_prompt, **kwargs):
+            payload = _input_from_prompt(user_prompt)
+            self.inputs.append(payload)
+            text = str(payload["chunkText"])
+            yield ("final", SubagentModelOutput(
+                summary=text[:20],
+                fragment=SceneFragment(
+                    summary=text[:20], commands=[{"type": "narration", "text": text[:20]}],
+                ),
+            ))
+
+    provider = PreSplitProvider()
+    request = _request(1, max_concurrency=1, max_retries=0)
+    request.promptVersion = "novel-process-v3"
+    request.chunks[0].chunkText = "预分块完整文本。" * 700
+    request.chunks[0].startOffset = 0
+    request.chunks[0].endOffset = len(request.chunks[0].chunkText)
+    service = NovelProcessService(provider=provider, storage_dir=tmp_path)
+    completed = wait_for_job(service, service.create_job(request).jobId)
+    assert completed.status == "completed"
+    children = sorted(
+        (chunk for chunk in completed.chunks if chunk.status != "superseded"),
+        key=lambda chunk: chunk.startOffset,
+    )
+    assert len(children) > 1
+    assert all(chunk.parentChunkId == "chunk_0" for chunk in children)
+    assert "".join(chunk.chunkText for chunk in children) == request.chunks[0].chunkText
+    assert [item["chunkText"] for item in provider.inputs] == [chunk.chunkText for chunk in children]
+    assert children[0].startOffset == 0 and children[-1].endOffset == len(request.chunks[0].chunkText)
+    assert all(left.endOffset == right.startOffset for left, right in zip(children, children[1:]))
+    assert sum(event.eventType == "chunk_pre_split" for event in completed.eventLogs) == 1
+    assert not any(event.eventType == "chunk_auto_split" for event in completed.eventLogs)
 
 
 def test_v3_failed_chunk_blocks_only_its_chapter_scene(tmp_path) -> None:

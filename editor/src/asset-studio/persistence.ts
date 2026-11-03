@@ -106,6 +106,7 @@ export async function loadAssetStudioCache(projectId: string): Promise<AssetStud
     database.close();
     return value ? { ...value, jobs: interruptedJobs(stripExpiredOutputs(value.jobs)) } : undefined;
   } catch {
+    // error-log-ignore: IndexedDB 不可用时按设计回退到 localStorage。
     const raw = localStorage.getItem(`${fallbackPrefix}${projectId}`);
     if (!raw) return undefined;
     const parsed = JSON.parse(raw) as AssetStudioProjectCache;
@@ -129,6 +130,7 @@ export async function saveAssetStudioCache(cache: AssetStudioProjectCache): Prom
     });
     database.close();
   } catch {
+    // error-log-ignore: IndexedDB 写入失败时按设计回退到 localStorage。
     localStorage.setItem(`${fallbackPrefix}${cache.projectId}`, JSON.stringify(fallbackCache(trimmed)));
   }
 }

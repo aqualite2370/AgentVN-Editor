@@ -28,6 +28,7 @@ import type {
 import { stylePresetOptions } from "../../../utils/localizedOptions";
 import type { AssetStudioProjectSettings } from "../../../types/project";
 import { RichSelect } from "../../common/RichSelect";
+import { RangeControl } from "../../common/RangeControl";
 
 interface AssetStudioComposerProps {
   recipe: ImageGenerationRecipeV1;
@@ -322,14 +323,13 @@ export function AssetStudioComposer({
         </div>
         <label className="asset-studio-field">
           <span>本批生成数量</span>
-          <input
-            data-help-key="asset.count"
-            type="range"
+          <RangeControl
+            helpKey="asset.count"
             min={1}
             max={8}
             value={recipe.count}
-            aria-label={`生成 ${recipe.count} 张`}
-            onChange={(event) => onPatch({ count: Number(event.target.value) })}
+            ariaLabel={`生成 ${recipe.count} 张`}
+            onChange={(count) => onPatch({ count })}
           />
           <output>{recipe.count} 张</output>
         </label>
@@ -358,8 +358,7 @@ export function AssetStudioComposer({
             <label className="asset-studio-dropzone">
               <Upload size={20} aria-hidden="true" />
               <strong>选择来源图片</strong>
-              <span>图生图、重绘、扩图、变体和放大均从这里开始</span>
-              <input type="file" accept="image/*" onChange={(event) => setSourceFile(event.target.files?.[0])} />
+              <input data-help-key="editor.control" type="file" accept="image/*" onChange={(event) => setSourceFile(event.target.files?.[0])} />
             </label>
           )}
           {fieldIssues.get("sourceImage") && <p className="asset-studio-field-error">{fieldIssues.get("sourceImage")?.message}</p>}
@@ -377,7 +376,7 @@ export function AssetStudioComposer({
               <ImagePlus size={18} aria-hidden="true" />
               <strong>{canUseReferences ? "添加参考图" : "当前模型不支持参考图"}</strong>
               <span>{canUseReferences ? "支持多选、粘贴图片" : "切换支持角色、构图、风格或色彩参考的模型后可用"}</span>
-              <input disabled={!canUseReferences} type="file" accept="image/*" multiple onChange={(event) => addFiles(Array.from(event.target.files ?? []))} />
+              <input data-help-key="editor.control" disabled={!canUseReferences} type="file" accept="image/*" multiple onChange={(event) => addFiles(Array.from(event.target.files ?? []))} />
             </label>
             {recipe.references.map((image) => (
               <article className="asset-studio-reference-card" key={image.image_id}>
@@ -404,14 +403,14 @@ export function AssetStudioComposer({
                   />
                   <label>
                     <span>权重 {image.weight.toFixed(1)}</span>
-                    <input
-                      data-help-key="asset.referenceWeight"
-                      type="range"
+                    <RangeControl
+                      helpKey="asset.referenceWeight"
+                      ariaLabel={`${image.note || "参考图"}权重`}
                       min={0}
                       max={1}
                       step={0.1}
                       value={image.weight}
-                      onChange={(event) => updateReference(image.image_id, { weight: Number(event.target.value) })}
+                      onChange={(weight) => updateReference(image.image_id, { weight })}
                     />
                   </label>
                 </div>
@@ -519,7 +518,7 @@ export function AssetStudioComposer({
             {["image_to_image", "inpaint", "outpaint"].includes(recipe.operation) && (
               <label className="asset-studio-field">
                 <span>重绘强度 {recipe.strength.toFixed(2)}</span>
-                <input data-help-key="asset.strength" type="range" min={0.1} max={1} step={0.05} value={recipe.strength} onChange={(event) => onPatch({ strength: Number(event.target.value) })} />
+                <RangeControl ariaLabel="重绘强度" helpKey="asset.strength" min={0.1} max={1} step={0.05} value={recipe.strength} onChange={(strength) => onPatch({ strength })} />
               </label>
             )}
             {recipe.operation === "upscale" && (

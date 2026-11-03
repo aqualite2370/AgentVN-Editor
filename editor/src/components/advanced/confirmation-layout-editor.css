@@ -1,0 +1,12 @@
+.advanced-tools-panel.layout-mode .confirmation-layout-editor .runtime-layout-center {
+  grid-template-rows: minmax(0, 1fr) auto auto;
+}
+.confirmation-layout-editor .runtime-layout-center > p {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+.confirmation-layout-editor .runtime-layout-sidebar,
+.confirmation-layout-editor .runtime-layout-inspector {
+  min-width: 0;
+}

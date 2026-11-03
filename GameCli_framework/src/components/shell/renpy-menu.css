@@ -1,0 +1,487 @@
+.renpy-menu-frame {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: var(--renpy-menu-rail) minmax(0, 1fr);
+  grid-template-rows: var(--renpy-menu-top) minmax(0, 1fr) var(--renpy-menu-bottom);
+  padding: max(8px, var(--runtime-safe-top, 0px)) max(8px, var(--runtime-safe-right, 0px))
+    max(8px, var(--runtime-safe-bottom, 0px)) max(8px, var(--runtime-safe-left, 0px));
+  min-width: 0;
+  min-height: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+  color: var(--renpy-ink);
+}
+
+.renpy-menu-navigation {
+  position: relative;
+  grid-column: 1;
+  grid-row: 1 / -1;
+  align-self: center;
+  min-width: 0;
+  max-height: 100%;
+  box-sizing: border-box;
+  padding-left: var(--renpy-nav-x);
+  padding-right: calc(12px * var(--renpy-menu-scale));
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--renpy-nav-gap);
+  color: var(--renpy-ink, var(--ink));
+  pointer-events: auto;
+}
+
+/* One presentation owner for the page label and body. The navigation and
+   bottom return remain outside this layer, so menu crossfades never animate
+   or rebuild their controls. The navigator supplies the existing opacity
+   transaction; no second animation/timer is needed here. */
+.renpy-menu-body {
+  position: absolute;
+  inset: max(8px, var(--runtime-safe-top, 0px)) max(8px, var(--runtime-safe-right, 0px))
+    max(8px, var(--runtime-safe-bottom, 0px)) max(8px, var(--runtime-safe-left, 0px));
+  display: grid;
+  grid-template-columns: var(--renpy-menu-rail) minmax(0, 1fr);
+  grid-template-rows: var(--renpy-menu-top) minmax(0, 1fr) var(--renpy-menu-bottom);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.renpy-menu-title {
+  position: absolute;
+  left: var(--renpy-menu-title-x);
+  top: 0;
+  height: var(--renpy-menu-top);
+  max-width: calc(100% - var(--renpy-menu-title-x) - 24px);
+  display: flex;
+  align-items: center;
+  margin: 0;
+  font-size: var(--renpy-menu-title-font);
+  font-weight: 400;
+  line-height: 1.2;
+  color: var(--renpy-hover, var(--accent));
+  pointer-events: none;
+}
+
+.renpy-menu-return {
+  position: absolute;
+  left: calc(max(8px, var(--runtime-safe-left, 0px)) + var(--renpy-nav-x));
+  bottom: calc(max(8px, var(--runtime-safe-bottom, 0px)) + var(--renpy-menu-bottom));
+  max-width: calc(var(--renpy-menu-rail) - var(--renpy-nav-x));
+  z-index: 5;
+}
+
+.renpy-menu-return[data-return-placement="top"] {
+  top: max(8px, var(--runtime-safe-top, 0px));
+  bottom: auto;
+}
+
+.renpy-menu-navigation-action {
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  flex: none;
+  max-width: 100%;
+  padding: calc(3px * var(--renpy-menu-scale)) calc(8px * var(--renpy-menu-scale));
+  border: 0;
+  border-radius: 0;
+  background-color: transparent;
+  background-image: var(--renpy-button-image-normal, none);
+  background-size: var(--renpy-button-background-size, 100% 100%);
+  background-repeat: var(--renpy-button-background-repeat, no-repeat);
+  background-position: center;
+  color: var(--renpy-button-text-normal, var(--renpy-idle, var(--muted)));
+  font: inherit;
+  font-size: var(--renpy-nav-font);
+  font-weight: 400;
+  line-height: 1.45;
+  text-align: left;
+  white-space: nowrap;
+  box-shadow: none;
+  cursor: pointer;
+  --renpy-navigation-hover: color-mix(in srgb, var(--renpy-hover, var(--accent)) 40%, white 60%);
+  transition:
+    color 120ms cubic-bezier(.23, 1, .32, 1),
+    border-color 120ms cubic-bezier(.23, 1, .32, 1),
+    background-color 120ms cubic-bezier(.23, 1, .32, 1);
+}
+
+.renpy-menu-navigation-action[data-renpy-button-frame="nine-slice"] {
+  border-style: solid;
+  border-width: var(--renpy-button-border-width);
+  border-color: transparent;
+  border-image-source: var(--renpy-button-image-normal);
+  border-image-slice: var(--renpy-button-border-slice) fill;
+  border-image-width: var(--renpy-button-border-width);
+  border-image-repeat: var(--renpy-button-border-repeat, stretch);
+  background-image: none;
+}
+
+.renpy-menu-navigation-action:hover:not(:disabled),
+.renpy-menu-navigation-action:focus-visible,
+.renpy-menu-navigation-action[aria-current="page"] {
+  background-color: transparent;
+  color: var(--renpy-button-text-hover, var(--renpy-navigation-hover));
+  outline: 0;
+}
+
+.renpy-menu-navigation-action:hover:not(:disabled),
+.renpy-menu-navigation-action:focus-visible {
+  background-image: var(--renpy-button-image-hover, var(--renpy-button-image-normal, none));
+}
+.renpy-menu-navigation-action[data-renpy-button-frame="nine-slice"]:hover:not(:disabled),
+.renpy-menu-navigation-action[data-renpy-button-frame="nine-slice"]:focus-visible {
+  border-image-source: var(--renpy-button-image-hover, var(--renpy-button-image-normal));
+  background-image: none;
+}
+
+.renpy-menu-navigation-action[aria-current="page"] {
+  color: var(--renpy-button-text-selected, var(--renpy-ink, var(--ink)));
+  background-image: var(--renpy-button-image-selected, var(--renpy-button-image-hover, var(--renpy-button-image-normal, none)));
+}
+.renpy-menu-navigation-action[data-renpy-button-frame="nine-slice"][aria-current="page"] {
+  border-image-source: var(--renpy-button-image-selected, var(--renpy-button-image-hover, var(--renpy-button-image-normal)));
+  background-image: none;
+}
+
+.renpy-menu-navigation-action:focus-visible {
+  outline: 1px solid currentColor;
+  outline-offset: 1px;
+}
+.renpy-menu-navigation-action:focus {
+  box-shadow: none;
+  transition-duration: 120ms;
+  transition-timing-function: cubic-bezier(.23, 1, .32, 1);
+}
+.renpy-menu-navigation-action[aria-current="page"]:is(:hover, :focus-visible):not(:disabled) {
+  color: var(--renpy-button-text-hover, var(--renpy-navigation-hover));
+}
+
+.renpy-menu-navigation-action:disabled {
+  cursor: default;
+  opacity: 1;
+  color: var(--renpy-button-text-disabled, #55555580);
+  background-image: var(--renpy-button-image-disabled, var(--renpy-button-image-normal, none));
+}
+.renpy-menu-navigation-action[data-renpy-button-frame="nine-slice"]:disabled {
+  border-image-source: var(--renpy-button-image-disabled, var(--renpy-button-image-normal));
+  background-image: none;
+}
+
+.renpy-menu-outlet {
+  position: relative;
+  grid-column: 2;
+  grid-row: 2;
+  margin: var(--renpy-content-top) var(--renpy-content-right) 0 var(--renpy-content-left);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  pointer-events: auto;
+}
+
+.ui-skin-scope[data-layout-type="renpy"] :is(.renpy-menu-body, .renpy-menu-outlet) > .renpy-menu-content {
+  position: relative;
+  inset: auto;
+  display: flex;
+  flex-direction: column;
+  gap: clamp(6px, 1vh, 16px);
+  padding: 0;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  overflow: hidden;
+  pointer-events: auto;
+}
+
+.ui-skin-scope[data-layout-type="renpy"] .renpy-menu-outlet > .renpy-menu-content {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+}
+
+/* Position within the content region, never the full-frame authored rect.
+   These overrides are scoped to the Ren'Py frame; AgentVN remains untouched. */
+.ui-skin-scope[data-layout-type="renpy"] .renpy-menu-content > :is(
+  .settings-renpy, .history-list, .about-card, .help-card, .gallery-grid, .save-grid
+) {
+  position: relative !important;
+  inset: auto !important;
+  transform: none !important;
+  width: 100% !important;
+  height: auto !important;
+  min-width: 0;
+  min-height: 0;
+  max-width: 100% !important;
+  max-height: none !important;
+  flex: 1 1 0;
+  box-sizing: border-box;
+}
+
+.renpy-menu-content > :is(header, .save-load-toolbar) {
+  flex: none;
+  min-width: 0;
+}
+
+/* One template header and one shared return, rather than per-page Web headers. */
+.ui-skin-scope[data-layout-type="renpy"] .renpy-menu-content > header {
+  display: none;
+}
+
+.renpy-menu-content > :is(.history-list, .help-card, .gallery-grid, .save-grid) {
+  overflow: auto;
+  pointer-events: auto;
+  align-content: start;
+}
+
+.ui-skin-scope[data-layout-type="renpy"] .renpy-menu-content > .settings-renpy {
+  align-self: center;
+  margin-block: auto;
+  width: 88% !important;
+  height: 90% !important;
+  flex: 0 0 90%;
+  grid-template-columns: minmax(max(90px, var(--settings-category-envelope, 0px)), 22%) minmax(0, 1fr) !important;
+  grid-template-rows: minmax(0, 1fr) auto !important;
+  gap: 0 !important;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.ui-skin-scope[data-layout-type="renpy"] .renpy-menu-content .settings-tabs {
+  min-width: 0;
+  min-height: 0;
+  padding: calc(8px * var(--renpy-menu-scale));
+  gap: calc(6px * var(--renpy-menu-scale));
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.ui-skin-scope[data-layout-type="renpy"] .renpy-menu-content .settings-tabs button {
+  min-width: 0;
+  min-height: 30px;
+  padding: calc(6px * var(--renpy-menu-scale)) calc(4px * var(--renpy-menu-scale));
+  font-size: var(--renpy-role-font-size, calc(22px * var(--renpy-menu-scale)));
+  white-space: nowrap;
+}
+
+.ui-skin-scope[data-layout-type="renpy"] .renpy-menu-content .settings-content {
+  min-width: 0;
+  padding: calc(12px * var(--renpy-menu-scale));
+  font-size: calc(22px * var(--renpy-menu-scale));
+  gap: calc(16px * var(--renpy-menu-scale));
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.ui-skin-scope[data-layout-type="renpy"] .renpy-menu-content .settings-row {
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) auto !important;
+  gap: 8px;
+}
+
+.ui-skin-scope[data-layout-type="renpy"] .renpy-menu-content .settings-row > span:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: calc(22px * var(--renpy-menu-scale));
+}
+
+.ui-skin-scope[data-layout-type="renpy"] .renpy-menu-content .settings-section-title {
+  font-size: calc(24px * var(--renpy-menu-scale));
+  font-weight: 400;
+  color: var(--renpy-hover);
+}
+
+.ui-skin-scope[data-layout-type="renpy"] .renpy-menu-content .settings-footer .ui-button {
+  font-size: calc(18px * var(--renpy-menu-scale));
+}
+
+.ui-skin-scope[data-layout-type="renpy"] .renpy-menu-content .settings-slider-track,
+.ui-skin-scope[data-layout-type="renpy"] .renpy-menu-content .settings-slider-fill {
+  border-radius: 3px;
+  background-image: none;
+  box-shadow: none;
+}
+
+.ui-skin-scope[data-layout-type="renpy"] .renpy-menu-content .settings-slider-fill {
+  background-color: var(--range-active);
+}
+
+.ui-skin-scope[data-layout-type="renpy"] .renpy-menu-content .settings-footer {
+  min-width: 0;
+  padding: 6px;
+  gap: 6px;
+}
+
+.ui-skin-scope[data-layout-type="renpy"] .renpy-menu-content .settings-footer-actions {
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+@media (max-width: 600px) {
+  .ui-skin-scope[data-layout-type="renpy"] .renpy-menu-content > .settings-renpy {
+    grid-template-columns: minmax(0, 1fr) !important;
+    grid-template-rows: auto minmax(0, 1fr) auto !important;
+  }
+  .ui-skin-scope[data-layout-type="renpy"] .renpy-menu-content .settings-tabs {
+    display: flex !important;
+    flex-wrap: wrap;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .ui-skin-scope[data-layout-type="renpy"] .renpy-menu-content .settings-tabs button {
+    flex: 1 1 50px;
+  }
+  .ui-skin-scope[data-layout-type="renpy"] .renpy-menu-content .settings-row,
+  .ui-skin-scope[data-layout-type="renpy"] .renpy-menu-content .settings-row:has(.settings-slider) {
+    grid-template-columns: minmax(0, 1fr) auto !important;
+    grid-template-rows: auto auto;
+  }
+  .ui-skin-scope[data-layout-type="renpy"] .renpy-menu-content .settings-row .settings-slider {
+    grid-column: 1 / -1 !important;
+    grid-row: 2 !important;
+  }
+  .ui-skin-scope[data-layout-type="renpy"] .renpy-menu-content .settings-row :is(output, .settings-check) {
+    grid-column: 2 !important;
+    grid-row: 1 !important;
+  }
+  .renpy-menu-content > .save-load-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+  }
+  .ui-skin-scope[data-layout-type="renpy"] .renpy-menu-content > :is(.save-grid, .gallery-grid) {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  .ui-skin-scope[data-layout-type="renpy"] .save-grid[data-renpy-grid-columns-override="true"] {
+    grid-template-columns: repeat(var(--renpy-save-columns, 3), minmax(0, 1fr)) !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .renpy-menu-navigation-action {
+    transition: none;
+  }
+}
+
+/* Keep each related action set inside the same quiet segmented-control shell.
+   The save cards remain the visual focus; these controls share one shape and
+   selected-state language without competing with the content. */
+.ui-skin-scope[data-layout-type="renpy"] .save-load-screen :is(
+  .save-mode-switch,
+  .save-kind-tabs,
+  .save-page-navigation
+) {
+  display: flex;
+  align-items: center;
+  gap: calc(3px * var(--renpy-menu-scale));
+  padding: calc(3px * var(--renpy-menu-scale));
+  border: 1px solid color-mix(in srgb, var(--line) 82%, transparent);
+  border-radius: calc(6px * var(--renpy-menu-scale));
+  background: color-mix(in srgb, var(--runtime-control-solid, var(--surface-2)) 70%, transparent);
+  box-sizing: border-box;
+}
+
+.ui-skin-scope[data-layout-type="renpy"] .save-load-screen .save-page-navigation {
+  font-size: calc(18px * var(--renpy-menu-scale));
+  align-self: stretch;
+  width: 100%;
+  max-width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  border: 0;
+  padding-inline: 0;
+  background: transparent;
+}
+
+.ui-skin-scope[data-layout-type="renpy"] .save-load-screen :is(
+  .save-mode-switch .ui-button,
+  .save-kind-tabs .save-kind-tab,
+  .save-page-navigation .ui-button
+) {
+  box-sizing: border-box;
+  height: calc(38px * var(--renpy-menu-scale));
+  min-height: calc(38px * var(--renpy-menu-scale));
+  padding: 0 calc(13px * var(--renpy-menu-scale));
+  border: 0;
+  border-radius: calc(4px * var(--renpy-menu-scale));
+  background-color: transparent;
+  color: var(--muted-2);
+  font-size: calc(18px * var(--renpy-menu-scale));
+  font-weight: 600;
+  line-height: 1;
+  box-shadow: none;
+  transition:
+    color 140ms cubic-bezier(0.23, 1, 0.32, 1),
+    background-color 140ms cubic-bezier(0.23, 1, 0.32, 1),
+    border-color 140ms cubic-bezier(0.23, 1, 0.32, 1),
+    transform 100ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.ui-skin-scope[data-layout-type="renpy"] .save-load-screen .save-mode-switch
+.ui-button:not([data-renpy-role-custom="true"]) > svg {
+  width: calc(16px * var(--renpy-menu-scale));
+  height: calc(16px * var(--renpy-menu-scale));
+}
+
+.ui-skin-scope[data-layout-type="renpy"] .save-load-screen :is(
+  .save-mode-switch .ui-button.active,
+  .save-kind-tabs .save-kind-tab[aria-selected="true"]
+) {
+  background-color: color-mix(
+    in srgb,
+    var(--runtime-control-active-solid, var(--accent)) 21%,
+    var(--runtime-control-solid, var(--surface-2))
+  );
+  color: var(--ink);
+}
+
+.ui-skin-scope[data-layout-type="renpy"] .save-load-screen :is(
+  .save-mode-switch .ui-button:not(:disabled),
+  .save-kind-tabs .save-kind-tab:not(:disabled),
+  .save-page-navigation .ui-button:not(:disabled)
+):active {
+  transform: scale(0.98);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .ui-skin-scope[data-layout-type="renpy"] .save-load-screen :is(
+    .save-mode-switch .ui-button:not(:disabled),
+    .save-kind-tabs .save-kind-tab:not(:disabled),
+    .save-page-navigation .ui-button:not(:disabled)
+  ):hover {
+    color: var(--ink);
+  }
+}
+
+.ui-skin-scope[data-layout-type="renpy"] .is-compact-save-layout.save-load-screen :is(
+  .save-mode-switch .ui-button,
+  .save-kind-tabs .save-kind-tab,
+  .save-page-navigation .ui-button
+) {
+  height: 28px;
+  min-height: 28px;
+  padding: 0 8px;
+  border-radius: 5px;
+  font-size: 11px;
+}
+
+.ui-skin-scope[data-layout-type="renpy"] .is-compact-save-layout.save-load-screen :is(
+  .save-mode-switch,
+  .save-kind-tabs,
+  .save-page-navigation
+) {
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-skin-scope[data-layout-type="renpy"] .save-load-screen :is(
+    .save-mode-switch .ui-button,
+    .save-kind-tabs .save-kind-tab,
+    .save-page-navigation .ui-button
+  ) {
+    transition: none;
+  }
+}

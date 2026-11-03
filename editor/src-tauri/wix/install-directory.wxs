@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <!-- The empty group links this policy into Tauri's generated feature.
+         No marker component, files or registry values are installed. -->
+    <ComponentGroup Id="AgentVNInstallDirectoryPolicy" />
+    <Property Id="AGENTVN_REQUESTED_INSTALLDIR" Secure="yes" />
+
+    <!-- Keep Tauri's existing registry discovery. Its AppSearch writes directly
+         to INSTALLDIR, so preserve an explicit/browse-selected path around it.
+         Capture again in the execute sequence: the user may have chosen a new
+         folder after the UI search, or crossed the elevation boundary. -->
+    <CustomAction Id="AgentVNPreserveInstallDirectory"
+                  Property="AGENTVN_REQUESTED_INSTALLDIR" Value="[INSTALLDIR]" />
+    <CustomAction Id="AgentVNRestoreInstallDirectory"
+                  Property="INSTALLDIR" Value="[AGENTVN_REQUESTED_INSTALLDIR]" />
+    <InstallUISequence>
+      <Custom Action="AgentVNPreserveInstallDirectory" Before="AppSearch">INSTALLDIR</Custom>
+      <Custom Action="AgentVNRestoreInstallDirectory" After="AppSearch">AGENTVN_REQUESTED_INSTALLDIR</Custom>
+    </InstallUISequence>
+    <InstallExecuteSequence>
+      <Custom Action="AgentVNPreserveInstallDirectory" Before="AppSearch">INSTALLDIR</Custom>
+      <Custom Action="AgentVNRestoreInstallDirectory" After="AppSearch">AGENTVN_REQUESTED_INSTALLDIR</Custom>
+    </InstallExecuteSequence>
+  </Fragment>
+</Wix>

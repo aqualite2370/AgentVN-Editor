@@ -4,6 +4,7 @@ import type { MemoryMode } from "../types/memory";
 import type {
   AssetLibrarySettings,
   AssetStudioProjectSettings,
+  CharacterSpriteLayoutSettings,
   EditorAppearanceSettings,
   EditorCanvasBackgroundImage,
   PackageAppearanceSettings,
@@ -12,9 +13,15 @@ import type {
 import type { NovelPersistenceState } from "../novel-import/types";
 import { normalizeNovelPersistenceState } from "../novel-import/persistence";
 import type { AboutPanelCopy, BackgroundFit, DialogVisualStyle } from "../../../shared/cartridge/types";
-import { getDefaultUISkinLayout, migrateLegacyUISkinLayout, type UISkinLayout } from "../../../shared/cartridge/uiSkin";
+import type { UISkinLayout } from "../../../shared/cartridge/uiSkin";
+import { resolveRuntimeUILayoutSettings, switchRuntimeUILayoutType, updateActiveRuntimeUILayout, type RuntimeLayoutType, type RuntimeUILayoutProfiles } from "../../../shared/cartridge/uiLayoutProfiles";
+import type { UILayoutScreenId } from "../../../shared/cartridge/uiSkin";
 import { DEFAULT_SPRITE_SCALE, sanitizeSpriteScale } from "../../../shared/cartridge/spriteScale";
 import { DEFAULT_SPEAKER_FOCUS, sanitizeSpeakerFocus } from "../../../shared/cartridge/speakerFocus";
+import { sanitizeSpriteOffsetX, sanitizeSpriteOffsetY } from "../../../shared/cartridge/spritePlacement";
+import { stableSerialize } from "../utils/stableSerialize";
+import { isDialogPresentationMode, normalizeCharacterDialogPresentations } from "../../../shared/cartridge/dialogPresentation";
+import type { DialogPresentationMode } from "../../../shared/cartridge/types";
 
 interface ProjectActions {
   setMetadata: (metadata: Partial<Pick<ProjectState, "title" | "author">>) => void;
@@ -32,13 +39,36 @@ interface ProjectActions {
   setPackageAppearance: (packageAppearance: PackageAppearanceSettings) => void;
   setEditorAppearance: (editorAppearance: EditorAppearanceSettings) => void;
   setRuntimeUILayout: (runtimeUILayout: UISkinLayout) => void;
+  mergeRuntimeUILayoutIfScreenMatches: (input: {
+    expectedProjectId: string;
+    expectedLayoutType: RuntimeLayoutType;
+    screenId: UILayoutScreenId;
+    expectedScreenSnapshot: string;
+    runtimeUILayout: UISkinLayout;
+    assetManifest: AssetRef[];
+  }) => boolean;
+  mergeRuntimeUILayoutIfScreensMatch: (input: {
+    expectedProjectId: string;
+    expectedLayoutType: RuntimeLayoutType;
+    expectedScreenSnapshots: Partial<Record<UILayoutScreenId, string>>;
+    expectedRuntimeUILayoutSnapshot: string;
+    expectedAssetManifestSnapshot: string;
+    runtimeUILayout: UISkinLayout;
+    assetManifest: AssetRef[];
+  }) => boolean;
+  setRuntimeUILayoutType: (type: RuntimeLayoutType) => void;
+  setRuntimeUILayoutProfiles: (profiles: RuntimeUILayoutProfiles) => void;
   setCharacterDialogStyle: (characterId: string, style?: DialogVisualStyle | null) => void;
+  setCharacterSpriteLayout: (characterId: string, layout?: CharacterSpriteLayoutSettings | null) => void;
   setAssetLibrary: (assetLibrary: AssetLibrarySettings) => void;
   setAssetStudio: (assetStudio: AssetStudioProjectSettings) => void;
   setAssetManifest: (assets: AssetRef[]) => void;
   setNovelPersistence: (persistence?: NovelPersistenceState) => void;
   setDefaultSpriteScale: (scale: number) => void;
+  setDefaultDialogPresentation: (mode: DialogPresentationMode) => void;
+  setCharacterDialogPresentation: (characterId: string, mode?: DialogPresentationMode) => void;
   setSpeakerFocus: (speakerFocus: ProjectState["settings"]["speakerFocus"]) => void;
+  setRollbackSettings: (rollback: ProjectState["settings"]["rollback"]) => void;
 }
 
 const now = new Date().toISOString();
@@ -174,6 +204,7 @@ function sanitizePackageAppearance(value: unknown, assets?: AssetRef[]): Package
     titleBackgroundDimming: sanitizeShellBackgroundDimming(source.titleBackgroundDimming, 0.18),
     iconAssetId: sanitizeAssetId(source.iconAssetId, assetIds),
     standaloneIconAssetId: sanitizeAssetId(source.standaloneIconAssetId, assetIds),
+    androidApplicationId: sanitizeOptionalText(source.androidApplicationId, 180),
     settingsPanelBackgroundAssetId: sanitizeAssetId(source.settingsPanelBackgroundAssetId, assetIds),
     settingsPanelBackgroundFit: sanitizeBackgroundFit(source.settingsPanelBackgroundFit),
     settingsPanelBackgroundDimming: sanitizeShellBackgroundDimming(source.settingsPanelBackgroundDimming, 0.24),
@@ -264,6 +295,24 @@ function sanitizeCharacterDialogStyles(value: unknown, assets?: AssetRef[]): Rec
   return styles;
 }
 
+function sanitizeCharacterSpriteLayouts(value: unknown): Record<string, CharacterSpriteLayoutSettings> {
+  const source = isRecord(value) ? value : {};
+  const layouts: Record<string, CharacterSpriteLayoutSettings> = {};
+  for (const [characterId, rawLayout] of Object.entries(source)) {
+    const id = characterId.trim();
+    if (!id || !isRecord(rawLayout)) continue;
+    layouts[id] = {
+      position: typeof rawLayout.position === "string" && rawLayout.position.trim()
+        ? rawLayout.position.trim().slice(0, 80)
+        : null,
+      offset_x: sanitizeSpriteOffsetX(rawLayout.offset_x),
+      offset_y: sanitizeSpriteOffsetY(rawLayout.offset_y),
+      scale: sanitizeSpriteScale(rawLayout.scale, DEFAULT_SPRITE_SCALE),
+    };
+  }
+  return layouts;
+}
+
 function folderHasCycle(folderId: string, parentById: Map<string, string | null>): boolean {
   const seen = new Set<string>();
   let current: string | null | undefined = folderId;
@@ -325,12 +374,21 @@ function defaultSettings(): ProjectState["settings"] {
   return {
     defaultMemoryMode: "hybrid",
     defaultSpriteScale: DEFAULT_SPRITE_SCALE,
+    characterDialogPresentations: {},
     speakerFocus: DEFAULT_SPEAKER_FOCUS,
+    rollback: {
+      enabled: true,
+      hard_limit: 100,
+      log_length: 128,
+      pause_as_checkpoint: false,
+      fixed_choice_mode: "selected_marked",
+    },
     packageAppearance: sanitizePackageAppearance(undefined),
     editorAppearance: sanitizeEditorAppearance(undefined),
-    runtimeUILayout: getDefaultUISkinLayout(),
+    ...resolveRuntimeUILayoutSettings(),
     characterDisplayNames: {},
     characterDialogStyles: {},
+    characterSpriteLayouts: {},
     assetLibrary: defaultAssetLibrary(),
     assetStudio: defaultAssetStudio(),
   };
@@ -341,12 +399,26 @@ function sanitizeSettings(settings?: Record<string, unknown>, assets?: AssetRef[
   return {
     defaultMemoryMode: next.defaultMemoryMode,
     defaultSpriteScale: sanitizeSpriteScale(next.defaultSpriteScale, DEFAULT_SPRITE_SCALE),
+    defaultDialogPresentation: isDialogPresentationMode(next.defaultDialogPresentation)
+      ? next.defaultDialogPresentation : undefined,
+    characterDialogPresentations: normalizeCharacterDialogPresentations(next.characterDialogPresentations),
     speakerFocus: sanitizeSpeakerFocus(next.speakerFocus),
+    rollback: {
+      enabled: next.rollback?.enabled !== false,
+      hard_limit: Math.max(0, Math.min(512, Math.round(Number(next.rollback?.hard_limit ?? 100)))),
+      log_length: Math.max(2, Math.min(512, Math.round(Number(next.rollback?.log_length ?? 128)))),
+      pause_as_checkpoint: Boolean(next.rollback?.pause_as_checkpoint),
+      fixed_choice_mode: next.rollback?.fixed_choice_mode === "selected_only" ? "selected_only" : "selected_marked",
+    },
     packageAppearance: sanitizePackageAppearance(next.packageAppearance, assets),
     editorAppearance: sanitizeEditorAppearance(next.editorAppearance, assets),
-    runtimeUILayout: migrateLegacyUISkinLayout(next.runtimeUILayout),
+    ...resolveRuntimeUILayoutSettings({
+      runtimeUILayout: next.runtimeUILayout,
+      runtimeUILayoutProfiles: (settings as Partial<ProjectState["settings"]> | undefined)?.runtimeUILayoutProfiles,
+    }),
     characterDisplayNames: sanitizeCharacterDisplayNames(next.characterDisplayNames),
     characterDialogStyles: sanitizeCharacterDialogStyles(next.characterDialogStyles, assets),
+    characterSpriteLayouts: sanitizeCharacterSpriteLayouts(next.characterSpriteLayouts),
     assetLibrary: sanitizeAssetLibrary(next.assetLibrary, assets),
     assetStudio: sanitizeAssetStudio(next.assetStudio),
     novelPersistence: next.novelPersistence ? normalizeNovelPersistenceState(next.novelPersistence) : undefined,
@@ -414,9 +486,35 @@ export const useProjectStore = create<ProjectState & ProjectActions>()(
           updatedAt: new Date().toISOString(),
         })),
 
+      setDefaultDialogPresentation: (mode) => {
+        if (!isDialogPresentationMode(mode)) return;
+        set(state => ({
+          settings: { ...state.settings, defaultDialogPresentation: mode },
+          updatedAt: new Date().toISOString(),
+        }));
+      },
+
+      setCharacterDialogPresentation: (characterId, mode) => {
+        const id = characterId.trim();
+        if (!id || (mode !== undefined && !isDialogPresentationMode(mode))) return;
+        set(state => {
+          const values = { ...state.settings.characterDialogPresentations };
+          if (mode === undefined) delete values[id];
+          else values[id] = mode;
+          return { settings: { ...state.settings, characterDialogPresentations: values },
+            updatedAt: new Date().toISOString() };
+        });
+      },
+
       setSpeakerFocus: (speakerFocus) =>
         set((state) => ({
           settings: { ...state.settings, speakerFocus: sanitizeSpeakerFocus(speakerFocus) },
+          updatedAt: new Date().toISOString(),
+        })),
+
+      setRollbackSettings: (rollback) =>
+        set((state) => ({
+          settings: { ...state.settings, rollback },
           updatedAt: new Date().toISOString(),
         })),
 
@@ -434,9 +532,78 @@ export const useProjectStore = create<ProjectState & ProjectActions>()(
 
       setRuntimeUILayout: (runtimeUILayout) =>
         set((state) => ({
-          settings: { ...state.settings, runtimeUILayout: migrateLegacyUISkinLayout(runtimeUILayout) },
+          settings: { ...state.settings, ...updateActiveRuntimeUILayout(state.settings, runtimeUILayout) },
           updatedAt: new Date().toISOString(),
         })),
+
+      mergeRuntimeUILayoutIfScreenMatches: (input) => {
+        let applied = false;
+        set((state) => {
+          const activeType = state.settings.runtimeUILayoutProfiles?.activeType ?? "agentvn";
+          const currentScreen = state.settings.runtimeUILayout?.screens
+            .find((screen) => screen.screen_id === input.screenId);
+          if (state.projectId !== input.expectedProjectId
+            || activeType !== input.expectedLayoutType
+            || !currentScreen
+            || stableSerialize(currentScreen) !== input.expectedScreenSnapshot) return state;
+          applied = true;
+          return {
+            assetManifest: input.assetManifest,
+            settings: {
+              ...state.settings,
+              ...updateActiveRuntimeUILayout(state.settings, input.runtimeUILayout),
+              packageAppearance: sanitizePackageAppearance(state.settings.packageAppearance, input.assetManifest),
+              editorAppearance: sanitizeEditorAppearance(state.settings.editorAppearance, input.assetManifest),
+              characterDialogStyles: sanitizeCharacterDialogStyles(state.settings.characterDialogStyles, input.assetManifest),
+              characterSpriteLayouts: sanitizeCharacterSpriteLayouts(state.settings.characterSpriteLayouts),
+              assetLibrary: sanitizeAssetLibrary(state.settings.assetLibrary, input.assetManifest),
+            },
+            updatedAt: new Date().toISOString(),
+          };
+        });
+        return applied;
+      },
+
+      mergeRuntimeUILayoutIfScreensMatch: (input) => {
+        let applied = false;
+        set((state) => {
+          const activeType = state.settings.runtimeUILayoutProfiles?.activeType ?? "agentvn";
+          const expectedEntries = Object.entries(input.expectedScreenSnapshots) as Array<
+            [UILayoutScreenId, string]
+          >;
+          const currentScreens = state.settings.runtimeUILayout?.screens ?? [];
+          if (state.projectId !== input.expectedProjectId
+            || activeType !== input.expectedLayoutType
+            || input.runtimeUILayout.layout_type !== input.expectedLayoutType
+            || stableSerialize(state.settings.runtimeUILayout) !== input.expectedRuntimeUILayoutSnapshot
+            || stableSerialize(state.assetManifest) !== input.expectedAssetManifestSnapshot
+            || expectedEntries.length === 0
+            || expectedEntries.length !== currentScreens.length
+            || currentScreens.some((screen) =>
+              input.expectedScreenSnapshots[screen.screen_id] === undefined)
+            || expectedEntries.some(([screenId, expectedSnapshot]) => {
+              const currentScreen = currentScreens.find((screen) => screen.screen_id === screenId);
+              return !expectedSnapshot
+                || !currentScreen
+                || stableSerialize(currentScreen) !== expectedSnapshot;
+            })) return state;
+          applied = true;
+          return {
+            assetManifest: input.assetManifest,
+            settings: {
+              ...state.settings,
+              ...updateActiveRuntimeUILayout(state.settings, input.runtimeUILayout),
+              packageAppearance: sanitizePackageAppearance(state.settings.packageAppearance, input.assetManifest),
+              editorAppearance: sanitizeEditorAppearance(state.settings.editorAppearance, input.assetManifest),
+              characterDialogStyles: sanitizeCharacterDialogStyles(state.settings.characterDialogStyles, input.assetManifest),
+              characterSpriteLayouts: sanitizeCharacterSpriteLayouts(state.settings.characterSpriteLayouts),
+              assetLibrary: sanitizeAssetLibrary(state.settings.assetLibrary, input.assetManifest),
+            },
+            updatedAt: new Date().toISOString(),
+          };
+        });
+        return applied;
+      },
 
       setCharacterDialogStyle: (characterId, style) =>
         set((state) => {
@@ -452,9 +619,42 @@ export const useProjectStore = create<ProjectState & ProjectActions>()(
           };
         }),
 
+      setCharacterSpriteLayout: (characterId, layout) =>
+        set((state) => {
+          const id = characterId.trim();
+          if (!id) return state;
+          const characterSpriteLayouts = { ...state.settings.characterSpriteLayouts };
+          if (layout) {
+            characterSpriteLayouts[id] = {
+              position: layout.position?.trim() || null,
+              offset_x: sanitizeSpriteOffsetX(layout.offset_x),
+              offset_y: sanitizeSpriteOffsetY(layout.offset_y),
+              scale: sanitizeSpriteScale(layout.scale, DEFAULT_SPRITE_SCALE),
+            };
+          } else {
+            delete characterSpriteLayouts[id];
+          }
+          return {
+            settings: { ...state.settings, characterSpriteLayouts },
+            updatedAt: new Date().toISOString(),
+          };
+        }),
+
       setAssetLibrary: (assetLibrary) =>
         set((state) => ({
           settings: { ...state.settings, assetLibrary: sanitizeAssetLibrary(assetLibrary, state.assetManifest) },
+          updatedAt: new Date().toISOString(),
+        })),
+
+      setRuntimeUILayoutType: (type) =>
+        set((state) => ({
+          settings: { ...state.settings, ...switchRuntimeUILayoutType(state.settings, type) },
+          updatedAt: new Date().toISOString(),
+        })),
+
+      setRuntimeUILayoutProfiles: (runtimeUILayoutProfiles) =>
+        set((state) => ({
+          settings: { ...state.settings, ...resolveRuntimeUILayoutSettings({ runtimeUILayoutProfiles }) },
           updatedAt: new Date().toISOString(),
         })),
 
@@ -472,6 +672,7 @@ export const useProjectStore = create<ProjectState & ProjectActions>()(
             packageAppearance: sanitizePackageAppearance(state.settings.packageAppearance, assetManifest),
             editorAppearance: sanitizeEditorAppearance(state.settings.editorAppearance, assetManifest),
             characterDialogStyles: sanitizeCharacterDialogStyles(state.settings.characterDialogStyles, assetManifest),
+            characterSpriteLayouts: sanitizeCharacterSpriteLayouts(state.settings.characterSpriteLayouts),
             assetLibrary: sanitizeAssetLibrary(state.settings.assetLibrary, assetManifest),
           },
           updatedAt: new Date().toISOString(),

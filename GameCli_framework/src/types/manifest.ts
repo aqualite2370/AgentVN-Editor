@@ -31,6 +31,7 @@ export interface AssetManifestItem {
   asset_id: string;
   asset_type: AssetType;
   path: string;
+  display_name?: string;
   filename?: string;
   mime_type?: string;
   preload?: boolean;

@@ -11,7 +11,9 @@ import { assetResolver } from "../../engine/assetResolver";
 import type { BackgroundFit } from "../../types/manifest";
 import type { RuntimeAnimationEffect } from "../../types/settings";
 import type { NormalizedVisualTransitionConfig } from "../../../../shared/animation/visualTransition";
-import { useUILayoutStyle } from "../../uiSkin/uiSkinRuntime";
+import { useRuntimeUILayout, useUILayoutStyle } from "../../uiSkin/uiSkinRuntime";
+import { PresentedControl } from "../../uiSkin/PresentedControl";
+import { useRuntimeStore } from "../../store/runtimeStore";
 import { backgroundFitStyle } from "../../utils/backgroundFit";
 import { latestEffect, useRuntimeAnimation } from "./runtimeAnimation";
 
@@ -130,6 +132,8 @@ export function BackgroundLayer({
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const layout = useUILayoutStyle("player", "stage_background");
+  const skin = useRuntimeUILayout();
+  const assetUrls = useRuntimeStore(state => state.currentGame?.assetUrls);
   const incomingFrame = resolveFrame(background, backgroundFit, transitionKey);
   const incomingSignature = frameSignature(incomingFrame);
   const observedSignatureRef = useRef(incomingSignature);
@@ -223,7 +227,7 @@ export function BackgroundLayer({
   const currentMissing = !presentation.current.url;
   const transitionKind = presentation.transition?.kind;
   const transitionStyle: BackgroundTransitionStyle = {
-    ...layout,
+    ...layout.style,
     ...(presentation.transition
       ? {
           "--visual-transition-duration": `${presentation.transition.duration_ms}ms`,
@@ -241,6 +245,7 @@ export function BackgroundLayer({
   ].filter(Boolean).join(" ");
 
   return (
+    <PresentedControl layout={skin} component={layout.component} assetUrls={assetUrls} applyBaseStyle={false}>
     <div
       className={className}
       ref={ref}
@@ -271,5 +276,6 @@ export function BackgroundLayer({
         onAnimationEnd={handleCurrentAnimationEnd}
       />
     </div>
+    </PresentedControl>
   );
 }

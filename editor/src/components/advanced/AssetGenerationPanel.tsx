@@ -53,6 +53,7 @@ import type {
 } from "../../providers/types";
 import { useProjectStore } from "../../store/projectStore";
 import { reportFrontendError } from "../../../../shared/logging/frontendErrorLogger";
+import { GlassSelectionGroup } from "../common/GlassSelectionGroup";
 import { requestAdvancedTools } from "./advancedToolsBridge";
 import { AssetStudioComposer } from "./asset-studio/AssetStudioComposer";
 import { AssetStudioRail } from "./asset-studio/AssetStudioRail";
@@ -98,7 +99,7 @@ function snapshotProvider(provider: ProviderConfig) {
   try {
     features = getImageProvider(provider.provider_id).getFeatureSet?.() ?? features;
   } catch {
-    // The validation layer will explain unavailable providers when the user submits.
+    // error-log-ignore: Provider capability probing is optional; validation explains unavailable providers on submit.
   }
   return {
     providerId: provider.provider_id,
@@ -465,7 +466,7 @@ export function AssetGenerationPanel({
           <span className="asset-studio-brand-mark"><Sparkles size={19} aria-hidden="true" /></span>
           <h1>绘梦</h1>
         </div>
-        <nav className="asset-studio-mode-switcher" aria-label="生成模式">
+        <GlassSelectionGroup as="nav" className="asset-studio-mode-switcher" ariaLabel="生成模式" selectedKey={recipe.operation} scrollAxis="x">
           {operationOrder.map((operation) => {
             const Icon = operationIcons[operation];
             const supported = recipe.provider?.features.operations.includes(operation) ?? operation === "text_to_image";
@@ -475,6 +476,7 @@ export function AssetGenerationPanel({
                 key={operation}
                 data-help-key="asset.operation"
                 className={recipe.operation === operation ? "is-active" : ""}
+                data-glass-selected={recipe.operation === operation}
                 aria-pressed={recipe.operation === operation}
                 disabled={!supported}
                 aria-label={supported ? assetStudioOperationLabels[operation] : `${assetStudioOperationLabels[operation]}，当前模型不支持`}
@@ -487,7 +489,7 @@ export function AssetGenerationPanel({
           })}
           <span className="asset-studio-future-mode" aria-label="音频工作台将在后续版本开放"><AudioLines size={15} />音频</span>
           <span className="asset-studio-future-mode" aria-label="视频工作台将在后续版本开放"><Video size={15} />视频</span>
-        </nav>
+        </GlassSelectionGroup>
         <div className="asset-studio-header-status">
           <span className={recipe.provider ? "is-ready" : "is-blocked"}>
             {recipe.provider ? <CheckCircle2 size={15} /> : <Clock3 size={15} />}
@@ -511,7 +513,7 @@ export function AssetGenerationPanel({
         <div className="asset-studio-blocker" role="alert">
           <div>
             <strong>需要先配置图像模型</strong>
-            <span>工作台会根据模型真实能力开放参考生成、重绘和扩图等模式。</span>
+            <span>可用模式由所选模型能力决定。</span>
           </div>
           <button type="button" data-help-key="asset.configureProvider" onClick={() => requestAdvancedTools({ tab: "providers", title: "配置图像模型" })}>
             前往模型/连接
@@ -521,7 +523,7 @@ export function AssetGenerationPanel({
 
       {rewriteError && <div className="asset-studio-inline-alert" role="alert">{rewriteError}</div>}
 
-      <nav className="asset-studio-mobile-tabs" aria-label="工作台区域">
+      <GlassSelectionGroup as="nav" className="asset-studio-mobile-tabs" ariaLabel="工作台区域" selectedKey={preferences.mobilePane} scrollAxis="x">
         {([
           ["compose", "创作", Sparkles],
           ["stage", "画布", ImageIcon],
@@ -532,6 +534,7 @@ export function AssetGenerationPanel({
             key={pane}
             data-help-key="asset.mobilePane"
             className={preferences.mobilePane === pane ? "is-active" : ""}
+            data-glass-selected={preferences.mobilePane === pane}
             aria-pressed={preferences.mobilePane === pane}
             onClick={() => setPreferences({ mobilePane: pane })}
           >
@@ -539,7 +542,7 @@ export function AssetGenerationPanel({
             {label}
           </button>
         ))}
-      </nav>
+      </GlassSelectionGroup>
 
       <div className={`asset-studio-workspace pane-${preferences.mobilePane}${preferences.rightOpen ? " is-rail-open" : ""}`}>
         <AssetStudioComposer

@@ -46,6 +46,7 @@ interface GameCliPreviewUploadAppendResult {
 
 const GAMECLI_PREVIEW_UPLOAD_CHUNK_BYTES = 256 * 1024;
 const LEGACY_GAMECLI_PREVIEW_MAX_BYTES = 8 * 1024 * 1024;
+let browserPreviewWindow: Window | null = null;
 
 export function isTauriRuntime(): boolean {
   return "__TAURI_INTERNALS__" in window;
@@ -108,6 +109,7 @@ async function openBrowserPreview(request: GameCliPreviewRequest, statusMessage?
   if (!target) {
     throw new Error("The browser blocked the GameCLI preview window. Allow popups or use the desktop app.");
   }
+  browserPreviewWindow = target;
 
   request.onProgress?.({ phase: "browser", percent: 48, message: "Sending temporary cartridge to browser preview window." });
   const previewNonce = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -308,10 +310,15 @@ export async function openGameCliPreviewDirectory(request: GameCliDirectoryPrevi
   }
 }
 
+export async function getGameCliPreviewRunning(): Promise<boolean> {
+  if (!isTauriRuntime()) return browserPreviewWindow !== null && !browserPreviewWindow.closed;
+  return invokeTauri<boolean>("get_gamecli_preview_running");
+}
+
 export async function closeGameCliPreview(): Promise<void> {
   if (!isTauriRuntime()) {
-    const target = window.open("", "agentvn-gamecli-preview");
-    target?.close();
+    browserPreviewWindow?.close();
+    browserPreviewWindow = null;
     return;
   }
   const { invoke } = await import("@tauri-apps/api/core");

@@ -3,17 +3,15 @@
   inset: 0;
   width: 100%;
   height: 100%;
-  overflow: hidden;
+  /* The authored stage must never become a focus-scroll container. In short
+   * landscape frames a focused overlay control can otherwise move the whole
+   * scene even though scrollbars are hidden. */
+  overflow: clip;
   background:
     radial-gradient(circle at 50% 10%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 34%),
     var(--bg);
   cursor: pointer;
   isolation: isolate;
-}
-
-.story-player.is-launch-covered {
-  visibility: hidden;
-  pointer-events: none;
 }
 
 .stage-viewport,
@@ -29,6 +27,7 @@
 .stage-viewport {
   z-index: 0;
   overflow: hidden;
+  overflow-anchor: none;
   background: var(--bg);
   contain: paint;
 }
@@ -61,7 +60,7 @@
 
 .focused-image-overlay.is-exiting {
   pointer-events: none;
-  animation: focused-image-exit calc(220ms * var(--runtime-skin-motion-scale, 1)) ease-in both;
+  animation: focused-image-exit calc(220ms * var(--runtime-skin-motion-scale, 1)) var(--ease-out) both;
 }
 
 .focused-image-backdrop {
@@ -163,7 +162,9 @@
 
 .runtime-layout-frame {
   position: relative;
-  width: min(100cqw, calc(100cqh * 16 / 9));
+  width: min(100cqw, calc(100cqh * var(--runtime-frame-ratio, 1.7777777778)));
+  min-width: 0;
+  min-height: 0;
   max-width: 100%;
   max-height: 100%;
   aspect-ratio: var(--runtime-frame-aspect, 16 / 9);
@@ -175,23 +176,90 @@
   background-size: 26px 26px;
 }
 
-.ui-skin-scope[data-ui-breakpoint="mobile"] .runtime-layout-frame {
-  width: min(100cqw, calc(100cqh * 16 / 9));
+/* Old WebViews ignore cqw/cqh and otherwise shrink this grid item to 0x0
+ * (its page children are absolute). Modern engines keep the original rule.
+ * Explicit height also supports engines predating CSS aspect-ratio. */
+@supports not (width: 1cqw) {
+  .runtime-layout-frame {
+    width: var(--runtime-legacy-frame-width, 100%);
+    height: var(--runtime-legacy-frame-height, 100%);
+  }
 }
 
-.ui-skin-scope[data-ui-screen="player"][data-ui-breakpoint="mobile"][data-ui-orientation="portrait"] .runtime-layout-frame {
+.runtime-custom-component-layer {
   position: absolute;
-  left: 50%;
-  top: 50%;
-  width: min(100vh, calc(100vw * 16 / 9));
-  max-width: none;
-  max-height: none;
-  transform: translate(-50%, -50%) rotate(90deg);
-  transform-origin: center center;
+  inset: 0;
+  z-index: 80;
+  overflow: hidden;
+  pointer-events: none;
 }
 
-.ui-skin-scope[data-ui-screen="player"][data-ui-breakpoint="mobile"][data-ui-orientation="portrait"] {
-  display: block;
+.runtime-custom-component {
+  box-sizing: border-box;
+  pointer-events: auto;
+}
+
+.runtime-custom-component > style + * {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+}
+
+.runtime-custom-component button {
+  box-sizing: border-box;
+  font: inherit;
+  cursor: pointer;
+  transition:
+    color 200ms ease,
+    background-color 200ms ease,
+    border-color 200ms ease,
+    opacity 200ms ease;
+}
+
+.runtime-custom-component button:focus-visible {
+  outline: 2px solid var(--focus, var(--accent));
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .runtime-custom-component button {
+    transition-duration: 0ms;
+  }
+}
+
+.runtime-layout-masks {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  isolation: isolate;
+}
+
+.runtime-layout-mask {
+  position: absolute;
+  pointer-events: none;
+  box-sizing: border-box;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .runtime-layout-mask[data-ui-mask-mode="blur"] {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+}
+
+.ui-skin-scope[data-ui-breakpoint="mobile"] .runtime-layout-frame {
+  width: min(100cqw, calc(100cqh * var(--runtime-frame-ratio, 1.7777777778)));
+}
+
+/* Portrait handhelds letterbox the same PC-authored landscape frame.  The
+ * frame is never rotated into a second mobile composition; this keeps player
+ * geometry and hit targets identical to desktop after uniform scaling. */
+.ui-skin-scope[data-ui-screen="player"][data-ui-breakpoint="mobile"][data-ui-orientation="portrait"] .runtime-layout-frame {
+  width: min(100cqw, calc(100cqh * var(--runtime-frame-ratio, 1.7777777778)));
+  max-width: 100%;
+  max-height: 100%;
+  transform: none;
 }
 
 .ui-layouted {
@@ -615,6 +683,21 @@
   z-index: 1;
 }
 
+.sprite-placement-frame {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: end center;
+  transform:
+    translate3d(
+      var(--sprite-offset-x-px, 0px),
+      calc(-1 * var(--sprite-offset-y-px, 0px)),
+      0
+    );
+  transform-origin: center bottom;
+  transition: transform var(--motion-fast) var(--ease);
+}
+
 .sprite-replacement-stack.is-switching .sprite-replacement-frame {
   animation-duration: var(--sprite-switch-duration, 420ms);
   animation-timing-function: var(--sprite-switch-easing, ease-in-out);
@@ -793,6 +876,319 @@
   overflow: visible;
 }
 
+/* Authored visual wrappers must not become the containing block of native
+   stage-positioned text/name/portrait elements. Their actions remain native. */
+.dialog-box.has-child-layout > [data-control-node] {
+  position: static;
+}
+
+.dialog-box.is-nvl-presentation {
+  position: absolute !important;
+  top: auto !important;
+  right: 5% !important;
+  bottom: var(--nvl-bottom-offset, 7%) !important;
+  left: 5% !important;
+  width: auto !important;
+  height: auto !important;
+  min-width: 0 !important;
+  min-height: clamp(112px, 18vh, 320px) !important;
+  max-width: none !important;
+  max-height: var(--nvl-reading-max-height, 70%) !important;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  padding: clamp(14px, calc(14px * var(--runtime-ui-scale, 1)), 32px);
+  overflow: hidden;
+  transform: none !important;
+  text-align: left;
+  cursor: default;
+}
+
+.dialog-box.is-nvl-presentation:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--runtime-control-active, var(--accent)) 68%, white 32%);
+  outline-offset: 3px;
+}
+
+/* A single visual frame, with separate native text/choice buttons. The
+   choice block participates in flow and in the reading-height budget. */
+.dialog-box.is-nvl-presentation {
+  gap: clamp(8px, calc(10px * var(--runtime-ui-scale, 1)), 18px);
+}
+
+.nvl-advance-surface {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  overflow: hidden;
+  cursor: default;
+}
+
+.nvl-advance-surface:focus-visible {
+  outline: 2px solid var(--runtime-control-active, var(--accent));
+  outline-offset: -2px;
+}
+
+.dialog-box .choice-panel.is-nvl-choices {
+  position: relative !important;
+  inset: auto !important;
+  flex: 0 0 auto;
+  width: 100% !important;
+  height: auto !important;
+  transform: none !important;
+  padding: 0;
+}
+
+/* Explicit author geometry overrides only the legacy NVL rectangle. */
+.dialog-box.is-nvl-presentation[data-dialog-mode-layout-geometry="true"] {
+  left: var(--dialog-mode-x) !important;
+  top: var(--dialog-mode-y) !important;
+  right: auto !important;
+  bottom: auto !important;
+  width: var(--dialog-mode-width) !important;
+  height: var(--dialog-mode-height) !important;
+  min-height: 0 !important;
+  max-height: 100% !important;
+  transform: var(--dialog-mode-transform) !important;
+}
+
+.dialog-box.is-bubble-presentation {
+  display: flex;
+  flex-direction: column;
+  align-content: start;
+  gap: clamp(6px, 0.8vw, 12px);
+  box-sizing: border-box;
+  border-radius: clamp(12px, 1.2vw, 20px);
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--runtime-dialog-accent, var(--accent)) 10%, transparent), transparent 58%),
+    color-mix(in srgb, var(--runtime-dialog) 94%, black 6%);
+  box-shadow: 0 14px 38px rgb(0 0 0 / 24%), var(--shadow);
+  overflow: visible;
+  transform-origin: center;
+  animation: speech-bubble-arrive calc(260ms * var(--runtime-skin-motion-scale, 1)) cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+
+.dialog-box.is-bubble-presentation .dialog-bubble-tail {
+  position: absolute;
+  z-index: 0;
+  display: none;
+  width: 0;
+  height: 0;
+  border: 10px solid transparent;
+  pointer-events: none;
+}
+
+.dialog-box.is-bubble-presentation[data-dialog-bubble-anchor="character"][data-dialog-bubble-tail="bottom"] .dialog-bubble-tail {
+  display: block;
+  bottom: -18px;
+  left: calc(50% - 10px);
+  border-top-color: color-mix(in srgb, var(--runtime-dialog) 94%, black 6%);
+}
+
+.dialog-box.is-bubble-presentation[data-dialog-bubble-anchor="character"][data-dialog-bubble-tail="top"] .dialog-bubble-tail {
+  display: block;
+  top: -18px;
+  left: calc(50% - 10px);
+  border-bottom-color: color-mix(in srgb, var(--runtime-dialog) 94%, black 6%);
+}
+
+.dialog-box.is-bubble-presentation[data-dialog-bubble-anchor="character"][data-dialog-bubble-tail="left"] .dialog-bubble-tail {
+  display: block;
+  left: -18px;
+  top: calc(50% - 10px);
+  border-right-color: color-mix(in srgb, var(--runtime-dialog) 94%, black 6%);
+}
+
+.dialog-box.is-bubble-presentation[data-dialog-bubble-anchor="character"][data-dialog-bubble-tail="right"] .dialog-bubble-tail {
+  display: block;
+  right: -18px;
+  top: calc(50% - 10px);
+  border-left-color: color-mix(in srgb, var(--runtime-dialog) 94%, black 6%);
+}
+
+.dialog-box.is-bubble-presentation:not(.has-child-layout) .speaker,
+.dialog-box.is-bubble-presentation:not(.has-child-layout) .dialog-text,
+.dialog-box.is-bubble-presentation:not(.has-child-layout) .continue-indicator {
+  position: relative;
+  inset: auto;
+  min-width: 0;
+  width: 100%;
+  height: auto;
+  margin: 0;
+}
+
+.dialog-box.is-bubble-presentation:not(.has-child-layout) .speaker {
+  /* Pagination measures the configured body font before shrinking it. Keep
+     the name's natural height stable during that temporary measurement. */
+  flex: 0 0 auto;
+  align-self: start;
+  width: fit-content;
+  max-width: 100%;
+  font-size: 0.92em;
+}
+
+.dialog-box.is-bubble-presentation:not(.has-child-layout) .dialog-text {
+  align-self: stretch;
+  min-height: 0;
+  max-height: 100%;
+  flex: 0 1 auto;
+  box-sizing: border-box;
+  overflow-x: hidden;
+  /* The complete line is fitted/paginated, never scrolled. Restoring the
+     configured font for measurement must not create a classic scrollbar:
+     its gutter changes the measured width and can clamp the final page
+     backwards when a shorter fragment removes that gutter again. */
+  overflow-y: hidden;
+  line-height: calc(1.5 * var(--runtime-preference-line-spacing, 1));
+  scrollbar-width: thin;
+}
+
+.dialog-box.is-bubble-presentation:not(.has-child-layout) .continue-indicator {
+  flex: 0 0 auto;
+  align-self: end;
+  text-align: right;
+}
+
+@keyframes speech-bubble-arrive {
+  from { opacity: 0; translate: 0 6px; }
+  to { opacity: 1; translate: 0 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dialog-box.is-bubble-presentation {
+    animation-duration: 80ms;
+  }
+
+  @keyframes speech-bubble-arrive {
+    from { opacity: 0; translate: 0; }
+    to { opacity: 1; translate: 0; }
+  }
+}
+
+.nvl-page {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: stretch;
+  gap: clamp(8px, calc(10px * var(--runtime-ui-scale, 1)), 18px);
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: manipulation;
+  animation: nvl-page-arrive 140ms ease-out both;
+}
+
+.nvl-page-measure {
+  position: absolute !important;
+  z-index: -1 !important;
+  inset-block-start: clamp(14px, calc(14px * var(--runtime-ui-scale, 1)), 32px) !important;
+  inset-inline: clamp(14px, calc(14px * var(--runtime-ui-scale, 1)), 32px) !important;
+  display: flex !important;
+  flex-direction: column;
+  align-items: stretch;
+  gap: clamp(8px, calc(10px * var(--runtime-ui-scale, 1)), 18px);
+  width: auto !important;
+  height: max-content !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: none !important;
+  max-height: none !important;
+  padding: 0 !important;
+  overflow: visible !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+  contain: layout style;
+}
+
+.nvl-page-measure .nvl-page-line {
+  flex: none;
+}
+
+@keyframes nvl-page-arrive {
+  from { opacity: 0.68; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nvl-page {
+    animation: none;
+  }
+}
+
+.nvl-page-line {
+  display: block;
+  flex: none;
+  min-width: 0;
+  padding: 0 0 clamp(7px, calc(8px * var(--runtime-ui-scale, 1)), 14px);
+  border-bottom: 1px solid color-mix(in srgb, var(--runtime-dialog-text) 15%, transparent);
+  color: var(--runtime-dialog-text);
+  font-family: var(--runtime-text-font-family, var(--runtime-ui-font-family, Inter, "Segoe UI", system-ui, sans-serif));
+  font-size: calc(clamp(18px, calc(18px * var(--runtime-ui-scale, 1)), 48px) * var(--runtime-preference-font-scale, 1));
+  font-weight: 400;
+  line-height: calc(1.58 * var(--runtime-preference-line-spacing, 1));
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.nvl-page-line.is-narration {
+  color: color-mix(in srgb, var(--runtime-dialog-text) 94%, white 6%);
+}
+
+.nvl-page-speaker {
+  display: inline;
+  margin-right: 0.55em;
+  color: var(--runtime-control-active, var(--accent));
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.nvl-page-text {
+  display: inline;
+  min-width: 0;
+  overflow-wrap: inherit;
+  word-break: inherit;
+  white-space: pre-wrap;
+}
+
+.nvl-page-text > span {
+  display: inline;
+  max-width: 100%;
+  overflow-wrap: inherit;
+  word-break: inherit;
+  white-space: pre-wrap;
+}
+
+/* Text fitting and its reading budget commit together. The global reduced
+   motion duration must not implicitly animate inherited font sizes through
+   the default transition-property: all, leaving glyphs at the old geometry.
+   Keep presentation fades; choice entry/exit remains independently animated. */
+.nvl-page-line,
+.nvl-page-text,
+.nvl-page-text > span,
+.dialog-text > span {
+  transition-property: color, opacity;
+}
+
+.dialog-box.is-nvl-presentation .continue-indicator,
+.dialog-box.is-nvl-presentation .speaker,
+.dialog-box.is-nvl-presentation .dialog-text {
+  display: none;
+}
+
 .dialog-box.has-child-layout::after {
   content: "";
   position: absolute;
@@ -807,19 +1203,19 @@
   grid-template-rows: auto minmax(0, 1fr) auto;
 }
 
-.dialog-box:not(.has-child-layout) > .speaker,
-.dialog-box:not(.has-child-layout) > .dialog-text,
-.dialog-box:not(.has-child-layout) > .continue-indicator {
+.dialog-box:not(.has-child-layout) .speaker,
+.dialog-box:not(.has-child-layout) .dialog-text,
+.dialog-box:not(.has-child-layout) .continue-indicator {
   position: relative;
   inset: auto;
 }
 
-.dialog-box:not(.has-child-layout) > .speaker {
+.dialog-box:not(.has-child-layout) .speaker {
   align-self: start;
   justify-self: start;
 }
 
-.dialog-box:not(.has-child-layout) > .dialog-text {
+.dialog-box:not(.has-child-layout) .dialog-text {
   align-self: stretch;
   width: 100%;
   height: 100%;
@@ -827,7 +1223,7 @@
   overflow-y: auto;
 }
 
-.dialog-box:not(.has-child-layout) > .continue-indicator {
+.dialog-box:not(.has-child-layout) .continue-indicator {
   align-self: end;
   justify-self: end;
 }
@@ -882,8 +1278,8 @@
   width: fit-content;
   max-width: min(56%, calc(360px * var(--runtime-ui-scale, 1)));
   min-width: calc(72px * var(--runtime-ui-scale, 1));
-  min-height: calc(24px * var(--runtime-ui-scale, 1));
-  padding: calc(4px * var(--runtime-ui-scale, 1)) calc(12px * var(--runtime-ui-scale, 1));
+  min-height: calc(32px * var(--runtime-ui-scale, 1));
+  padding: calc(8px * var(--runtime-ui-scale, 1)) calc(12px * var(--runtime-ui-scale, 1));
   border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line));
   border-radius: 7px;
   background:
@@ -918,8 +1314,8 @@
   max-height: none;
   overflow: visible;
   font-family: var(--runtime-text-font-family, var(--runtime-ui-font-family, Inter, "Segoe UI", system-ui, sans-serif));
-  font-size: var(--runtime-dialog-layout-font-size, var(--runtime-dialog-font-size));
-  line-height: 1.58;
+  font-size: calc(var(--runtime-dialog-layout-font-size, var(--runtime-dialog-font-size)) * var(--runtime-preference-font-scale, 1));
+  line-height: calc(1.58 * var(--runtime-preference-line-spacing, 1));
   overflow-wrap: anywhere;
   word-break: break-word;
   hyphens: auto;
@@ -934,14 +1330,40 @@
   word-break: inherit;
 }
 
+.dialog-box.has-dialog-portrait {
+  /* The portrait follows the unchanged nameplate, which may straddle the
+     panel's top edge. Text retains its existing independent clipping. */
+  overflow: visible;
+}
+
+.dialog-box .dialog-portrait {
+  position: absolute;
+  left: var(--dialog-portrait-left, 0px);
+  top: var(--dialog-portrait-top, 0px);
+  width: var(--dialog-portrait-size, 0px);
+  height: var(--dialog-portrait-size, 0px);
+  object-fit: contain;
+  object-position: center;
+  /* Keep the dedicated portrait hit-testable beside an authored nameplate. */
+  z-index: var(--dialog-portrait-z, 3);
+}
+
+.dialog-box .dialog-portrait[data-portrait-ready="false"] {
+  visibility: hidden;
+}
+
 .dialog-text.has-layout-style {
   width: 100%;
   height: 100%;
   min-height: 0;
   max-height: none;
   overflow-x: hidden;
-  overflow-y: auto;
-  scrollbar-gutter: stable;
+  /* Ordinary dialogue fits the full line or paginates; it never scrolls.
+     Reserving a gutter only before pagination makes the same line alternate
+     between narrow/two-page and wide/one-page measurements in node previews,
+     feeding page-count updates back into React's synchronous layout effects. */
+  overflow-y: hidden;
+  scrollbar-gutter: auto;
 }
 
 .dialog-box[data-ui-frame-mode="image_owned"],
@@ -962,25 +1384,28 @@
 }
 
 .dialog-text.is-paginated {
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: hidden;
+  scrollbar-gutter: auto;
 }
+
 
 /* A custom skin may omit a continue-indicator component.  In that case the
  * absolutely positioned fallback must still have a deterministic safe area;
  * relying on its static position puts it over the first line of dialogue. */
-.dialog-box.has-child-layout > .continue-indicator:not(.ui-layouted) {
+.dialog-box.has-child-layout .continue-indicator:not(.ui-layouted) {
   right: 3%;
   bottom: 4%;
   z-index: 3;
 }
 
-.dialog-box.has-child-layout > .speaker:not(.ui-layouted) {
+.dialog-box.has-child-layout .speaker:not(.ui-layouted) {
   left: 3%;
   top: 6%;
   z-index: 3;
 }
 
-.dialog-box.has-child-layout > .dialog-text:not(.ui-layouted) {
+.dialog-box.has-child-layout .dialog-text:not(.ui-layouted) {
   left: 4%;
   top: 28%;
   width: 88%;
@@ -994,6 +1419,93 @@
   text-shadow: 0 1px 18px color-mix(in srgb, var(--runtime-dialog) 36%, transparent);
   display: flex;
   align-items: center;
+}
+
+.dialog-box.is-centered-narration {
+  --centered-narration-footer-inset: max(5vh, calc(28px * var(--runtime-ui-scale, 1)));
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-height: none;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  overflow: hidden;
+  text-align: center;
+}
+
+.dialog-box.is-centered-narration::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-color: color-mix(in srgb, black 78%, transparent);
+  background-image:
+    radial-gradient(circle at 50% 46%, color-mix(in srgb, var(--runtime-dialog-accent, var(--accent)) 8%, transparent), transparent 44%),
+    linear-gradient(180deg, color-mix(in srgb, black 16%, transparent), transparent 24% 76%, color-mix(in srgb, black 18%, transparent));
+  opacity: 0;
+  animation: centered-narration-dim-in var(--centered-narration-dim-duration, 280ms) var(--ease-in-out) forwards;
+}
+
+.dialog-box.is-centered-narration .dialog-text {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  right: auto;
+  bottom: auto;
+  z-index: 2;
+  width: 86%;
+  max-width: calc(980px * var(--runtime-ui-scale, 1));
+  height: 70%;
+  min-height: 0;
+  max-height: none;
+  margin: 0;
+  padding: clamp(12px, 2vw, 30px);
+  box-sizing: border-box;
+  overflow-x: hidden;
+  overflow-y: auto;
+  align-items: stretch;
+  justify-content: flex-start;
+  color: var(--runtime-dialog-text);
+  font-size: calc(clamp(
+    calc(18px * var(--runtime-ui-scale, 1)),
+    2.5vw,
+    calc(36px * var(--runtime-ui-scale, 1))
+  ) * var(--runtime-preference-font-scale, 1));
+  line-height: calc(1.7 * var(--runtime-preference-line-spacing, 1));
+  letter-spacing: 0.045em;
+  text-align: center;
+  text-wrap: balance;
+  transform: translate(-50%, -50%);
+  text-shadow:
+    0 2px 24px color-mix(in srgb, black 72%, transparent),
+    0 1px 1px color-mix(in srgb, black 82%, transparent);
+}
+
+.dialog-box.is-centered-narration .dialog-text > span {
+  display: block;
+  width: 100%;
+  margin-block: auto;
+}
+
+.dialog-box.is-centered-narration .continue-indicator {
+  position: absolute;
+  left: 50%;
+  top: auto;
+  right: auto;
+  bottom: var(--centered-narration-footer-inset);
+  z-index: 2;
+  margin: 0;
+  color: color-mix(in srgb, var(--runtime-dialog-text) 70%, transparent);
+  letter-spacing: 0.12em;
+  transform: translateX(-50%);
 }
 
 .continue-indicator {
@@ -1038,7 +1550,7 @@
   min-height: max(36px, calc(var(--runtime-touch-size) * 0.82));
   padding: var(--runtime-choice-local-padding, calc(8px * var(--runtime-ui-scale, 1)) calc(24px * var(--runtime-ui-scale, 1)));
   border: 1px solid var(--runtime-choice-local-border, color-mix(in srgb, var(--runtime-choice-local-accent, var(--runtime-choice, var(--accent))) 36%, transparent));
-  border-radius: var(--runtime-choice-local-radius, 999px);
+  border-radius: var(--runtime-choice-local-radius, var(--radius));
   background-color: var(--runtime-choice-local-bg, var(--runtime-choice, var(--accent)));
   background-image: var(--runtime-choice-option-background-image, linear-gradient(180deg, color-mix(in srgb, #fff 12%, transparent), transparent));
   background-size: var(--runtime-choice-option-background-size, auto);
@@ -1051,37 +1563,33 @@
   overflow-wrap: anywhere;
   text-wrap: balance;
   text-align: center;
-  line-height: 1.28;
-  font-size: var(--runtime-choice-local-font-size, var(--runtime-body-font-size));
+  line-height: calc(1.28 * var(--runtime-preference-line-spacing, 1));
+  font-size: calc(var(--runtime-choice-local-font-size, var(--runtime-body-font-size)) * var(--runtime-preference-font-scale, 1));
   font-weight: var(--runtime-choice-local-font-weight, 760);
   box-shadow: var(--runtime-choice-local-shadow, 0 10px 24px color-mix(in srgb, var(--runtime-choice-local-accent, var(--runtime-choice, var(--accent))) 14%, transparent));
   backdrop-filter: blur(8px);
+  opacity: 1;
   transition:
-    transform var(--motion-fast) var(--ease),
-    opacity var(--motion-fast) var(--ease),
-    border-color var(--control-focus-exit-duration) var(--ease),
-    background-color var(--control-focus-exit-duration) var(--ease),
-    box-shadow var(--control-focus-exit-duration) var(--ease);
+    opacity 140ms var(--ease),
+    border-color 140ms var(--ease),
+    background-color 140ms var(--ease),
+    box-shadow 140ms var(--ease);
   animation: choice-fade-in calc(var(--motion-emphasis) * var(--runtime-skin-motion-scale, 1)) var(--ease-emphasis) both;
   animation-delay: calc(var(--choice-delay, 0ms) * var(--runtime-skin-motion-scale, 1));
 }
 
-.choice-panel .ui-button.choice-option:hover:not(:disabled),
-.choice-panel .ui-button.choice-option:focus:not(:disabled),
-.choice-panel .ui-button.choice-option:focus-visible:not(:disabled) {
-  border-color: var(--runtime-choice-local-border, color-mix(in srgb, var(--runtime-choice-local-accent, var(--runtime-choice, var(--accent))) 36%, transparent));
-  background-color: var(--runtime-choice-local-bg, var(--runtime-choice, var(--accent)));
-  background-image: var(--runtime-choice-option-background-image, linear-gradient(180deg, color-mix(in srgb, #fff 12%, transparent), transparent));
-  color: var(--runtime-choice-local-text, var(--runtime-choice-text, #07111f));
-  box-shadow: var(--runtime-choice-local-shadow, 0 9px 20px color-mix(in srgb, var(--runtime-choice-local-accent, var(--runtime-choice, var(--accent))) 16%, transparent));
-  transform: scale(1.015);
-  transition-duration:
-    var(--motion-fast),
-    var(--motion-fast),
-    calc(420ms * var(--runtime-skin-motion-scale, 1)),
-    var(--control-focus-enter-duration),
-    var(--control-focus-enter-duration);
-  transition-timing-function: var(--ease-emphasis);
+.story-player.preference-high-contrast .dialog-text,
+.story-player.preference-high-contrast .speaker,
+.story-player.preference-high-contrast .nvl-page-text,
+.story-player.preference-high-contrast .nvl-page-speaker,
+.story-player.preference-high-contrast .choice-option {
+  /* This explicit player accessibility preference overrides author colors,
+     including inline styles. Turning it off restores the original styles. */
+  color: #fff !important;
+  text-shadow:
+    0 2px 2px #000,
+    0 0 6px #000,
+    0 0 12px #000;
 }
 
 .choice-panel .ui-button.choice-option:active:not(:disabled) {
@@ -1098,6 +1606,102 @@
   transform: none;
 }
 
+.choice-panel .ui-button.choice-option.is-rollback-selected {
+  outline: 2px solid color-mix(in srgb, var(--runtime-choice-local-accent, var(--accent)) 82%, white);
+  outline-offset: 3px;
+}
+
+.ui-skin-scope[data-layout-type="renpy"] .choice-panel .ui-button.choice-option[data-renpy-default-text-choice="true"] {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  color: var(--renpy-button-text-normal, var(--runtime-choice-local-text, var(--runtime-choice-text, #ffffff))) !important;
+  text-decoration: none;
+  text-decoration-color: currentColor;
+  text-underline-offset: 0.2em;
+  transition:
+    color 180ms var(--ease-out),
+    text-decoration-color 180ms var(--ease-out),
+    opacity 120ms var(--ease-out);
+}
+
+.ui-skin-scope[data-layout-type="renpy"] .choice-panel .ui-button.choice-option[data-renpy-default-text-choice="true"]:not(:disabled):is(:hover, :focus-visible) {
+  color: var(--renpy-button-text-hover, var(--runtime-control-active, var(--accent))) !important;
+  text-decoration-line: underline;
+  text-decoration-thickness: 2px;
+}
+
+.ui-skin-scope[data-layout-type="renpy"] .choice-panel .ui-button.choice-option[data-renpy-default-text-choice="true"][aria-current="true"],
+.ui-skin-scope[data-layout-type="renpy"] .choice-panel .ui-button.choice-option[data-renpy-default-text-choice="true"].is-rollback-selected {
+  color: var(--renpy-button-text-selected, var(--renpy-button-text-hover, var(--runtime-control-active, var(--accent)))) !important;
+  text-decoration-line: underline;
+  text-decoration-thickness: 2px;
+}
+
+.ui-skin-scope[data-layout-type="renpy"] .choice-panel .ui-button.choice-option[data-renpy-default-text-choice="true"]:disabled {
+  color: var(--renpy-button-text-disabled, var(--runtime-control-text, var(--ink))) !important;
+  text-decoration: none;
+  opacity: 0.58;
+}
+
+.ui-skin-scope[data-layout-type="renpy"] .choice-panel .ui-button.choice-option[data-renpy-default-text-choice="true"]:focus-visible:not(:disabled) {
+  text-decoration-style: double;
+}
+
+.ui-skin-scope[data-layout-type="renpy"] .choice-panel .ui-button.choice-option {
+  background-image: var(--renpy-choice-authored-image, var(--renpy-button-image-normal, none)) !important;
+  background-size: var(--renpy-button-background-size, 100% 100%);
+  background-repeat: var(--renpy-button-background-repeat, no-repeat);
+  background-position: center;
+  color: var(--renpy-button-text-normal, var(--runtime-choice-local-text, var(--runtime-choice-text, #07111f))) !important;
+}
+
+.ui-skin-scope[data-layout-type="renpy"] .choice-panel .ui-button.choice-option[data-renpy-button-frame="nine-slice"] {
+  border-style: solid;
+  border-width: var(--renpy-button-border-width) !important;
+  border-color: transparent;
+  border-image-source: var(--renpy-button-image-normal);
+  border-image-slice: var(--renpy-button-border-slice) fill;
+  border-image-width: var(--renpy-button-border-width);
+  border-image-repeat: var(--renpy-button-border-repeat, stretch);
+  background-image: none !important;
+}
+
+.ui-skin-scope[data-layout-type="renpy"] .choice-panel .ui-button.choice-option:hover:not(:disabled),
+.ui-skin-scope[data-layout-type="renpy"] .choice-panel .ui-button.choice-option:focus-visible:not(:disabled) {
+  background-image: var(--renpy-choice-authored-image, var(--renpy-button-image-hover, var(--renpy-button-image-normal, none))) !important;
+  color: var(--renpy-button-text-hover, var(--renpy-button-text-normal, var(--runtime-choice-local-text, var(--runtime-choice-text, #07111f)))) !important;
+}
+.ui-skin-scope[data-layout-type="renpy"] .choice-panel .ui-button.choice-option[data-renpy-button-frame="nine-slice"]:hover:not(:disabled),
+.ui-skin-scope[data-layout-type="renpy"] .choice-panel .ui-button.choice-option[data-renpy-button-frame="nine-slice"]:focus-visible:not(:disabled) {
+  border-image-source: var(--renpy-button-image-hover, var(--renpy-button-image-normal));
+  background-image: none !important;
+}
+
+.ui-skin-scope[data-layout-type="renpy"] .choice-panel .ui-button.choice-option[aria-current="true"],
+.ui-skin-scope[data-layout-type="renpy"] .choice-panel .ui-button.choice-option.is-rollback-selected {
+  background-image: var(--renpy-choice-authored-image, var(--renpy-button-image-selected, var(--renpy-button-image-hover, var(--renpy-button-image-normal, none)))) !important;
+  color: var(--renpy-button-text-selected, var(--renpy-button-text-hover, var(--renpy-button-text-normal, var(--runtime-choice-local-text, var(--runtime-choice-text, #07111f))))) !important;
+}
+.ui-skin-scope[data-layout-type="renpy"] .choice-panel .ui-button.choice-option[data-renpy-button-frame="nine-slice"][aria-current="true"],
+.ui-skin-scope[data-layout-type="renpy"] .choice-panel .ui-button.choice-option[data-renpy-button-frame="nine-slice"].is-rollback-selected {
+  border-image-source: var(--renpy-button-image-selected, var(--renpy-button-image-hover, var(--renpy-button-image-normal)));
+  background-image: none !important;
+}
+
+.ui-skin-scope[data-layout-type="renpy"] .choice-panel .ui-button.choice-option:disabled {
+  background-image: var(--renpy-choice-authored-image, var(--renpy-button-image-disabled, var(--renpy-button-image-normal, none))) !important;
+  color: var(--renpy-button-text-disabled, var(--renpy-button-text-normal, var(--runtime-choice-local-text, var(--runtime-choice-text, #07111f)))) !important;
+}
+.ui-skin-scope[data-layout-type="renpy"] .choice-panel .ui-button.choice-option[data-renpy-button-frame="nine-slice"]:disabled {
+  border-image-source: var(--renpy-button-image-disabled, var(--renpy-button-image-normal));
+  background-image: none !important;
+}
+
 .choice-panel.is-exiting .ui-button.choice-option {
   cursor: default;
   animation: choice-fade-out calc(180ms * var(--runtime-skin-motion-scale, 1)) var(--ease) both;
@@ -1106,132 +1710,6 @@
 
 .choice-panel.is-exiting .ui-button.choice-option:disabled {
   opacity: 1;
-}
-
-.playback-controls {
-  position: absolute;
-  display: inline-flex;
-  --runtime-quick-menu-padding: clamp(2px, calc(3px * var(--runtime-ui-scale, 1)), 6px);
-  --runtime-quick-menu-gap: clamp(2px, calc(3px * var(--runtime-ui-scale, 1)), 6px);
-  --runtime-quick-menu-gap-count: 8;
-  --runtime-quick-menu-slot-count: 9;
-  --runtime-quick-menu-layout-width: 480px;
-  --runtime-quick-menu-layout-height: 72px;
-  --runtime-quick-menu-inner-height: calc(var(--runtime-quick-menu-layout-height) - (var(--runtime-quick-menu-padding) * 2));
-  --runtime-quick-menu-width-button-max: calc((var(--runtime-quick-menu-layout-width) - (var(--runtime-quick-menu-padding) * 2) - (var(--runtime-quick-menu-gap) * var(--runtime-quick-menu-gap-count))) / var(--runtime-quick-menu-slot-count));
-  --runtime-quick-menu-button-size: max(18px, min(var(--runtime-quick-menu-width-button-max), var(--runtime-quick-menu-inner-height), calc(38px * var(--runtime-ui-scale, 1))));
-  gap: var(--runtime-quick-menu-gap);
-  flex-wrap: nowrap;
-  align-items: center;
-  align-content: start;
-  justify-content: center;
-  overflow: hidden;
-  z-index: var(--overlay-z-quick-menu);
-  padding: var(--runtime-quick-menu-padding);
-  border: 1px solid color-mix(in srgb, var(--line) 64%, transparent);
-  border-radius: 999px;
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--runtime-control-text) 11%, transparent), color-mix(in srgb, var(--runtime-control-hover) 28%, transparent)),
-    color-mix(in srgb, var(--runtime-quick-menu) 78%, transparent);
-  backdrop-filter: blur(16px) saturate(1.2);
-  box-shadow: 0 12px 32px color-mix(in srgb, var(--accent) 12%, transparent), inset 0 1px 0 color-mix(in srgb, var(--runtime-control-text) 14%, transparent);
-  opacity: 0.72;
-  transform: translateY(-2px);
-  transition:
-    opacity var(--motion) var(--ease),
-    background var(--motion) var(--ease),
-    transform var(--motion) var(--ease),
-    box-shadow var(--motion) var(--ease),
-    border-color var(--motion) var(--ease);
-}
-
-.playback-controls.ui-layouted {
-  width: max-content !important;
-  height: max-content !important;
-  min-width: 0;
-  box-sizing: border-box;
-  gap: var(--runtime-quick-menu-gap) !important;
-  padding: var(--runtime-quick-menu-padding) !important;
-  overflow: hidden !important;
-}
-
-.playback-controls:hover,
-.playback-controls:focus-within {
-  opacity: 1;
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--runtime-control-text) 14%, transparent), color-mix(in srgb, var(--runtime-control-hover) 40%, transparent)),
-    color-mix(in srgb, var(--runtime-quick-menu) 88%, transparent);
-  border-color: color-mix(in srgb, var(--runtime-focus) 40%, var(--line));
-  box-shadow: 0 16px 40px color-mix(in srgb, var(--accent) 16%, transparent), inset 0 1px 0 color-mix(in srgb, var(--runtime-control-text) 18%, transparent);
-  transform: translateY(0);
-}
-
-.playback-controls .ui-button.icon-button {
-  color: var(--runtime-control-text);
-  border-color: transparent;
-  background: color-mix(in srgb, var(--runtime-control) 70%, transparent);
-  flex: 0 0 var(--runtime-quick-menu-button-size);
-  width: var(--runtime-quick-menu-button-size);
-  height: var(--runtime-quick-menu-button-size);
-  min-width: 0;
-  min-height: 0;
-  max-width: var(--runtime-quick-menu-button-size);
-  max-height: var(--runtime-quick-menu-button-size);
-  aspect-ratio: 1 / 1;
-  padding: 0;
-  align-self: center;
-  flex-shrink: 0;
-}
-
-.playback-controls .ui-button.icon-button:hover:not(:disabled) {
-  color: var(--accent);
-  background: var(--runtime-control-hover);
-  box-shadow: 0 8px 22px color-mix(in srgb, var(--accent) 16%, transparent);
-}
-
-.playback-controls .ui-button.icon-button.active::after {
-  content: "";
-  position: absolute;
-  right: 7px;
-  top: 7px;
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  background: var(--runtime-control-active);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--runtime-control-active) 18%, transparent);
-}
-
-.preview-badge {
-  flex: 0 0 var(--runtime-quick-menu-button-size);
-  width: var(--runtime-quick-menu-button-size);
-  height: var(--runtime-quick-menu-button-size);
-  min-width: var(--runtime-quick-menu-button-size);
-  min-height: var(--runtime-quick-menu-button-size);
-  max-width: var(--runtime-quick-menu-button-size);
-  max-height: var(--runtime-quick-menu-button-size);
-  box-sizing: border-box;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border: 1px solid color-mix(in srgb, var(--accent-2) 42%, var(--line));
-  border-radius: 999px;
-  color: var(--accent-2);
-  background: color-mix(in srgb, var(--accent-2) 12%, transparent);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.game-entry-transition {
-  position: absolute;
-  inset: 0;
-  z-index: 15;
-  pointer-events: none;
-  display: grid;
-  place-items: center;
-  background:
-    radial-gradient(circle at center, color-mix(in srgb, var(--runtime-dialog) 82%, transparent), color-mix(in srgb, var(--runtime-dialog) 62%, transparent) 40%, color-mix(in srgb, var(--accent) 18%, transparent) 72%, transparent);
-  animation: game-entry-fade 980ms var(--ease-emphasis) both;
 }
 
 .animation-hint {
@@ -1254,12 +1732,6 @@
   will-change: auto;
 }
 
-.game-entry-transition.runtime-animation-settled {
-  animation: none;
-  opacity: 0;
-  backdrop-filter: none;
-}
-
 .choice-panel[data-ui-frame-mode="image_owned"] .ui-button.choice-option,
 .choice-panel .ui-button.choice-option[data-ui-frame-mode="image_owned"] {
   background-color: transparent !important;
@@ -1268,23 +1740,15 @@
   backdrop-filter: none !important;
 }
 
-.choice-panel[data-ui-frame-mode="image_owned"] .ui-button.choice-option:hover:not(:disabled),
 .choice-panel[data-ui-frame-mode="image_owned"] .ui-button.choice-option:focus-visible:not(:disabled),
 .choice-panel[data-ui-frame-mode="image_owned"] .ui-button.choice-option:active:not(:disabled),
-.choice-panel .ui-button.choice-option[data-ui-frame-mode="image_owned"]:hover:not(:disabled),
 .choice-panel .ui-button.choice-option[data-ui-frame-mode="image_owned"]:focus-visible:not(:disabled),
 .choice-panel .ui-button.choice-option[data-ui-frame-mode="image_owned"]:active:not(:disabled) {
   background-color: transparent !important;
-  background-image: var(--runtime-choice-option-background-image) !important;
   border: 0 !important;
   box-shadow: none !important;
   filter: none !important;
   transform: none !important;
-}
-
-.ui-skin-scope[data-ui-form-factor="handheld"] .playback-controls {
-  max-width: calc(100% - var(--runtime-safe-left) - var(--runtime-safe-right));
-  max-height: calc(100% - var(--runtime-safe-top) - var(--runtime-safe-bottom));
 }
 
 .cutscene-video-overlay {
@@ -1407,6 +1871,11 @@
   }
 }
 
+@keyframes centered-narration-dim-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 @keyframes choice-fade-in {
   from {
     opacity: 0;
@@ -1414,7 +1883,7 @@
     filter: blur(3px);
   }
   to {
-    opacity: 1;
+    opacity: var(--renpy-role-current-opacity, 1);
     transform: translateY(0) scale(1);
     filter: blur(0);
   }
@@ -1422,13 +1891,23 @@
 
 @keyframes choice-fade-out {
   from {
-    opacity: 1;
+    opacity: var(--renpy-role-current-opacity, 1);
     transform: translateY(0) scale(1);
   }
   to {
     opacity: 0;
     transform: translateY(-6px) scale(0.99);
   }
+}
+
+@keyframes choice-fade-in-reduced {
+  from { opacity: 0; }
+  to { opacity: var(--renpy-role-current-opacity, 1); }
+}
+
+@keyframes choice-fade-out-reduced {
+  from { opacity: var(--renpy-role-current-opacity, 1); }
+  to { opacity: 0; }
 }
 
 @keyframes runtime-hint-pop {
@@ -1445,12 +1924,6 @@
 @keyframes continue-pulse {
   0%, 100% { opacity: 0.42; transform: translateX(0); }
   50% { opacity: 0.74; transform: translateX(2px); }
-}
-
-@keyframes game-entry-fade {
-  0% { opacity: 1; backdrop-filter: blur(18px); }
-  62% { opacity: 1; backdrop-filter: blur(10px); }
-  100% { opacity: 0; backdrop-filter: blur(0); }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1477,16 +1950,26 @@
   .camera-shake,
   .sprite-slot.is-exiting,
   .sprite-slot img,
+  .sprite-placement-frame,
   .dialog-box,
-  .choice-panel .choice-option,
   .animation-hint,
-  .continue-indicator,
-  .game-entry-transition {
+  .continue-indicator {
     animation: none !important;
   }
 
-  .game-entry-transition {
-    display: none;
+  .choice-panel .ui-button.choice-option:not(.runtime-animation-settled) {
+    animation: choice-fade-in-reduced var(--motion-fast) var(--ease) both !important;
+    animation-delay: 0ms !important;
+  }
+
+  .choice-panel.is-exiting .ui-button.choice-option {
+    animation: choice-fade-out-reduced var(--motion-fast) var(--ease) both !important;
+    animation-delay: 0ms !important;
+  }
+
+  .choice-panel .ui-button.choice-option {
+    transform: none !important;
+    filter: none !important;
   }
 
   .sprite-focus-backdrop {
@@ -1508,3 +1991,20 @@
     animation: none !important;
   }
 }
+.story-interface {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity var(--motion) var(--ease-out);
+}
+.story-interface > :not(.runtime-custom-component-layer) { pointer-events: auto; }
+.story-interface[data-hidden="true"] {
+  opacity: 0;
+  pointer-events: none;
+}
+.story-interface[data-hidden="true"] * { pointer-events: none; }
+@media (prefers-reduced-motion: reduce) {
+  .story-interface { transition-duration: 160ms !important; }
+}
+

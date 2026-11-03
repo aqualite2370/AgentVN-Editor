@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "scripts": [
+    "verify-vncart.cjs",
+    "unpack-vncart.cjs",
+    "assert-windows-gui-subsystem.ps1",
+    "build-runtime-standalone-windows.cjs",
+    "build-runtime-standalone-android.cjs",
+    "build-runtime-standalone-android.ps1",
+    "android-runtime-activity.gradle",
+    "ensure-android-generated-project.cjs",
+    "capture-android-build-diagnostics.ps1",
+    "normalize-android-opening-audio.cjs",
+    "inspect-android-apk.cjs",
+    "android-acceptance-evidence.cjs",
+    "android-release-signing.ps1",
+    "resolve-msvc-environment.ps1",
+    "build-release-runtime-assets.cjs",
+    "prepare-runtime-compat-licenses.cjs",
+    "optimize-release-image.cjs",
+    "optimize-release-images-batch.cjs",
+    "subset-release-font.cjs",
+    "setup-android-build-env.ps1"
+  ]
+}

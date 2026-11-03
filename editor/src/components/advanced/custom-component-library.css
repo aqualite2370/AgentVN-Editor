@@ -1,0 +1,225 @@
+.custom-component-library {
+  container-type: inline-size;
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--line, #aeb9cc) 34%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-2, #192234) 72%, transparent);
+  color: var(--ink, #f6f8ff);
+}
+
+.custom-component-library > header,
+.custom-component-library-actions,
+.custom-component-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.custom-component-library h4,
+.custom-component-library h5,
+.custom-component-library p { margin: 0; }
+.custom-component-library > header output {
+  min-width: 0;
+  max-width: 58%;
+  color: var(--muted, #aeb9cc);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.custom-component-library > header p,
+.custom-component-library small { color: var(--muted, #aeb9cc); font-size: 12px; }
+.custom-component-library > header { flex-wrap: wrap; align-items: flex-start; }
+.custom-component-library > header > div { flex: 1 1 160px; }
+.custom-component-library > header output { flex: 1 1 180px; max-width: 100%; line-height: 1.5; }
+
+.custom-component-author {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
+}
+.custom-component-author > label:first-child,
+.custom-component-live-preview,
+.custom-component-author > button { grid-column: 1 / -1; }
+.custom-component-author label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--muted, #aeb9cc);
+  font-size: 12px;
+}
+.custom-component-dependencies > span {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px;
+  border: 1px solid color-mix(in srgb, var(--line, #aeb9cc) 24%, transparent);
+  border-radius: 6px;
+}
+.custom-component-field-label { color: var(--muted); font-size: 12px; }
+.custom-component-dependencies { display: grid; grid-column: 1 / -1; gap: 8px; min-width: 0; }
+.custom-component-dependencies > .custom-component-field-label { padding: 0; border: 0; }
+.custom-component-hidden-file { display: none; }
+.custom-component-dependencies code { overflow-wrap: anywhere; color: var(--ink-strong, #f6f8ff); }
+.custom-component-author input,
+.custom-component-author textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--line, #aeb9cc) 34%, transparent);
+  border-radius: 6px;
+  padding: 7px 8px;
+  background: var(--field);
+  color: var(--ink, #f6f8ff);
+  font: inherit;
+}
+.custom-component-author textarea {
+  min-height: 116px;
+  max-height: 240px;
+  resize: vertical;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  tab-size: 2;
+}
+.custom-component-live-preview {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  min-height: 72px;
+  padding: 10px;
+  border: 1px dashed color-mix(in srgb, var(--line, #aeb9cc) 48%, transparent);
+  border-radius: 8px;
+  overflow: auto;
+}
+.custom-component-live-preview ul { margin: 0; padding-left: 20px; color: var(--danger, #ff7d8a); }
+.custom-component-preview { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+/* Authored game controls are not Editor toolbar controls. Inline, validated
+   component declarations still win; undeclared properties use browser defaults
+   rather than the Editor's gradients, elevation, sizing and hover movement. */
+.custom-component-library .custom-component-preview button {
+  all: revert;
+  box-sizing: border-box;
+  font: inherit;
+  cursor: default;
+}
+.custom-component-author > button,
+.custom-component-dependencies button,
+.custom-component-library-actions button,
+.custom-component-file,
+.custom-component-list button {
+  min-width: 0;
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: var(--editor-control-radius, 8px);
+  padding: 8px 10px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--surface-2) 94%, var(--ink-strong) 6%), var(--field));
+  box-shadow: var(--control-shadow);
+  color: var(--ink-strong);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  transition: color 160ms var(--ease-ui-out), border-color 160ms var(--ease-ui-out), box-shadow 160ms var(--ease-ui-out);
+}
+.custom-component-library :is(.custom-component-author, .custom-component-library-actions, .custom-component-list) button:not(:where(.custom-component-preview *)):hover:not(:disabled),
+.custom-component-file:hover { border-color: var(--accent); }
+.custom-component-library-actions { flex-wrap: wrap; justify-content: flex-start; }
+.custom-component-library-actions > * { flex: 1 1 130px; justify-content: center; }
+.custom-component-list li { flex-wrap: wrap; gap: 8px; }
+.custom-component-library :is(button, input):focus-visible,
+.custom-component-library textarea:focus-visible,
+.custom-component-file:focus-within {
+  outline: 2px solid var(--accent, #82b6ff);
+  outline-offset: 2px;
+}
+.custom-component-author > button:disabled,
+.custom-component-dependencies button:disabled,
+.custom-component-library-actions button:disabled { opacity: .5; cursor: default; }
+.custom-component-file { display: inline-flex; align-items: center; }
+.custom-component-file input {
+  width: 1px;
+  height: 1px;
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.custom-component-list {
+  display: grid;
+  gap: 6px;
+  max-height: 220px;
+  overflow: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.custom-component-list li {
+  justify-content: flex-start;
+  padding: 6px;
+  border: 1px solid color-mix(in srgb, var(--line, #aeb9cc) 22%, transparent);
+  border-radius: 7px;
+}
+.custom-component-list li > label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1 0 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.custom-component-list li > button { flex: 1 1 70px; }
+.custom-component-saved-preview {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--line, #aeb9cc) 25%, transparent);
+}
+.custom-component-import-review {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent, #82b6ff) 40%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent, #82b6ff) 7%, transparent);
+}
+.custom-component-import-review > label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.custom-component-import-review select {
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid color-mix(in srgb, var(--line, #aeb9cc) 36%, transparent);
+  border-radius: 6px;
+  padding: 6px;
+  background: var(--bg, #060812);
+  color: var(--ink, #f6f8ff);
+}
+/* The workbench sidebar can be narrow inside a wide desktop viewport. */
+@container (max-width: 420px) {
+  .custom-component-author { grid-template-columns: minmax(0, 1fr); }
+  .custom-component-author > label:first-child,
+  .custom-component-live-preview,
+  .custom-component-author > button { grid-column: auto; }
+}
+@media (max-width: 720px) {
+  .custom-component-author { grid-template-columns: minmax(0, 1fr); }
+  .custom-component-author > label:first-child,
+  .custom-component-live-preview,
+  .custom-component-author > button { grid-column: auto; }
+  .custom-component-library-actions { flex-wrap: wrap; }
+  .custom-component-library > header { align-items: flex-start; flex-direction: column; }
+  .custom-component-library > header output { max-width: 100%; }
+}

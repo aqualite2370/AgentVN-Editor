@@ -1,0 +1,8 @@
+{
+  "applicationId": "com.agentvn.player",
+  "applicationName": "AgentVN Player",
+  "versionName": "0.1.0",
+  "versionCode": 1000,
+  "keyAlias": "agentvn-release",
+  "signingMode": "release"
+}

@@ -110,7 +110,6 @@ export function ProjectTimelinePanel({ onRestore }: ProjectTimelinePanelProps) {
     <section className="project-timeline-panel">
       <header>
         <div>
-          <span className="panel-kicker">项目时间线</span>
           <h3>时间线（最近 {projectTimelineRecentLimit} 次）</h3>
         </div>
         <button type="button" data-help-key="timeline.refresh" onClick={() => void refresh()}>
@@ -172,7 +171,6 @@ export function ProjectTimelinePanel({ onRestore }: ProjectTimelinePanelProps) {
             >
               <X size={16} aria-hidden="true" />
             </button>
-            <span className="panel-kicker">恢复备份</span>
             <h3 id="timeline-confirm-title">恢复这个时间点？</h3>
             <p>
               将用 <strong>{pendingRestore.title || "未命名视觉小说"}</strong> 在 {formatDate(pendingRestore.timestamp_ms)} 的备份覆盖当前工程。

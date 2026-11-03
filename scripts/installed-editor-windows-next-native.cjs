@@ -1,0 +1,12 @@
+"use strict";
+const fs = require("node:fs"), path = require("node:path"), assert = require("node:assert/strict");
+const Module = require("node:module"), vm = require("node:vm");
+const { sha } = require("./lib/installed-runtime-session.cjs");
+const template = path.join(__dirname, "installed-editor-windows-versioned-native.cjs");
+assert.equal(sha(template), "0c4741cda9fb3134b4393056b3c7c250d29d67307f606379f818345289968e2f");
+let source = fs.readFileSync(template, "utf8");
+assert.equal(source.split("lib/windows-upgrade-fixture-policy.cjs").length - 1, 2);
+source = source.replaceAll("lib/windows-upgrade-fixture-policy.cjs", "lib/windows-next-upgrade-fixture.cjs");
+new vm.Script(Module.wrap(source));
+const worker = new Module(__filename, module); worker.filename = __filename; worker.paths = module.paths;
+worker._compile(source, __filename);

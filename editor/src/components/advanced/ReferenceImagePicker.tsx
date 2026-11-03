@@ -36,7 +36,7 @@ export function ReferenceImagePicker({ images, onChange }: { images: ReferenceIm
       <h3>参考图</h3>
       <label className="file-button" data-help-key="asset.reference">
         选择参考图片
-        <input type="file" accept="image/*" multiple onChange={(event) => {
+        <input data-help-key="editor.control" type="file" accept="image/*" multiple onChange={(event) => {
           const files = [...(event.target.files ?? [])];
           const next = files.map((file) => ({
             image_id: `ref_${nanoid(8)}`,

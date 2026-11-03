@@ -26,6 +26,8 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { RuntimePreviewMask } from "../common/RuntimePreviewMask";
+import { GlassSelectionGroup } from "../common/GlassSelectionGroup";
+import { RangeControl } from "../common/RangeControl";
 import { RichSelect } from "../common/RichSelect";
 import { useRuntimePreviewTransition } from "../../hooks/useRuntimePreviewTransition";
 import type { CameraCommand, GameCommand } from "../../types/commands";
@@ -84,6 +86,8 @@ interface VisibleSprite {
   characterId: string;
   spriteId: string;
   position: string;
+  offsetX: number;
+  offsetY: number;
   scale: number;
 }
 
@@ -158,6 +162,8 @@ function visibleSpritesBefore(commands: GameCommand[], commandIndex: number): Vi
       characterId: command.character_id,
       spriteId: command.sprite_id || previous?.spriteId || "",
       position: command.position ?? previous?.position ?? "center",
+      offsetX: command.offset_x ?? previous?.offsetX ?? 0,
+      offsetY: command.offset_y ?? previous?.offsetY ?? 0,
       scale: command.scale ?? previous?.scale ?? 1,
     });
   }
@@ -385,7 +391,7 @@ export function CameraStudioDialog({
     window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false,
   );
   const [runtimeStatus, setRuntimeStatus] = useState<"connecting" | "ready" | "error">("connecting");
-  const [runtimeMessage, setRuntimeMessage] = useState("正在连接真实 GameCLI…");
+  const [runtimeMessage, setRuntimeMessage] = useState("正在连接预览…");
   const [runtimeExpanded, setRuntimeExpanded] = useState(false);
   const [runtimeMinimized, setRuntimeMinimized] = useState(false);
   const [runtimeDockWidth, setRuntimeDockWidth] = useState(() => {
@@ -408,11 +414,11 @@ export function CameraStudioDialog({
   const spritePreviewRefs = useRef(new Map<string, HTMLImageElement>());
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(document.activeElement as HTMLElement | null);
-  const animationRef = useRef<number>();
+  const animationRef = useRef<number | undefined>(undefined);
   const startedAtRef = useRef(performance.now());
   const startPlayheadRef = useRef(0);
-  const announceTimerRef = useRef<number>();
-  const syncTimerRef = useRef<number>();
+  const announceTimerRef = useRef<number | undefined>(undefined);
+  const syncTimerRef = useRef<number | undefined>(undefined);
   const syncRevisionRef = useRef(0);
   const syncSessionRef = useRef(globalThis.crypto?.randomUUID?.() ?? `camera-studio-${Date.now()}`);
   const syncRunRef = useRef(0);
@@ -1119,7 +1125,7 @@ export function CameraStudioDialog({
   async function initializeRuntimePreview() {
     if (!iframeRef.current?.contentWindow) return;
     setRuntimeStatus("connecting");
-    setRuntimeMessage("正在连接真实 GameCLI…");
+    setRuntimeMessage("正在连接预览…");
     try {
       if (pathCandidates.length > 1 && !selectedPath && !usingSceneDefault) {
         throw new Error("这个场景有多个进入路线，请先选择要预览的路线。");
@@ -1139,6 +1145,7 @@ export function CameraStudioDialog({
         projectAssets: manifestAssetsFromProjectAssets(currentProject.assetManifest),
         projectAssetRefs: currentProject.assetManifest,
         uiSkin: currentProject.settings.runtimeUILayout,
+        uiLayoutProfiles: currentProject.settings.runtimeUILayoutProfiles,
         packageAppearance: currentProject.settings.packageAppearance,
         characterDialogStyles: currentProject.settings.characterDialogStyles,
       });
@@ -1164,7 +1171,7 @@ export function CameraStudioDialog({
     } catch (error) {
       reportFrontendError("editor.camera-preview", error, { operation: "initialize-runtime-preview" });
       setRuntimeStatus("error");
-      setRuntimeMessage(error instanceof Error ? error.message : "真实预览连接失败。");
+      setRuntimeMessage(error instanceof Error ? error.message : "预览连接失败。");
     }
   }
 
@@ -1215,7 +1222,7 @@ export function CameraStudioDialog({
         setRuntimeMessage(event.data.message);
       } else {
         setRuntimeStatus("ready");
-        setRuntimeMessage("真实演出已同步");
+        setRuntimeMessage("预览已同步");
         runtimeTransition.markReady();
       }
     }
@@ -1319,11 +1326,10 @@ export function CameraStudioDialog({
       >
         <header className="camera-studio-header">
           <div>
-            <span className="camera-studio-kicker">运镜工作室</span>
             <h2 id="camera-studio-title">{motionName(draft.motion.kind)}</h2>
             <p>只移动剧情世界层，对白、选项和系统界面会保持固定。</p>
           </div>
-          <button type="button" className="camera-studio-close" onClick={closeStudio} aria-label="关闭运镜工作室">
+          <button data-help-key="editor.control" type="button" className="camera-studio-close" onClick={closeStudio} aria-label="关闭运镜工作室">
             <X size={18} />
           </button>
         </header>
@@ -1354,7 +1360,7 @@ export function CameraStudioDialog({
                   <small>不同路线可能继承不同机位；路线失效时也可以明确改用单场景默认机位。</small>
                   <div className="camera-path-poses" aria-label="各路线继承机位">
                     {pathPoseSummaries.map((candidate, index) => (
-                      <button
+                      <button data-help-key="editor.control"
                         type="button"
                         key={candidate.id}
                         className={selectedPath?.id === candidate.id ? "is-active" : ""}
@@ -1380,18 +1386,19 @@ export function CameraStudioDialog({
             </section>
             <section>
               <h3>动作</h3>
-              <div className="camera-kind-grid">
+              <GlassSelectionGroup className="camera-kind-grid" selectedKey={draft.motion.kind === "sequence" ? "reframe" : draft.motion.kind}>
                 {(["reframe", "reset", "shake", "impact"] as const).map((kind) => (
-                  <button
+                  <button data-help-key="editor.control"
                     type="button"
                     key={kind}
                     className={draft.motion.kind === kind || (kind === "reframe" && draft.motion.kind === "sequence") ? "is-active" : ""}
+                    data-glass-selected={draft.motion.kind === kind || (kind === "reframe" && draft.motion.kind === "sequence")}
                     onClick={() => selectKind(kind)}
                   >
                     {motionName(kind)}
                   </button>
                 ))}
-              </div>
+              </GlassSelectionGroup>
             </section>
 
             {(reframeMotion || sequenceMotion) && (
@@ -1399,21 +1406,21 @@ export function CameraStudioDialog({
                 <section>
                   <h3>快速构图</h3>
                   <div className="camera-preset-grid">
-                    <button type="button" onClick={() => applyPush(1.12)}>轻推</button>
-                    <button type="button" onClick={() => applyPush(1.32)}>深推</button>
-                    <button
+                    <button data-help-key="editor.control" type="button" onClick={() => applyPush(1.12)}>轻推</button>
+                    <button data-help-key="editor.control" type="button" onClick={() => applyPush(1.32)}>深推</button>
+                    <button data-help-key="editor.control"
                       type="button"
                       onClick={() => sequenceMotion ? updatePose(DEFAULT_CAMERA_POSE) : selectKind("reset")}
                     >
                       拉回全景
                     </button>
-                    <button type="button" onClick={() => applyPan(-1, 0)}>向左平移</button>
-                    <button type="button" onClick={() => applyPan(1, 0)}>向右平移</button>
-                    <button type="button" onClick={() => applyPan(0, -1)}>向上平移</button>
-                    <button type="button" onClick={() => applyPan(0, 1)}>向下平移</button>
+                    <button data-help-key="editor.control" type="button" onClick={() => applyPan(-1, 0)}>向左平移</button>
+                    <button data-help-key="editor.control" type="button" onClick={() => applyPan(1, 0)}>向右平移</button>
+                    <button data-help-key="editor.control" type="button" onClick={() => applyPan(0, -1)}>向上平移</button>
+                    <button data-help-key="editor.control" type="button" onClick={() => applyPan(0, 1)}>向下平移</button>
                   </div>
                   {reframeMotion && (
-                    <button
+                    <button data-help-key="editor.control"
                       type="button"
                       className="camera-sequence-entry"
                       onClick={addSequenceShot}
@@ -1431,9 +1438,9 @@ export function CameraStudioDialog({
                         <div key={sprite.characterId}>
                           <strong>{sprite.characterId}</strong>
                           <span>
-                            <button type="button" onClick={() => focusCharacter(sprite, 1.1)}>环境</button>
-                            <button type="button" onClick={() => focusCharacter(sprite, 1.25)}>中景</button>
-                            <button type="button" onClick={() => focusCharacter(sprite, 1.5)}>近景</button>
+                            <button data-help-key="editor.control" type="button" onClick={() => focusCharacter(sprite, 1.1)}>环境</button>
+                            <button data-help-key="editor.control" type="button" onClick={() => focusCharacter(sprite, 1.25)}>中景</button>
+                            <button data-help-key="editor.control" type="button" onClick={() => focusCharacter(sprite, 1.5)}>近景</button>
                           </span>
                         </div>
                       ))}
@@ -1443,15 +1450,15 @@ export function CameraStudioDialog({
                 <section className="camera-number-grid">
                   <label>
                     横向中心
-                    <input type="number" min="0" max="1" step="0.01" value={targetPose.center_x} onChange={(event) => updatePose({ ...targetPose, center_x: Number(event.target.value) })} />
+                    <input data-help-key="editor.control" type="number" min="0" max="1" step="0.01" value={targetPose.center_x} onChange={(event) => updatePose({ ...targetPose, center_x: Number(event.target.value) })} />
                   </label>
                   <label>
                     纵向中心
-                    <input type="number" min="0" max="1" step="0.01" value={targetPose.center_y} onChange={(event) => updatePose({ ...targetPose, center_y: Number(event.target.value) })} />
+                    <input data-help-key="editor.control" type="number" min="0" max="1" step="0.01" value={targetPose.center_y} onChange={(event) => updatePose({ ...targetPose, center_y: Number(event.target.value) })} />
                   </label>
                   <label>
                     缩放倍数
-                    <input
+                    <input data-help-key="editor.control"
                       type="number"
                       min={advanced ? 0.5 : 1}
                       max={advanced ? 4 : 2.5}
@@ -1468,15 +1475,15 @@ export function CameraStudioDialog({
               <section className="camera-number-grid">
                 <label>
                   强度
-                  <input
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.01"
+                  <RangeControl
+                    ariaLabel="运镜强度"
+                    min={0}
+                    max={1}
+                    step={0.01}
                     value={impulseMotion.intensity}
-                    onChange={(event) => setDraft((current) => (
+                    onChange={(intensity) => setDraft((current) => (
                       current.motion.kind === "shake" || current.motion.kind === "impact"
-                        ? { ...current, motion: { ...current.motion, intensity: Number(event.target.value) } }
+                        ? { ...current, motion: { ...current.motion, intensity } }
                         : current
                     ))}
                   />
@@ -1529,7 +1536,7 @@ export function CameraStudioDialog({
             <section className="camera-number-grid">
               <label>
                 时长（毫秒）
-                <input
+                <input data-help-key="editor.control"
                   type="number"
                   min="0"
                   max={draft.motion.kind === "reframe" || draft.motion.kind === "sequence" || draft.motion.kind === "reset" ? 10000 : 3000}
@@ -1576,7 +1583,7 @@ export function CameraStudioDialog({
                   ] as const).map(([label, index, minimum, maximum]) => (
                     <label key={label}>
                       {label}
-                      <input
+                      <input data-help-key="editor.control"
                         type="number"
                         min={minimum}
                         max={maximum}
@@ -1593,13 +1600,13 @@ export function CameraStudioDialog({
                 <p className="camera-sequence-blocking-note">连续运镜会完整播放后再继续剧情。</p>
               ) : (
                 <label className="camera-check-row">
-                  <input type="checkbox" checked={draft.blocking} onChange={(event) => setDraft({ ...draft, blocking: event.target.checked })} />
+                  <input data-help-key="editor.control" type="checkbox" checked={draft.blocking} onChange={(event) => setDraft({ ...draft, blocking: event.target.checked })} />
                   等镜头结束再继续剧情
                 </label>
               )}
               {(draft.motion.kind === "reframe" || draft.motion.kind === "sequence") && (
                 <label className="camera-check-row">
-                <input
+                <input data-help-key="editor.control"
                   type="checkbox"
                   checked={advanced}
                   onChange={(event) => {
@@ -1663,7 +1670,11 @@ export function CameraStudioDialog({
                       alt=""
                       data-camera-character-id={sprite.characterId}
                       className={`camera-stage-sprite is-${sprite.position}`}
-                      style={{ "--sprite-scale": sprite.scale } as CSSProperties}
+                      style={{
+                        "--sprite-scale": sprite.scale,
+                        "--sprite-offset-x": `${sprite.offsetX}%`,
+                        "--sprite-offset-y": `${sprite.offsetY}%`,
+                      } as CSSProperties}
                     />
                   ) : null;
                 })}
@@ -1703,7 +1714,7 @@ export function CameraStudioDialog({
                           ["south-west", "左下角"],
                           ["south-east", "右下角"],
                         ] as const).map(([corner, label]) => (
-                          <button
+                          <button data-help-key="editor.control"
                             type="button"
                             key={corner}
                             className={`camera-frame-handle is-${corner}`}
@@ -1760,7 +1771,7 @@ export function CameraStudioDialog({
                       ["south-west", "左下角"],
                       ["south-east", "右下角"],
                     ] as const).map(([corner, label]) => (
-                      <button
+                      <button data-help-key="editor.control"
                         type="button"
                         key={corner}
                         className={`camera-frame-handle is-${corner}`}
@@ -1823,7 +1834,7 @@ export function CameraStudioDialog({
                         onDragOver={(event) => event.preventDefault()}
                         onDrop={(event) => sequenceDrop(event, index)}
                       >
-                        <button
+                        <button data-help-key="editor.control"
                           type="button"
                           className="camera-shot-select"
                           onClick={() => selectSequenceShot(index)}
@@ -1844,7 +1855,7 @@ export function CameraStudioDialog({
                           <span>镜头 {index + 1}</span>
                           <small>{(shot.duration_ms / 1000).toFixed(2)}s</small>
                         </button>
-                        <button
+                        <button data-help-key="editor.control"
                           type="button"
                           className="camera-shot-delete"
                           onClick={() => deleteSequenceShot(index)}
@@ -1854,7 +1865,7 @@ export function CameraStudioDialog({
                         </button>
                       </div>
                     ))}
-                    <button
+                    <button data-help-key="editor.control"
                       type="button"
                       className="camera-shot-add"
                       onClick={addSequenceShot}
@@ -1877,13 +1888,13 @@ export function CameraStudioDialog({
               )}
                 </div>
                 {runtimeMinimized && (
-                  <button
+                  <button data-help-key="editor.control"
                     ref={runtimeRestoreButtonRef}
                     type="button"
                     className="camera-runtime-restore"
                     onClick={restoreRuntimePreview}
                   >
-                    <MonitorPlay size={15} /> 真实预览
+                    <MonitorPlay size={15} /> 预览
                   </button>
                 )}
               </div>
@@ -1893,7 +1904,7 @@ export function CameraStudioDialog({
                   className="camera-runtime-divider"
                   role="separator"
                   tabIndex={0}
-                  aria-label="调整真实预览大小"
+                  aria-label="调整预览大小"
                   aria-orientation={window.innerWidth >= runtimeDockBreakpoint ? "vertical" : "horizontal"}
                   aria-valuemin={window.innerWidth >= runtimeDockBreakpoint ? 260 : 180}
                   aria-valuemax={window.innerWidth >= runtimeDockBreakpoint ? 720 : 520}
@@ -1909,50 +1920,52 @@ export function CameraStudioDialog({
                 <aside
                   ref={runtimeShellRef}
                   className={`camera-runtime-pip is-${runtimeStatus}${runtimeExpanded ? " is-expanded" : ""} is-transition-${runtimeTransition.phase}`}
-                  aria-label="真实 GameCLI 预览"
+                  aria-label="GameCLI 预览"
                 >
                   <header>
-                    <span><Maximize2 size={14} /> 真实 GameCLI</span>
+                    <span><Maximize2 size={14} /> GameCLI</span>
                     <div>
-                      <button type="button" onClick={minimizeRuntimePreview} aria-label="最小化真实 GameCLI 预览">
+                      <button data-help-key="editor.control" type="button" onClick={minimizeRuntimePreview} aria-label="最小化 GameCLI 预览">
                         <Minimize2 size={13} /> 最小化
                       </button>
-                      <button
+                      <button data-help-key="editor.control"
                         type="button"
                         onClick={toggleRuntimeExpanded}
-                        aria-label={runtimeExpanded ? "还原真实 GameCLI 预览" : "放大真实 GameCLI 预览"}
+                        aria-label={runtimeExpanded ? "还原 GameCLI 预览" : "放大 GameCLI 预览"}
                       >
                         {runtimeExpanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
                         {runtimeExpanded ? "还原" : "放大"}
                       </button>
-                      <button type="button" onClick={runtimeTransition.forceReload}><RefreshCw size={13} /> 重新连接</button>
+                      <button data-help-key="editor.control" type="button" onClick={runtimeTransition.forceReload}><RefreshCw size={13} /> 重新连接</button>
                     </div>
                   </header>
                   {legacyComparisonCommand && (
-                    <div className="camera-runtime-comparison" role="group" aria-label="转换前新旧效果对比">
+                    <GlassSelectionGroup className="camera-runtime-comparison" role="group" ariaLabel="转换前新旧效果对比" selectedKey={runtimeComparison}>
                       <span>转换前对比</span>
-                      <button
+                      <button data-help-key="editor.control"
                         type="button"
                         className={runtimeComparison === "structured" ? "is-active" : ""}
+                        data-glass-selected={runtimeComparison === "structured"}
                         aria-pressed={runtimeComparison === "structured"}
                         onClick={() => setRuntimeComparison("structured")}
                       >
                         新版运镜
                       </button>
-                      <button
+                      <button data-help-key="editor.control"
                         type="button"
                         className={runtimeComparison === "legacy" ? "is-active" : ""}
+                        data-glass-selected={runtimeComparison === "legacy"}
                         aria-pressed={runtimeComparison === "legacy"}
                         onClick={() => setRuntimeComparison("legacy")}
                       >
                         旧版整屏效果
                       </button>
-                    </div>
+                    </GlassSelectionGroup>
                   )}
                   <div className="camera-runtime-frame">
                     <iframe
                       ref={iframeRef}
-                      title="运镜真实演出预览"
+                      title="运镜预览"
                       src={runtimePreviewUrl}
                       onLoad={() => {
                         initializedRef.current = false;
@@ -1971,7 +1984,7 @@ export function CameraStudioDialog({
             </div>
 
             <div className="camera-playback-bar">
-              <button
+              <button data-help-key="editor.control"
                 type="button"
                 onClick={() => {
                   if (!playing && sequenceMotion) {
@@ -1989,7 +2002,7 @@ export function CameraStudioDialog({
               >
                 {playing ? <Pause size={16} /> : <Play size={16} />}
               </button>
-              <button type="button" onClick={() => { resetPlayback(); sendRuntimeControl("replay"); }} aria-label="重播运镜"><RotateCcw size={16} /></button>
+              <button data-help-key="editor.control" type="button" onClick={() => { resetPlayback(); sendRuntimeControl("replay"); }} aria-label="重播运镜"><RotateCcw size={16} /></button>
               <label>
                 播放位置
                 <span className={`camera-playback-track${sequenceMotion ? " is-sequence" : ""}`}>
@@ -2008,24 +2021,25 @@ export function CameraStudioDialog({
                       })}
                     </span>
                   )}
-                  <input
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.001"
+                  <RangeControl
+                    ariaLabel="运镜播放位置"
+                    className="camera-playback-range"
+                    min={0}
+                    max={1}
+                    step={0.001}
                     value={playhead}
-                    onChange={(event) => { setPlaying(false); setPlayhead(Number(event.target.value)); }}
-                    onPointerUp={() => sendRuntimeControl("replay")}
-                    onKeyUp={() => sendRuntimeControl("replay")}
+                    onChange={(value) => { setPlaying(false); setPlayhead(value); }}
+                    onCommit={() => sendRuntimeControl("replay")}
                   />
                 </span>
               </label>
-              <div className="camera-speed-group" aria-label="预览速度">
+              <GlassSelectionGroup className="camera-speed-group" ariaLabel="预览速度" selectedKey={playbackRate}>
                 {([0.5, 1, 2] as const).map((rate) => (
-                  <button
+                  <button data-help-key="editor.control"
                     type="button"
                     key={rate}
                     className={playbackRate === rate ? "is-active" : ""}
+                    data-glass-selected={playbackRate === rate}
                     onClick={() => {
                       setPlaybackRate(rate);
                       sendRuntimeControl("set_playback_rate", rate);
@@ -2034,9 +2048,9 @@ export function CameraStudioDialog({
                     {rate}×
                   </button>
                 ))}
-              </div>
+              </GlassSelectionGroup>
               <label className="camera-check-row">
-                <input type="checkbox" checked={reducedPreview} onChange={(event) => setReducedPreview(event.target.checked)} />
+                <input data-help-key="editor.control" type="checkbox" checked={reducedPreview} onChange={(event) => setReducedPreview(event.target.checked)} />
                 低动态演出
               </label>
             </div>
@@ -2052,8 +2066,8 @@ export function CameraStudioDialog({
         </div>
 
         <footer className="camera-studio-footer">
-          <button type="button" className="camera-studio-cancel" onClick={closeStudio}>取消</button>
-          <button type="button" className="camera-studio-apply" onClick={() => onApply(draft)}>应用运镜</button>
+          <button data-help-key="editor.control" type="button" className="camera-studio-cancel" onClick={closeStudio}>取消</button>
+          <button data-help-key="editor.control" type="button" className="camera-studio-apply" onClick={() => onApply(draft)}>应用运镜</button>
         </footer>
         <p className="sr-only" aria-live="polite">{announceText}</p>
       </section>

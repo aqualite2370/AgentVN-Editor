@@ -16,6 +16,7 @@ export interface AssetMetadata {
   filename?: string;
   mime_type?: string;
   size_bytes?: number;
+  hash_sha256?: string;
   width?: number;
   height?: number;
   duration_ms?: number;
@@ -25,10 +26,16 @@ export interface AssetMetadata {
   license_note?: string;
   blob_url?: string;
   data_url?: string;
+  /**
+   * Ephemeral in-memory bytes used by trusted desktop/project-container export
+   * pipelines. Never persisted into .vnproj JSON or runtime manifests.
+   */
+  bytes?: Uint8Array;
   project_path?: string;
   path?: string;
   filePath?: string;
   url?: string;
+  backend_asset_path?: string;
   character_name?: string;
   character_id?: string;
   provider_id?: string;
@@ -45,7 +52,7 @@ export interface AssetRef {
   metadata: AssetMetadata;
 }
 
-export type PendingAssetKind = "background" | "sprite" | "portrait" | "audio" | "performance";
+export type PendingAssetKind = "background" | "sprite" | "portrait" | "audio" | "performance" | "resource";
 
 export interface PendingVisualAsset {
   id: string;

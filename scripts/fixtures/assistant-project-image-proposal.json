@@ -1,0 +1,17 @@
+{
+  "scope": "Controlled external-model response fixture; NOT a recorded real-model result",
+  "process": {
+    "result": {
+      "components": [
+        {
+          "name": "工程图片受控组件",
+          "description": "仅核对打包接口授权和原生工具传输",
+          "html": "<div class=\"root\"><img class=\"image\" data-asset=\"project-asset-1\" /></div>",
+          "css": ".root { display: flex; } .image { width: 24px; height: 24px; }",
+          "screen_id": "title"
+        }
+      ],
+      "edits": []
+    }
+  }
+}

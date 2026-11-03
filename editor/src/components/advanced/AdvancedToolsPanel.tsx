@@ -6,24 +6,28 @@ import { putImportedAssetsInFolder } from "../../utils/assetLibraryInteractions"
 import { generatedAssetToAssetRef } from "../../utils/projectAssets";
 import type { AdvancedToolsRequest, AdvancedToolsTab } from "./advancedToolsBridge";
 import { reportFrontendError } from "../../../../shared/logging/frontendErrorLogger";
+import { GlassSelectionGroup } from "../common/GlassSelectionGroup";
+import { readViewportMetrics, subscribeToViewportChanges } from "../../utils/viewportMetrics";
+import type { RuntimeLayoutDesignerSession } from "./RuntimeLayoutDesigner";
+import { awaitModuleLoad, recoverableComponentLoader } from "../../utils/recoverableModuleLoader";
+import { editorWorkspaceDuration, readEditorMotionTokens, type EditorMotionTokens } from "../../utils/editorTransitionPresentation";
 
 type AdvancedTabLoader = () => Promise<{ default: ComponentType<any> }>;
 
 const advancedTabLoaders: Record<AdvancedToolsTab, AdvancedTabLoader> = {
-  settings: () => import("./ProjectSettingsPanel").then((module) => ({ default: module.ProjectSettingsPanel })),
-  layout: () => import("./RuntimeLayoutDesigner").then((module) => ({ default: module.RuntimeLayoutDesigner })),
-  theme: () => import("./RuntimeThemeDesigner").then((module) => ({ default: module.RuntimeThemeDesigner })),
-  novel: () => import("../novel-import/NovelImportWizard").then((module) => ({ default: module.NovelImportWizard })),
-  assets: () => import("./AssetGenerationPanel").then((module) => ({ default: module.AssetGenerationPanel })),
-  library: () => import("./AssetLibraryPanel").then((module) => ({ default: module.AssetLibraryPanel })),
-  animation: () => import("./AnimationEditorPanel").then((module) => ({ default: module.AnimationEditorPanel })),
-  preview: () => import("./PreviewWindowControls").then((module) => ({ default: module.PreviewWindowControls })),
-  providers: () => import("./ProviderSettingsPanel").then((module) => ({ default: module.ProviderSettingsPanel })),
-  history: () => import("./GenerationHistoryPanel").then((module) => ({ default: module.GenerationHistoryPanel })),
+  settings: recoverableComponentLoader(() => import("./ProjectSettingsPanel"), (module) => module.ProjectSettingsPanel),
+  layout: recoverableComponentLoader(() => import("./RuntimeLayoutDesigner"), (module) => module.RuntimeLayoutDesigner),
+  theme: recoverableComponentLoader(() => import("./RuntimeThemeDesigner"), (module) => module.RuntimeThemeDesigner),
+  novel: recoverableComponentLoader(() => import("../novel-import/NovelImportWizard"), (module) => module.NovelImportWizard),
+  assets: recoverableComponentLoader(() => import("./AssetGenerationPanel"), (module) => module.AssetGenerationPanel),
+  library: recoverableComponentLoader(() => import("./AssetLibraryPanel"), (module) => module.AssetLibraryPanel),
+  animation: recoverableComponentLoader(() => import("./AnimationEditorPanel"), (module) => module.AnimationEditorPanel),
+  preview: recoverableComponentLoader(() => import("./PreviewWindowControls"), (module) => module.PreviewWindowControls),
+  providers: recoverableComponentLoader(() => import("./ProviderSettingsPanel"), (module) => module.ProviderSettingsPanel),
+  history: recoverableComponentLoader(() => import("./GenerationHistoryPanel"), (module) => module.GenerationHistoryPanel),
 };
 
 const advancedTabPreloads = new Map<AdvancedToolsTab, ReturnType<AdvancedTabLoader>>();
-
 function preloadAdvancedTab(tab: AdvancedToolsTab): ReturnType<AdvancedTabLoader> {
   const cached = advancedTabPreloads.get(tab);
   if (cached) return cached;
@@ -39,6 +43,10 @@ function preloadAdvancedTab(tab: AdvancedToolsTab): ReturnType<AdvancedTabLoader
   return promise;
 }
 
+export function preloadWorkspaceOptions() {
+  return Promise.all([preloadAdvancedTab("settings"), preloadAdvancedTab("providers")]);
+}
+
 const NovelImportWizard = memo(lazy(() => preloadAdvancedTab("novel")));
 const AnimationEditorPanel = memo(lazy(() => preloadAdvancedTab("animation")));
 const AssetGenerationPanel = memo(lazy(() => preloadAdvancedTab("assets")));
@@ -52,7 +60,7 @@ const RuntimeThemeDesigner = memo(lazy(() => preloadAdvancedTab("theme")));
 
 const tabLabels: Record<AdvancedToolsTab, string> = {
   settings: "项目设置",
-  layout: "客户端布局",
+  layout: "游戏客户端",
   theme: "客户端主题",
   novel: "小说导入",
   assets: "素材生成",
@@ -63,16 +71,16 @@ const tabLabels: Record<AdvancedToolsTab, string> = {
   history: "生成历史",
 };
 
-const visibleAdvancedTabs = (Object.keys(tabLabels) as AdvancedToolsTab[]).filter((item) => item !== "novel" && item !== "history");
+const visibleAdvancedTabs: AdvancedToolsTab[] = [
+  "settings", "layout", "theme", "assets", "library", "animation", "providers", "history",
+];
 
-type TabTransitionPhase = "idle" | "entering";
-type AdvancedLayoutModeOptions = { animate?: boolean };
-type AdvancedTabSwitchOptions = { animateContainer?: boolean };
+type TabTransitionPhase = "idle" | "preparing" | "crossfading";
+type AdvancedLayoutModeOptions = { animate?: boolean; motionTokens?: EditorMotionTokens };
+type AdvancedTabSwitchOptions = { animateContainer?: boolean; instant?: boolean };
 
-const tabContentExitMs = 220;
-const tabContentEnterMs = 360;
-const tabContainerResizeMs = 420;
-const tabTransitionSettlePaddingMs = 80;
+const tabContentTransitionMs = 400;
+const reducedTabTransitionMs = 400;
 
 function isWideModeTab(tab: AdvancedToolsTab): boolean {
   return tab === "layout" || tab === "theme" || tab === "novel" || tab === "animation" || tab === "assets";
@@ -91,29 +99,18 @@ function shouldKeepWarmTab(candidate: AdvancedToolsTab, activeTab: AdvancedTools
   );
 }
 
+function mountedTabsForSettledTab(nextTab: AdvancedToolsTab): Set<AdvancedToolsTab> {
+  const next = new Set<AdvancedToolsTab>([nextTab]);
+  if (nextTab !== "layout") next.add("layout");
+  return next;
+}
+
 function AdvancedTabLoading({ tab }: { tab: AdvancedToolsTab }) {
   return (
     <div className="advanced-tab-loading" role="status" aria-live="polite">
       <strong>正在载入{tabLabels[tab]}</strong>
-      <span>按功能拆分加载，减少编辑器首屏脚本体积。</span>
     </div>
   );
-}
-
-function AdvancedTabPreparing({ tab }: { tab: AdvancedToolsTab }) {
-  return (
-    <div className="advanced-tab-loading advanced-tab-preparing" role="status" aria-live="polite">
-      <strong>正在展开{tabLabels[tab]}</strong>
-      <span>先完成工作区尺寸切换，再载入复杂控件，避免动画卡顿。</span>
-    </div>
-  );
-}
-
-function getMotionScale(): number {
-  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return 0;
-  const value = window.getComputedStyle(document.documentElement).getPropertyValue("--motion-scale").trim();
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : 1;
 }
 
 function useAdvancedTabTransition(
@@ -122,37 +119,65 @@ function useAdvancedTabTransition(
   const [activeTab, setActiveTab] = useState<AdvancedToolsTab>("settings");
   const [selectedTab, setSelectedTab] = useState<AdvancedToolsTab>("settings");
   const [enteringTab, setEnteringTab] = useState<AdvancedToolsTab>();
-  const [exitingTab, setExitingTab] = useState<AdvancedToolsTab>();
+  const [presentedTabs, setPresentedTabs] = useState<Set<AdvancedToolsTab>>(() => new Set(["settings"]));
   const [transitionPhase, setTransitionPhase] = useState<TabTransitionPhase>("idle");
-  const [containerMorphing, setContainerMorphing] = useState(false);
   const [viewportHeight, setViewportHeight] = useState<number>();
-  const [viewportScaleY, setViewportScaleY] = useState(1);
-  const [mountedTabs, setMountedTabs] = useState<Set<AdvancedToolsTab>>(() => new Set(["settings"]));
+  const [mountedTabs, setMountedTabs] = useState<Set<AdvancedToolsTab>>(
+    () => new Set(["settings", "layout"]),
+  );
+  const [layerStartOpacities, setLayerStartOpacities] = useState<Partial<Record<AdvancedToolsTab, number>>>({});
+  const [loadError, setLoadError] = useState<{ tab: AdvancedToolsTab; message: string }>();
   const viewportRef = useRef<HTMLDivElement>(null);
   const contentRefs = useRef(new Map<AdvancedToolsTab, HTMLDivElement>());
   const contentRefCallbacks = useRef(new Map<AdvancedToolsTab, (node: HTMLDivElement | null) => void>());
-  const settleTimerRef = useRef<number | null>(null);
+  const settledTransitionTokenRef = useRef(0);
   const viewportMeasureFrameRef = useRef<number | null>(null);
+  const transitionTokenRef = useRef(0);
+  const transitionInFlightRef = useRef(false);
   const layoutModeRef = useRef(isWideModeTab("settings"));
   const activeTabRef = useRef(activeTab);
+  const requestedTabRef = useRef<AdvancedToolsTab>("settings");
+  const loadControllerRef = useRef<AbortController | undefined>(undefined);
+  const layerAnimationsRef = useRef<Animation[]>([]);
+  const transitionDurationRef = useRef(tabContentTransitionMs);
+  const transitionEasingRef = useRef("");
+  const isLayoutMode = isWideModeTab(activeTab);
 
-  const isLayoutMode = isWideModeTab(selectedTab) || isWideModeTab(activeTab);
+  function settleTabTransition(
+    token: number,
+    nextTab: AdvancedToolsTab,
+  ) {
+    if (token !== transitionTokenRef.current || settledTransitionTokenRef.current === token) return;
+    settledTransitionTokenRef.current = token;
+    transitionInFlightRef.current = false;
+    const activeNode = contentRefs.current.get(nextTab);
+    if (activeNode) activeNode.style.opacity = "1";
+    setEnteringTab(undefined);
+    setPresentedTabs(new Set([nextTab]));
+    setTransitionPhase("idle");
+    setMountedTabs(mountedTabsForSettledTab(nextTab));
+    if (!isWideModeTab(nextTab)) {
+      window.requestAnimationFrame(() => {
+        if (token === transitionTokenRef.current) measureActiveHeight();
+      });
+    }
+  }
 
   useEffect(() => {
     activeTabRef.current = activeTab;
   }, [activeTab]);
 
   function clearTransitionTimers() {
-    if (settleTimerRef.current !== null) window.clearTimeout(settleTimerRef.current);
     if (viewportMeasureFrameRef.current !== null) window.cancelAnimationFrame(viewportMeasureFrameRef.current);
-    settleTimerRef.current = null;
     viewportMeasureFrameRef.current = null;
+    for (const animation of layerAnimationsRef.current) animation.cancel();
+    layerAnimationsRef.current = [];
   }
 
-  function syncLayoutMode(nextLayoutMode: boolean, animate: boolean) {
-    if (layoutModeRef.current === nextLayoutMode) return;
+  function syncLayoutMode(nextLayoutMode: boolean, animate: boolean, motionTokens?: EditorMotionTokens): number {
+    if (layoutModeRef.current === nextLayoutMode) return 0;
     layoutModeRef.current = nextLayoutMode;
-    onLayoutModeChange?.(nextLayoutMode, { animate });
+    return onLayoutModeChange?.(nextLayoutMode, { animate, motionTokens }) ?? 0;
   }
 
   function ensureMountedTab(nextTab: AdvancedToolsTab) {
@@ -164,84 +189,202 @@ function useAdvancedTabTransition(
     });
   }
 
+  async function waitForAdvancedTabReady(token: number, targetTab: AdvancedToolsTab): Promise<boolean> {
+    const deadline = performance.now() + 30_000;
+    let mountedFrames = 0;
+    while (token === transitionTokenRef.current && performance.now() < deadline) {
+      await new Promise<number>((resolve) => window.requestAnimationFrame(resolve));
+      if (token !== transitionTokenRef.current) return false;
+      const target = contentRefs.current.get(targetTab);
+      if (!target) {
+        mountedFrames = 0;
+        continue;
+      }
+      // A mounted layer can still contain React.lazy's Suspense fallback.
+      // Do not hand off input or capture the geometry bridge until the actual
+      // page has committed; otherwise first layout and the morph share a frame.
+      const pageContent = target.querySelector(".advanced-tab-scroll")?.firstElementChild;
+      if (!pageContent || target.querySelector(".advanced-tab-loading")) {
+        mountedFrames = 0;
+        continue;
+      }
+      const readinessNode = target?.querySelector<HTMLElement>("[data-advanced-tab-ready]");
+      const requiresExplicitReadiness = targetTab === "layout";
+      if (requiresExplicitReadiness && readinessNode?.dataset.advancedTabReady !== "true") {
+        mountedFrames = 0;
+        continue;
+      }
+      mountedFrames += 1;
+      if (mountedFrames >= 2) return true;
+    }
+    return false;
+  }
+
   function readTabHeight(targetTab: AdvancedToolsTab): number | undefined {
     const node = contentRefs.current.get(targetTab);
     if (!node) return undefined;
     const scrollNode = node.querySelector<HTMLElement>(".advanced-tab-scroll");
-    const maxCachedHeight = Math.max(160, window.innerHeight - 220);
-    const nextHeight = Math.min(Math.ceil(scrollNode?.scrollHeight ?? node.scrollHeight), maxCachedHeight);
+    const viewportNode = viewportRef.current;
+    const viewportRect = viewportNode?.getBoundingClientRect() ?? node.getBoundingClientRect();
+    const viewportMetrics = readViewportMetrics();
+    /*
+     * The regular advanced popover sizes itself from this measurement. Using
+     * its current bottom as a cap creates a feedback loop: a short first
+     * measurement makes the popover short, which then makes every subsequent
+     * measurement short. Cap against the actual viewport instead.
+     */
+    const safeBottom = viewportMetrics.bottom - 12;
+    const maxCachedHeight = Math.max(1, Math.floor(safeBottom - viewportRect.top - 12));
+    const nextHeight = Math.min(
+      Math.ceil(scrollNode?.scrollHeight ?? node.scrollHeight),
+      maxCachedHeight,
+    );
     return nextHeight > 0 ? nextHeight : undefined;
   }
 
-  function tabScaleRatio(fromHeight?: number, toHeight?: number): number {
-    if (!fromHeight || !toHeight) return 1;
-    const ratio = fromHeight / toHeight;
-    return Math.min(1.28, Math.max(0.72, ratio));
-  }
-
   function measureActiveHeight() {
+    if (transitionInFlightRef.current) return;
+    const token = transitionTokenRef.current;
     if (viewportMeasureFrameRef.current !== null) window.cancelAnimationFrame(viewportMeasureFrameRef.current);
     viewportMeasureFrameRef.current = window.requestAnimationFrame(() => {
+      viewportMeasureFrameRef.current = null;
+      // An idle/resize callback from the outgoing tab can outlive its effect.
+      // Never let it resize the viewport while the next tab is crossfading.
+      if (transitionInFlightRef.current || token !== transitionTokenRef.current) return;
       const nextHeight = readTabHeight(activeTabRef.current);
       if (nextHeight) setViewportHeight((current) => current === nextHeight ? current : nextHeight);
-      viewportMeasureFrameRef.current = null;
     });
   }
 
-  function requestTabSwitch(nextTab: AdvancedToolsTab, options: AdvancedTabSwitchOptions = {}) {
+  async function requestTabSwitch(nextTab: AdvancedToolsTab, options: AdvancedTabSwitchOptions = {}) {
     const currentTab = activeTabRef.current;
-    if (nextTab === selectedTab && nextTab === currentTab && !exitingTab) return;
-    clearTransitionTimers();
-    void preloadAdvancedTab(nextTab).catch(() => {
-      // error-log-ignore: preloadAdvancedTab 已在统一入口记录加载失败。
-      return undefined;
-    });
-    const nextAlreadyMounted = mountedTabs.has(nextTab);
-    ensureMountedTab(nextTab);
-
-    const motionScale = getMotionScale();
-    const animateContent = motionScale > 0;
-    const currentWide = isWideModeTab(currentTab);
-    const nextWide = isWideModeTab(nextTab);
-    const currentHeight = !currentWide && !nextWide ? readTabHeight(currentTab) : undefined;
-    const managedHeightTransition = !currentWide && !nextWide && nextAlreadyMounted;
-    const nextHeight = managedHeightTransition ? readTabHeight(nextTab) : undefined;
-    if (managedHeightTransition && nextHeight) {
-      setViewportHeight(nextHeight);
-      setViewportScaleY(tabScaleRatio(currentHeight, nextHeight));
-    } else if (currentHeight) {
-      setViewportHeight(currentHeight);
-      setViewportScaleY(1);
-    } else {
-      setViewportHeight(undefined);
-      setViewportScaleY(1);
+    if (nextTab === requestedTabRef.current && (transitionInFlightRef.current || nextTab === currentTab)) return;
+    const starts: Partial<Record<AdvancedToolsTab, number>> = {};
+    // Snapshot every currently presented layer before cancelling its animation.
+    // A→B→C and A→B→A can still contain pixels from A: keeping only B would
+    // erase that visible remainder during C's asynchronous preparation.
+    for (const [tab, node] of contentRefs.current) {
+      if (node.hidden || node.classList.contains("is-warm") || node.classList.contains("is-inactive")) continue;
+      const opacity = Number.parseFloat(window.getComputedStyle(node).opacity);
+      starts[tab] = Number.isFinite(opacity) ? opacity : tab === currentTab ? 1 : 0;
     }
-    syncLayoutMode(nextWide, options.animateContainer !== false && animateContent);
+    for (const [tab, opacity] of Object.entries(starts)) {
+      const node = contentRefs.current.get(tab as AdvancedToolsTab);
+      if (node) node.style.opacity = String(opacity);
+    }
+    const transitionToken = ++transitionTokenRef.current;
+    loadControllerRef.current?.abort();
+    const controller = new AbortController();
+    loadControllerRef.current = controller;
+    clearTransitionTimers();
+    requestedTabRef.current = nextTab;
+    transitionInFlightRef.current = true;
     setSelectedTab(nextTab);
-    activeTabRef.current = nextTab;
-    setActiveTab(nextTab);
-
-    if (!animateContent || nextTab === currentTab) {
-      setEnteringTab(undefined);
-      setExitingTab(undefined);
-      setContainerMorphing(false);
-      setTransitionPhase("idle");
+    setTransitionPhase("preparing");
+    setLoadError(undefined);
+    const present = (targetTab: AdvancedToolsTab) => {
+      const tokens = readEditorMotionTokens();
+      const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const sibling = isWideModeTab(currentTab) === isWideModeTab(targetTab);
+      transitionDurationRef.current = editorWorkspaceDuration(sibling
+        ? reduced ? tokens.reducedSiblingDurationMs : tokens.siblingDurationMs * Math.max(.25, tokens.motionScale)
+        : reduced ? reducedTabTransitionMs : tabContentTransitionMs * Math.max(.25, tokens.motionScale), tokens);
+      transitionEasingRef.current = sibling ? tokens.siblingEasing : tokens.crossfadeEasing;
+      const visible = new Set(Object.keys(starts) as AdvancedToolsTab[]);
+      visible.add(targetTab);
+      setPresentedTabs(visible);
+      setLayerStartOpacities({ ...starts, [targetTab]: starts[targetTab] ?? 0 });
+      setEnteringTab(targetTab);
+      // Inert removes old controls from tab order; move a focused old control
+      // onto the persistent navigation before committing the new input owner.
+      for (const [tab, node] of contentRefs.current) {
+        if (tab !== targetTab && node.contains(document.activeElement)) {
+          viewportRef.current?.closest(".advanced-tools-panel")
+            ?.querySelector<HTMLButtonElement>(`[data-help-key="advanced.tab.${targetTab}"]`)
+            ?.focus({ preventScroll: true });
+          break;
+        }
+      }
+      activeTabRef.current = targetTab;
+      setActiveTab(targetTab);
+      setSelectedTab(targetTab);
+      syncLayoutMode(isWideModeTab(targetTab), !options.instant, tokens);
+      setTransitionPhase("crossfading");
+    };
+    try {
+      await awaitModuleLoad(preloadAdvancedTab(nextTab), controller.signal);
+      if (transitionToken !== transitionTokenRef.current) return;
+      ensureMountedTab(nextTab);
+      if (!await waitForAdvancedTabReady(transitionToken, nextTab)) {
+        if (transitionToken !== transitionTokenRef.current) return;
+        throw new Error("页面尚未就绪，原页面已保留，请重试。");
+      }
+    } catch (error) {
+      if (transitionToken !== transitionTokenRef.current || controller.signal.aborted) return;
+      requestedTabRef.current = currentTab;
+      setSelectedTab(currentTab);
+      setLoadError({ tab: nextTab, message: error instanceof Error ? error.message : "页面载入失败，请重试。" });
+      // Even a failed request may have interrupted a blend. Restore its owner
+      // from the frozen pixels, rather than snapping all old layers away.
+      present(currentTab);
       return;
     }
-
-    setEnteringTab(nextTab);
-    setExitingTab(managedHeightTransition ? currentTab : undefined);
-    setContainerMorphing(managedHeightTransition);
-    setTransitionPhase("idle");
-    settleTimerRef.current = window.setTimeout(() => {
-      setEnteringTab(undefined);
-      setExitingTab(undefined);
-      setContainerMorphing(false);
-      setTransitionPhase("idle");
-      settleTimerRef.current = null;
-      if (!isWideModeTab(activeTabRef.current)) measureActiveHeight();
-    }, Math.ceil((managedHeightTransition ? Math.max(tabContentEnterMs, tabContentExitMs, tabContainerResizeMs) : tabContentEnterMs) * motionScale) + tabTransitionSettlePaddingMs);
+    if (transitionToken !== transitionTokenRef.current) return;
+    present(nextTab);
   }
+
+  useLayoutEffect(() => {
+    if (transitionPhase !== "crossfading" || !enteringTab) return;
+    const token = transitionTokenRef.current;
+    const enteringNode = contentRefs.current.get(enteringTab);
+    if (!enteringNode) return;
+    const duration = transitionDurationRef.current;
+    const layers = [...presentedTabs].flatMap(tab => {
+      const node = contentRefs.current.get(tab);
+      return node ? [{ tab, node, end: tab === enteringTab ? 1 : 0 }] : [];
+    });
+    for (const { node, end } of layers) node.style.opacity = String(end);
+    if (duration === 0) {
+      settleTabTransition(token, enteringTab);
+      return;
+    }
+    const easing = transitionEasingRef.current;
+    const timing = { duration, easing: easing || "cubic-bezier(0.23, 1, 0.32, 1)", fill: "both" as const };
+    const animations = layers.map(({ tab, node, end }) =>
+      node.animate([{ opacity: layerStartOpacities[tab] ?? 0 }, { opacity: end }], timing));
+    // Keep the initial visual values through this layout commit. Start on the
+    // next presentation frame with one explicit clock for both layers: large
+    // 4K layers can otherwise remain compositor-pending until the safety timer.
+    for (const animation of animations) animation.pause();
+    layerAnimationsRef.current = animations;
+    const settle = () => settleTabTransition(token, enteringTab);
+    void Promise.all(animations.map(animation => animation.finished)).then(settle, () => {
+      // A cancelled/deactivated compositor must not leave a page locked.
+      // Superseded requests are rejected by the token inside settle.
+      settle();
+    });
+    const startFrame = window.requestAnimationFrame((timestamp) => {
+      if (token !== transitionTokenRef.current) return;
+      // RAF's timestamp is the beginning of the frame; a costly layout may
+      // already have consumed most of the budget by the time this runs.
+      for (const animation of animations) {
+        animation.play();
+        // WAAPI startTime is expressed on the document timeline. Use the
+        // timestamp supplied by this RAF rather than performance.now(), whose
+        // sampling point can be ahead of the frame timestamp and produce a
+        // negative currentTime on the first compositor sample.
+        animation.startTime = timestamp;
+      }
+    });
+    const finishWhenHidden = () => { if (document.hidden) settle(); };
+    document.addEventListener("visibilitychange", finishWhenHidden);
+    return () => {
+      window.cancelAnimationFrame(startFrame);
+      document.removeEventListener("visibilitychange", finishWhenHidden);
+      for (const animation of animations) animation.cancel();
+      if (layerAnimationsRef.current === animations) layerAnimationsRef.current = [];
+    };
+  }, [transitionPhase, enteringTab, presentedTabs]);
 
   function contentRefFor(targetTab: AdvancedToolsTab) {
     const cached = contentRefCallbacks.current.get(targetTab);
@@ -254,27 +397,32 @@ function useAdvancedTabTransition(
     return callback;
   }
 
-  useLayoutEffect(() => {
-    if (isLayoutMode) return;
-    measureActiveHeight();
-  }, [activeTab, transitionPhase, isLayoutMode]);
-
   useEffect(() => {
-    syncLayoutMode(isWideModeTab(selectedTab), false);
-  }, [selectedTab, onLayoutModeChange]);
+    void syncLayoutMode(isWideModeTab(activeTab), false);
+  }, [activeTab, onLayoutModeChange]);
 
-  useEffect(() => () => clearTransitionTimers(), []);
+  useEffect(() => () => {
+    ++transitionTokenRef.current;
+    loadControllerRef.current?.abort();
+    clearTransitionTimers();
+    // StrictMode replays effects without destroying refs. Release the cancelled
+    // request so the replay can load its initial requested page; otherwise the
+    // duplicate-target guard mistakes that retry for a live navigation.
+    transitionInFlightRef.current = false;
+    requestedTabRef.current = activeTabRef.current;
+  }, []);
 
   return {
     activeTab,
     selectedTab,
     enteringTab,
-    exitingTab,
+    presentedTabs,
     transitionPhase,
-    containerMorphing,
+    layoutTransitioning: transitionPhase !== "idle",
     viewportHeight,
-    viewportScaleY,
     mountedTabs,
+    layerStartOpacities,
+    loadError,
     isLayoutMode,
     viewportRef,
     contentRefFor,
@@ -286,6 +434,8 @@ function useAdvancedTabTransition(
 export function AdvancedToolsPanel({ request, onLayoutModeChange }: { request?: AdvancedToolsRequest; onLayoutModeChange?: (isLayoutMode: boolean, options?: AdvancedLayoutModeOptions) => number }) {
   const [history, setHistory] = useState<GenerationHistoryEntry[]>([]);
   const [notice, setNotice] = useState<AdvancedToolsRequest | undefined>();
+  const runtimeLayoutSessionRef = useRef<RuntimeLayoutDesignerSession>({});
+  const projectId = useProjectStore((state) => state.projectId);
   const assetManifest = useProjectStore((state) => state.assetManifest);
   const assetLibrary = useProjectStore((state) => state.settings.assetLibrary);
   const setAssetManifest = useProjectStore((state) => state.setAssetManifest);
@@ -294,28 +444,59 @@ export function AdvancedToolsPanel({ request, onLayoutModeChange }: { request?: 
     activeTab,
     selectedTab,
     enteringTab,
-    exitingTab,
+    presentedTabs,
     transitionPhase,
-    containerMorphing,
+    layoutTransitioning,
     viewportHeight,
-    viewportScaleY,
     mountedTabs,
+    layerStartOpacities,
+    loadError,
     isLayoutMode,
     viewportRef,
     contentRefFor,
     requestTabSwitch,
     measureActiveHeight,
   } = useAdvancedTabTransition(onLayoutModeChange);
+  const visibleTabs = visibleAdvancedTabs;
 
   useEffect(() => {
     if (!request) return;
-    setNotice(request);
+    setNotice(request.title || request.message ? request : undefined);
     requestTabSwitch(request.tab, { animateContainer: false });
   }, [request?.id]);
 
   useEffect(() => {
-    if (isLayoutMode) return;
+    /*
+     * Load tab implementations while the advanced panel is idle so a real
+     * click does not spend the entire opacity timeline waiting on a dynamic
+     * import. Rendering still remains lazy per mounted tab.
+     */
+    const preload = () => {
+      for (const tab of visibleAdvancedTabs) {
+        void preloadAdvancedTab(tab).catch(() => undefined);
+      }
+    };
+    const idleWindow = window as Window & {
+      requestIdleCallback?: (callback: IdleRequestCallback, options?: IdleRequestOptions) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    const usedIdleCallback = typeof idleWindow.requestIdleCallback === "function";
+    const idle = usedIdleCallback
+      ? idleWindow.requestIdleCallback(preload, { timeout: 900 })
+      : window.setTimeout(preload, 120);
+    return () => {
+      if (usedIdleCallback && idleWindow.cancelIdleCallback) {
+        idleWindow.cancelIdleCallback(idle);
+      } else {
+        window.clearTimeout(idle);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isLayoutMode || transitionPhase !== "idle") return;
     let cancelIdleMeasure: (() => void) | undefined;
+    let settleMeasureTimer: number | undefined;
     const scheduleMeasure = () => {
       cancelIdleMeasure?.();
       if ("requestIdleCallback" in window) {
@@ -328,8 +509,22 @@ export function AdvancedToolsPanel({ request, onLayoutModeChange }: { request?: 
     };
 
     scheduleMeasure();
+    /*
+     * The popover enters after the tab mounts. Measuring only during the
+     * initial render captures the pre-entry height and leaves a permanently
+     * short settings viewport (the exact "cannot fully expand" symptom).
+     * Re-measure once the popover geometry has settled.
+     */
+    settleMeasureTimer = window.setTimeout(scheduleMeasure, 360);
+    const unsubscribeViewport = subscribeToViewportChanges(scheduleMeasure);
     const node = viewportRef.current?.querySelector<HTMLElement>(".advanced-tab-content.is-active");
-    if (!node) return () => cancelIdleMeasure?.();
+    if (!node) {
+      return () => {
+        cancelIdleMeasure?.();
+        if (settleMeasureTimer !== undefined) window.clearTimeout(settleMeasureTimer);
+        unsubscribeViewport();
+      };
+    }
     const observer = new ResizeObserver(scheduleMeasure);
     const observed = new Set<Element>();
     const observe = (target: Element | null | undefined) => {
@@ -353,6 +548,8 @@ export function AdvancedToolsPanel({ request, onLayoutModeChange }: { request?: 
     });
     return () => {
       cancelIdleMeasure?.();
+      if (settleMeasureTimer !== undefined) window.clearTimeout(settleMeasureTimer);
+      unsubscribeViewport();
       mutationObserver.disconnect();
       observer.disconnect();
     };
@@ -413,22 +610,33 @@ export function AdvancedToolsPanel({ request, onLayoutModeChange }: { request?: 
     ));
   }, [assetLibrary, assetManifest, setAssetLibrary, setAssetManifest]);
 
-  const updateLibraryAsset = useCallback((asset: AssetRef) => {
-    setAssetManifest([asset, ...assetManifest.filter((item) => item.asset_id !== asset.asset_id)]);
-  }, [assetManifest, setAssetManifest]);
+  const updateLibraryAssets = useCallback((updates: AssetRef[]) => {
+    if (updates.length === 0) return;
+    if (useProjectStore.getState().projectId !== projectId) return;
+    const updatesById = new Map(updates.map((asset) => [asset.asset_id, asset]));
+    const currentManifest = useProjectStore.getState().assetManifest;
+    setAssetManifest(currentManifest.map((asset) => updatesById.get(asset.asset_id) ?? asset));
+  }, [projectId, setAssetManifest]);
 
-  const deleteLibraryAsset = useCallback((assetId: string) => {
-    setAssetManifest(assetManifest.filter((item) => item.asset_id !== assetId));
-    if (assetLibrary.assetLocations[assetId]) {
-      const assetLocations = { ...assetLibrary.assetLocations };
+  const deleteLibraryAssets = useCallback((assetIds: string[]) => {
+    if (assetIds.length === 0) return;
+    const deletedIds = new Set(assetIds);
+    const currentState = useProjectStore.getState();
+    setAssetManifest(currentState.assetManifest.filter((item) => !deletedIds.has(item.asset_id)));
+    const currentLibrary = currentState.settings.assetLibrary;
+    const assetLocations = { ...currentLibrary.assetLocations };
+    let locationsChanged = false;
+    for (const assetId of deletedIds) {
+      if (!(assetId in assetLocations)) continue;
       delete assetLocations[assetId];
-      setAssetLibrary({ ...assetLibrary, assetLocations });
+      locationsChanged = true;
     }
-  }, [assetLibrary, assetManifest, setAssetLibrary, setAssetManifest]);
+    if (locationsChanged) setAssetLibrary({ ...currentLibrary, assetLocations });
+  }, [setAssetLibrary, setAssetManifest]);
 
   function renderTabContent(activeTab: AdvancedToolsTab) {
     if (activeTab === "settings") return <ProjectSettingsPanel />;
-    if (activeTab === "layout") return <RuntimeLayoutDesigner />;
+    if (activeTab === "layout") return <RuntimeLayoutDesigner sessionRef={runtimeLayoutSessionRef} />;
     if (activeTab === "theme") return <RuntimeThemeDesigner />;
     if (activeTab === "assets") {
       return (
@@ -442,12 +650,13 @@ export function AdvancedToolsPanel({ request, onLayoutModeChange }: { request?: 
     if (activeTab === "library") {
       return (
         <AssetLibraryPanel
+          key={projectId}
           assets={assetManifest}
           assetLibrary={assetLibrary}
           onAssetLibraryChange={setAssetLibrary}
           onImportMany={importAssetsToLibrary}
-          onUpdate={updateLibraryAsset}
-          onDelete={deleteLibraryAsset}
+          onUpdateMany={updateLibraryAssets}
+          onDeleteMany={deleteLibraryAssets}
         />
       );
     }
@@ -460,17 +669,26 @@ export function AdvancedToolsPanel({ request, onLayoutModeChange }: { request?: 
   const viewportStyle = viewportHeight && !isLayoutMode ? {
     height: `${viewportHeight}px`,
     minHeight: `${viewportHeight}px`,
-    "--advanced-tab-scale-y": String(viewportScaleY),
   } as CSSProperties : undefined;
 
   return (
-    <section className={`advanced-tools-panel${isLayoutMode ? " layout-mode" : ""} is-tab-${transitionPhase}`}>
-      <nav>
-        {visibleAdvancedTabs.map((item) => (
+    <section
+      className={`advanced-tools-panel${isLayoutMode ? " layout-mode" : ""} is-tab-${transitionPhase}`}
+      data-layout-transitioning={layoutTransitioning ? "true" : undefined}
+    >
+      <GlassSelectionGroup
+        as="nav"
+        selectedKey={selectedTab}
+        scrollAxis="x"
+        motion="light"
+        observeViewportResize
+      >
+        {visibleTabs.map((item) => (
           <button
             key={item}
             type="button"
             className={selectedTab === item ? "is-active" : ""}
+            data-glass-selected={selectedTab === item}
             data-help-key={`advanced.tab.${item}`}
             onPointerEnter={() => void preloadAdvancedTab(item).catch(() => {
               // error-log-ignore: preloadAdvancedTab 已在统一入口记录加载失败。
@@ -480,12 +698,12 @@ export function AdvancedToolsPanel({ request, onLayoutModeChange }: { request?: 
               // error-log-ignore: preloadAdvancedTab 已在统一入口记录加载失败。
               return undefined;
             })}
-            onClick={() => requestTabSwitch(item, { animateContainer: true })}
+            onClick={() => void requestTabSwitch(item)}
           >
             {tabLabels[item]}
           </button>
         ))}
-      </nav>
+      </GlassSelectionGroup>
 
       {notice && activeTab === notice.tab && (
         <div className="advanced-panel-notice" role="status">
@@ -500,20 +718,45 @@ export function AdvancedToolsPanel({ request, onLayoutModeChange }: { request?: 
       )}
 
       <div
-        className={`advanced-tab-viewport${containerMorphing ? " is-morphing" : ""}${viewportHeight && !isLayoutMode ? " has-managed-height" : ""}`}
+        className={`advanced-tab-viewport${viewportHeight && !isLayoutMode ? " has-managed-height" : ""}`}
         ref={viewportRef}
         style={viewportStyle}
       >
-        {visibleAdvancedTabs.filter((item) => mountedTabs.has(item)).map((item) => {
+        {transitionPhase === "preparing" && <div className="advanced-tab-pending" role="status">
+          正在载入{tabLabels[selectedTab]}
+        </div>}
+        {loadError && <div className="advanced-tab-load-error" role="alert">
+          <span>{tabLabels[loadError.tab]}：{loadError.message}</span>
+          <button type="button" onClick={() => void requestTabSwitch(loadError.tab)}>重试载入</button>
+        </div>}
+        {[...mountedTabs].map((item) => {
           const isActive = item === activeTab;
-          const isLeaving = item === exitingTab;
+          const isLeaving = !isActive && presentedTabs.has(item);
+          const isEntering = item === enteringTab;
           const keepWarm = !isActive && !isLeaving && shouldKeepWarmTab(item, activeTab);
+          const layerState = isActive
+            ? " is-active"
+            : isLeaving
+              ? " is-leaving"
+              : isEntering
+                ? " is-preparing"
+                : keepWarm
+                  ? " is-warm"
+                  : " is-inactive";
           return (
             <div
-              className={`advanced-tab-content${isActive ? " is-active" : isLeaving ? " is-leaving" : keepWarm ? " is-warm" : " is-inactive"}${item === enteringTab ? " is-entering" : ""}`}
+              className={`advanced-tab-content${layerState}${isEntering && !isActive ? " is-preparing" : ""}${isEntering && transitionPhase === "crossfading" ? " is-entering" : ""}`}
+              style={isEntering || isLeaving
+                ? {
+                  pointerEvents: isLeaving && !isActive ? "none" : undefined,
+                  "--advanced-tab-start-opacity": layerStartOpacities[item] ?? (isActive ? 1 : 0),
+                } as CSSProperties
+                : undefined}
               ref={contentRefFor(item)}
               data-tab={item}
               aria-hidden={!isActive}
+              inert={!isActive}
+              data-advanced-tab-interactive={isActive ? "true" : "false"}
               hidden={!isActive && !keepWarm && !isLeaving}
               key={item}
             >

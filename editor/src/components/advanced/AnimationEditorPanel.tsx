@@ -28,6 +28,7 @@ import {
 import type { AssetRef } from "../../types/assets";
 import { AnimationTimeline } from "./AnimationTimeline";
 import { AssetPicker } from "../common/AssetPicker";
+import { GlassSelectionGroup } from "../common/GlassSelectionGroup";
 import { RichSelect } from "../common/RichSelect";
 import { RangeControl } from "../common/RangeControl";
 
@@ -374,7 +375,6 @@ export function AnimationEditorPanel() {
       <header className="animation-editor-header">
         <div>
           <h3>动效工作室</h3>
-          <p>选择目标角色图像、挑选动作模板，再用真实预览确认效果后插入当前场景。</p>
         </div>
       </header>
 
@@ -397,7 +397,12 @@ export function AnimationEditorPanel() {
               <small>{currentCategory.title}</small>
             </span>
           </button>
-          <div className="animation-template-groups" role="tablist" aria-label="动画模板分类">
+          <GlassSelectionGroup
+            className="animation-template-groups"
+            role="tablist"
+            ariaLabel="动画模板分类"
+            selectedKey={categoryId}
+          >
             {animationPresetCategories.map((category) => {
               const Icon = category.icon;
               const isActive = category.id === categoryId;
@@ -406,6 +411,9 @@ export function AnimationEditorPanel() {
                   key={category.id}
                   type="button"
                   className={isActive ? "is-active" : ""}
+                  role="tab"
+                  aria-selected={isActive}
+                  data-glass-selected={isActive}
                   data-help-key="animation.category"
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => chooseCategory(category.id)}
@@ -416,7 +424,7 @@ export function AnimationEditorPanel() {
                 </button>
               );
             })}
-          </div>
+          </GlassSelectionGroup>
 
         </aside>
 
@@ -443,7 +451,7 @@ export function AnimationEditorPanel() {
                 ×
               </button>
             </header>
-            <div className={`animation-template-list is-${detailPhase}`}>
+            <div className={`animation-template-list selection-scroll-region is-${detailPhase}`}>
               {categoryTemplates.map((template) => {
                 const TemplateIcon =
                   animationPresetCategories.find((category) => category.id === template.category_id)?.icon ?? currentCategory.icon;
@@ -456,6 +464,7 @@ export function AnimationEditorPanel() {
                     data-template-id={template.template_id}
                     data-preset-id={template.preset_id}
                     onMouseDown={(event) => event.preventDefault()}
+                    onFocus={(event) => event.currentTarget.scrollIntoView({ block: "nearest" })}
                     onClick={() => chooseTemplate(template)}
                   >
                     <TemplateIcon size={16} />
@@ -493,7 +502,6 @@ export function AnimationEditorPanel() {
             <header className="animation-section-header">
               <div>
                 <h4>快速微调</h4>
-                <p>只保留高频参数，够快也够稳。</p>
               </div>
             </header>
             <div className="animation-control-grid">{currentTemplate.controls.map(renderControl)}</div>
@@ -534,7 +542,7 @@ export function AnimationEditorPanel() {
                   {previewAsset
                     ? `正在使用 ${previewAsset.metadata.filename ?? previewAsset.asset_id} 预览。`
                     : previewAssetType
-                      ? `请选择${previewAssetType === "sprite" ? "角色图像" : "背景图"}素材进行真实预览。`
+                      ? `请选择${previewAssetType === "sprite" ? "角色图像" : "背景图"}素材。`
                       : "当前模板使用内置舞台进行预览。"}
                 </p>
               </div>

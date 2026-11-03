@@ -118,8 +118,12 @@ def test_project_catalog_and_detail_routes(tmp_path: Path, monkeypatch) -> None:
             "updated_at": "2026-01-02T00:00:00.000Z",
             "node_count": 1,
             "edge_count": 0,
+            "size_bytes": len(json.dumps(
+                saved.json()["data"], ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+            ).encode("utf-8")),
             "schema_version": "1.0.0",
             "has_detail": True,
+            "size_source": "storage",
         }
     ]
 
@@ -230,7 +234,13 @@ def test_project_state_route_can_skip_project_payload(tmp_path: Path, monkeypatc
     payload = loaded.json()["data"]
     assert payload["recent_projects"] == []
     assert payload["project_graph"]["nodes"] == []
-    assert payload["provider_secrets"] == {"conn": "secret"}
+    assert payload["provider_secrets"] == {}
+    assert '"secret"' not in loaded.text
+    assert "no-store" in loaded.headers.get("cache-control", "")
+    credentials = client.get("/api/providers/secrets")
+    assert credentials.status_code == 200
+    assert credentials.json()["data"] == {"conn": "secret"}
+    assert "no-store" in credentials.headers.get("cache-control", "")
 
 
 def test_ai_provider_error_is_structured_json_with_cors() -> None:

@@ -1,5 +1,5 @@
 import { Camera, GripVertical, MoreHorizontal, Trash2 } from "lucide-react";
-import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import type { GameCommand } from "../../types/commands";
 import { commandLabels, commandSummary } from "../../utils/commandTools";
 import { DialogCommandEditor } from "./DialogCommandEditor";
@@ -17,6 +17,8 @@ import { BgmCommandEditor } from "./BgmCommandEditor";
 import { SfxCommandEditor } from "./SfxCommandEditor";
 import { CameraCommandEditor } from "./CameraCommandEditor";
 import { WaitCommandEditor } from "./WaitCommandEditor";
+import { GalleryAnchorCommandEditor } from "./GalleryAnchorCommandEditor";
+import { RollbackCommandEditor } from "./RollbackCommandEditor";
 import { CameraStudioDialog } from "./CameraStudioDialog";
 import {
   DEFAULT_CAMERA_POSE,
@@ -75,47 +77,78 @@ export function CommandListEditor({
   variableKeys = [],
   sceneIds = [],
   onChange,
+  assetTarget,
 }: {
   commands: GameCommand[];
   sceneId?: string;
   variableKeys?: string[];
   sceneIds?: string[];
   onChange: (commands: GameCommand[]) => void;
+  assetTarget?: { sceneId: string; index: number; field?: string; nonce: number };
 }) {
   const listRef = useRef<HTMLDivElement | null>(null);
-  const endRef = useRef<HTMLDivElement | null>(null);
-  const previousLengthRef = useRef(commands.length);
   const keys = useMemo(() => commands.map(commandKey), [commands]);
+  const previousKeysRef = useRef<string[]>(keys);
   const [expandedKeys, setExpandedKeys] = useState<string[]>([]);
   const [dragState, setDragState] = useState<CommandDragState | null>(null);
   const dragStateRef = useRef<CommandDragState | null>(null);
   const [menuKey, setMenuKey] = useState<string>();
   const [lastAddedKey, setLastAddedKey] = useState<string>();
   const [insertStudioIndex, setInsertStudioIndex] = useState<number>();
-  const dropTimerRef = useRef<number>();
+  const dropTimerRef = useRef<number | undefined>(undefined);
   const prefersReducedMotion = useMemo(
     () => typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches,
     []
   );
+  const assetTargetKey = assetTarget?.sceneId === sceneId ? keys[assetTarget.index] : undefined;
+  const focusedAssetTargetRef = useRef<typeof assetTarget>(undefined);
+  useEffect(() => {
+    if (!assetTarget || !assetTargetKey) return;
+    const key = assetTargetKey;
+    setExpandedKeys(current => [...current.filter(item => item !== key), key].slice(-maxExpanded));
+  }, [assetTarget, assetTargetKey]);
+
+  useLayoutEffect(() => {
+    if (!assetTarget || !assetTargetKey || !expandedKeys.includes(assetTargetKey)
+      || focusedAssetTargetRef.current === assetTarget) return;
+    // The expanding render must have committed: scheduled frames alone do not
+    // guarantee that React has mounted the requested field.
+    const card = listRef.current?.querySelector<HTMLElement>(`.command-card[data-command-index="${assetTarget.index}"]`);
+    const field = [...(card?.querySelectorAll<HTMLElement>("[data-asset-field]") ?? [])]
+      .find(item => item.dataset.assetField === assetTarget.field);
+    const control = assetTarget.field ? field?.querySelector<HTMLButtonElement>(".asset-picker-trigger")
+      : card?.querySelector<HTMLButtonElement>(".command-card-summary");
+    if (!control) return;
+    const frame = requestAnimationFrame(() => {
+      focusedAssetTargetRef.current = assetTarget;
+      control.focus({ preventScroll: true });
+      control.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [assetTarget, assetTargetKey, expandedKeys]);
 
   useEffect(() => {
     setExpandedKeys((current) => current.filter((key) => keys.includes(key)).slice(-maxExpanded));
   }, [keys]);
 
   useEffect(() => {
-    if (commands.length <= previousLengthRef.current) {
-      previousLengthRef.current = commands.length;
+    const previousKeys = previousKeysRef.current;
+    if (commands.length <= previousKeys.length) {
+      previousKeysRef.current = keys;
       return;
     }
-    const addedKey = keys[keys.length - 1];
+    const insertedIndex = keys.findIndex((key, index) => previousKeys[index] !== key);
+    const addedIndex = insertedIndex >= 0 ? insertedIndex : commands.length - 1;
+    const addedKey = keys[addedIndex];
     setLastAddedKey(addedKey);
     setExpandedKeys((current) => [...current.filter((key) => key !== addedKey), addedKey].slice(-maxExpanded));
     window.requestAnimationFrame(() => {
-      endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+      const card = listRef.current?.querySelector<HTMLElement>(`.command-card[data-command-index="${addedIndex}"]`);
+      card?.scrollIntoView({ behavior: "smooth", block: "nearest" });
       window.setTimeout(() => setLastAddedKey(undefined), 900);
     });
-    previousLengthRef.current = commands.length;
-  }, [commands.length, keys]);
+    previousKeysRef.current = keys;
+  }, [commands, keys]);
 
   useEffect(() => {
     return () => {
@@ -263,7 +296,7 @@ export function CommandListEditor({
         return (
           <Fragment key={key}>
             <div className="camera-command-insert">
-              <button type="button" onClick={() => setInsertStudioIndex(index)}>
+              <button data-help-key="editor.control" type="button" onClick={() => setInsertStudioIndex(index)}>
                 <Camera size={13} aria-hidden="true" />
                 <span className="camera-command-insert-label">＋ 运镜</span>
               </button>
@@ -302,7 +335,15 @@ export function CommandListEditor({
                 {command.type === "background" && <BackgroundCommandEditor command={command} onChange={(next) => update(index, next)} />}
                 {command.type === "show_image" && <ShowImageCommandEditor command={command} onChange={(next) => update(index, next)} />}
                 {command.type === "video" && <VideoCommandEditor command={command} onChange={(next) => update(index, next)} />}
-                {command.type === "sprite" && <SpriteCommandEditor command={command} onChange={(next) => update(index, next)} />}
+                {command.type === "sprite" && (
+                  <SpriteCommandEditor
+                    command={command}
+                    commands={commands}
+                    commandIndex={index}
+                    sceneId={sceneId}
+                    onChange={(next) => update(index, next)}
+                  />
+                )}
                 {command.type === "choice" && <ChoiceCommandEditor command={command} variableKeys={variableKeys} onChange={(next) => update(index, next)} />}
                 {command.type === "state_update" && <StateUpdateCommandEditor command={command} onChange={(next) => update(index, next)} />}
                 {command.type === "conditional_jump" && <ConditionalJumpCommandEditor command={command} variableKeys={variableKeys} sceneIds={sceneIds} onChange={(next) => update(index, next)} />}
@@ -320,6 +361,8 @@ export function CommandListEditor({
                   />
                 )}
                 {command.type === "wait" && <WaitCommandEditor command={command} onChange={(next) => update(index, next)} />}
+                {command.type === "gallery_anchor" && <GalleryAnchorCommandEditor command={command} onChange={(next) => update(index, next)} />}
+                {command.type === "rollback" && <RollbackCommandEditor command={command} onChange={(next) => update(index, next)} />}
               </div>
             )}
             </section>
@@ -327,12 +370,11 @@ export function CommandListEditor({
         );
       })}
       <div className="camera-command-insert is-tail">
-        <button type="button" onClick={() => setInsertStudioIndex(commands.length)}>
+        <button data-help-key="editor.control" type="button" onClick={() => setInsertStudioIndex(commands.length)}>
           <Camera size={13} aria-hidden="true" />
           <span className="camera-command-insert-label">＋ 运镜</span>
         </button>
       </div>
-      <div ref={endRef} />
       {insertStudioIndex !== undefined && (
         <CameraStudioDialog
           command={createDefaultCameraCommand("reframe", currentPoseBeforeList(commands, insertStudioIndex))}

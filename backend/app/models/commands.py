@@ -1,10 +1,11 @@
 """Visual novel runtime command contracts."""
 
 from enum import Enum
+import math
 import re
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, model_serializer, model_validator
+from pydantic import Field, field_validator, model_serializer, model_validator
 
 from app.models.common import JsonValue, StrictBaseModel
 
@@ -28,7 +29,6 @@ class StateOperation(str, Enum):
 class BgmAction(str, Enum):
     PLAY = "play"
     STOP = "stop"
-    FADE = "fade"
 
 
 class BackgroundFit(str, Enum):
@@ -117,10 +117,28 @@ class CharacterSpriteAnimationConfig(StrictBaseModel):
     preset_id: str | None = None
 
 
+class CharacterBubblePosition(StrictBaseModel):
+    mode: Literal["character"] = "character"
+    offset_x: float | None = Field(default=None, ge=-100, le=100, allow_inf_nan=False)
+    offset_y: float | None = Field(default=None, ge=-100, le=100, allow_inf_nan=False)
+
+
+class FixedBubblePosition(StrictBaseModel):
+    mode: Literal["fixed"] = "fixed"
+    x: float = Field(ge=0, le=100, allow_inf_nan=False)
+    y: float = Field(ge=0, le=100, allow_inf_nan=False)
+
+
+BubblePosition = Annotated[CharacterBubblePosition | FixedBubblePosition, Field(discriminator="mode")]
+
+
 class DialogCommand(StrictBaseModel):
     type: Literal["dialog"] = "dialog"
     character_id: str
     text: str
+    presentation_mode: Literal["dialog", "nvl", "bubble"] | None = None
+    clear_nvl_page_before: bool | None = None
+    bubble_position: BubblePosition | None = None
     emotion: str | None = None
     portrait: str | None = None
     voice: str | None = None
@@ -133,9 +151,13 @@ class DialogCommand(StrictBaseModel):
 class NarrationCommand(StrictBaseModel):
     type: Literal["narration"] = "narration"
     text: str
+    presentation_mode: Literal["dialog", "nvl", "bubble"] | None = None
+    clear_nvl_page_before: bool | None = None
+    bubble_position: BubblePosition | None = None
     font_asset_id: str | None = None
     dialog_style: DialogVisualStyle | None = None
     dialog_style_mode: Literal["inherit", "manual"] | None = None
+    narration_style: Literal["dialog", "centered"] | None = None
 
 
 class HideDialogCommand(StrictBaseModel):
@@ -175,6 +197,8 @@ class SpriteCommand(StrictBaseModel):
     character_id: str
     sprite_id: str
     position: str | None = None
+    offset_x: float | None = Field(default=None, ge=-40.0, le=40.0)
+    offset_y: float | None = Field(default=None, ge=-30.0, le=30.0)
     layer: int | None = None
     animation: str | None = None
     animation_display_name: str | None = None
@@ -184,17 +208,86 @@ class SpriteCommand(StrictBaseModel):
     visible: bool = True
 
 
+_SAFE_UI_COLOR_PATTERN = re.compile(r"^(?:#[0-9a-fA-F]{3,8}|rgba?\([\d\s.,%]+\))$")
+_SAFE_UI_ASSET_REFERENCE_PATTERN = re.compile(r"^asset:([^\s\x00-\x1f\x7f]{1,256})$")
+
+
+class UILayoutComponentStyle(StrictBaseModel):
+    backgroundColor: str | None = None
+    backgroundImage: str | None = None
+    backgroundFit: BackgroundFit | None = None
+    color: str | None = None
+    accentColor: str | None = None
+    borderColor: str | None = None
+    borderWidth: float | None = None
+    borderRadius: float | None = None
+    opacity: float | None = None
+    fontSize: float | None = None
+    fontWeight: float | None = None
+    fontStyle: Literal["normal", "italic"] | None = None
+    fontAssetId: str | None = None
+    padding: float | None = None
+    gap: float | None = None
+    shadow: Literal["none", "soft", "strong"] | None = None
+    backdropBlur: float | None = None
+    textAlign: Literal["left", "center", "right"] | None = None
+    columns: float | None = None
+
+    @field_validator("backgroundColor", "color", "accentColor", "borderColor")
+    @classmethod
+    def validate_safe_color(cls, value: str | None) -> str | None:
+        if value is not None and not _SAFE_UI_COLOR_PATTERN.fullmatch(value):
+            raise ValueError("Choice button colors must use #RGB/#RRGGBB or rgb()/rgba().")
+        return value
+
+    @field_validator("backgroundImage")
+    @classmethod
+    def validate_safe_background_image(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if _SAFE_UI_ASSET_REFERENCE_PATTERN.fullmatch(value):
+            return value
+        if (
+            "../" in value
+            or value.startswith("/")
+            or re.match(r"^[a-zA-Z]:", value)
+            or not (value.startswith("ui/assets/") or value.startswith("assets/"))
+        ):
+            raise ValueError("Choice button backgroundImage must reference a packed asset.")
+        return value
+
+    @model_validator(mode="after")
+    def validate_finite_numbers(self) -> "UILayoutComponentStyle":
+        for field_name in (
+            "borderWidth",
+            "borderRadius",
+            "opacity",
+            "fontSize",
+            "fontWeight",
+            "padding",
+            "gap",
+            "backdropBlur",
+            "columns",
+        ):
+            value = getattr(self, field_name)
+            if value is not None and not math.isfinite(value):
+                raise ValueError(f"{field_name} must be a finite number.")
+        return self
+
+
 class Choice(StrictBaseModel):
     choice_id: str
     choice_display_name: str | None = None
     text: str
     target_scene_id: str
     conditions: list[str | Condition] = Field(default_factory=list)
+    button_style: UILayoutComponentStyle | None = None
 
 
 class ChoiceCommand(StrictBaseModel):
     type: Literal["choice"] = "choice"
     choices: list[Choice]
+    button_style: UILayoutComponentStyle | None = None
 
 
 class StateUpdateCommand(StrictBaseModel):
@@ -232,6 +325,17 @@ class BgmCommand(StrictBaseModel):
     action: BgmAction
     volume: float | None = Field(default=None, ge=0.0, le=1.0)
     fade_ms: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_fade_action(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or value.get("action") != "fade":
+            return value
+        normalized = dict(value)
+        normalized["action"] = "stop"
+        if normalized.get("fade_ms") is None:
+            normalized["fade_ms"] = 500
+        return normalized
 
 
 class SfxCommand(StrictBaseModel):
@@ -391,6 +495,23 @@ class WaitCommand(StrictBaseModel):
     duration_ms: int = Field(..., ge=0)
 
 
+class RollbackControlCommand(StrictBaseModel):
+    type: Literal["rollback"] = "rollback"
+    action: Literal["checkpoint", "block", "fix", "suspend", "resume"]
+    hard: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_fields(self) -> "RollbackControlCommand":
+        if self.action != "checkpoint" and self.hard is not None:
+            raise ValueError("hard 只适用于 checkpoint 回退控制事件。")
+        return self
+
+    @model_serializer(mode="wrap")
+    def serialize_rollback(self, handler):
+        payload = handler(self)
+        return {key: value for key, value in payload.items() if value is not None}
+
+
 GameCommand = Annotated[
     DialogCommand
     | NarrationCommand
@@ -407,6 +528,7 @@ GameCommand = Annotated[
     | BgmCommand
     | SfxCommand
     | CameraCommand
-    | WaitCommand,
+    | WaitCommand
+    | RollbackControlCommand,
     Field(discriminator="type"),
 ]

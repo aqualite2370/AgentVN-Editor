@@ -1,0 +1,11 @@
+const fs = require("fs");
+const path = require("path");
+const root = path.resolve(__dirname, "..");
+const css = fs.readFileSync(path.join(root, "editor/src/app/App.css"), "utf8") + fs.readFileSync(path.join(root, "editor/src/styles/layout.css"), "utf8");
+if (!css.includes(".project-home-layout") || !css.includes(".recent-project-list")) throw new Error("主页项目布局选择器缺失");
+const listBlock = css.match(/\.recent-project-list\s*\{([^}]*)\}/s)?.[1] ?? "";
+const maxHeight = listBlock.match(/max-height\s*:\s*([^;}]*)/s)?.[1]?.trim();
+if (maxHeight && maxHeight !== "none") throw new Error("最近项目列表仍有固定 max-height");
+if (!/\.recent-project-list\s*\{[^}]*min-height\s*:\s*0/s.test(css)) throw new Error("最近项目列表未允许填充可用高度");
+if (!/\.recent-projects-panel\s*\{[^}]*min-height\s*:\s*0/s.test(css)) throw new Error("最近项目面板未允许填充可用高度");
+console.log("recent projects fill contract: PASS");

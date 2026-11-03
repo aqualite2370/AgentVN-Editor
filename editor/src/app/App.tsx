@@ -1,6 +1,6 @@
 import "./App.css";
 import { Suspense, lazy, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { backendClient } from "../api/backendClient";
+import { BackendProjectImportUnavailableError, backendClient } from "../api/backendClient";
 import type { ProjectSummary, SharedEditorState, SharedProjectGraphState } from "../api/types";
 import { AppErrorBoundary } from "../components/common/AppErrorBoundary";
 import { reportFrontendError } from "../../../shared/logging/frontendErrorLogger";
@@ -15,7 +15,8 @@ import { useProjectStore } from "../store/projectStore";
 import { useThemeStore } from "../store/themeStore";
 import type { NovelPersistenceState } from "../novel-import/types";
 import type { EditorProjectFile } from "../types/nodes";
-import { parseProjectFile } from "../utils/projectImport";
+import { stripEmbeddedAssetPayloadsFromProject } from "../utils/embeddedAssetPayloads";
+import { parseProjectFile, parseProjectJson } from "../utils/projectImport";
 import { writeProjectBackupIfChanged } from "../utils/projectTimeline";
 import { ProjectEntryLoadingOverlay } from "./ProjectEntryLoadingOverlay";
 import { hydrateEditorFromProject as hydrateEditorFromProjectShared } from "./projectHydration";
@@ -33,14 +34,13 @@ const legacyProviderSelectionsKey = "agentvn.providerSelections";
 const legacyProviderSecretsKey = "agentvn.providerSecrets";
 const legacyEditorStoreKey = "agentvn.editor";
 const legacyProjectStoreKey = "agentvn.project";
-const defaultViewTransitionMs = 1120;
-const cartridgeExitTransitionMs = 980;
-const reducedMotionTransitionMs = 360;
+const reducedMotionTransitionMs = 520;
 const projectEntryMinLoadingMs = 1050;
 const projectEntryPrerenderTimeoutMs = 1800;
 const projectEntryClosingMs = 1120;
 const DEFAULT_BACKEND_BASE_URL = import.meta.env.VITE_BACKEND_URL ?? "http://127.0.0.1:8278";
 const legacyProjectStorageMaxChars = 16 * 1024 * 1024;
+const browserProjectStorageMaxChars = 12 * 1024 * 1024;
 type TransitionIntent = "enter-cartridge" | "exit-cartridge" | "standard";
 type EntryOverlayState = "idle" | "loading" | "ready" | "closing";
 type TransitionHomeSnapshot = {
@@ -71,13 +71,55 @@ function readJsonFromLocalStorage<T>(key: string, options: { maxChars?: number }
   }
 }
 
-function writeJsonToLocalStorage(key: string, value: unknown): void {
+function writeJsonToLocalStorage(key: string, value: unknown, options: { maxChars?: number } = {}): void {
   try {
-    window.localStorage.setItem(key, JSON.stringify(value));
+    const serialized = JSON.stringify(value);
+    if (options.maxChars && serialized.length > options.maxChars) {
+      reportFrontendError("editor.local-storage", new Error("Local storage payload exceeds safety limit"), {
+        operation: "write",
+        key,
+        chars: serialized.length,
+        maxChars: options.maxChars,
+      });
+      return;
+    }
+    window.localStorage.setItem(key, serialized);
   } catch (error) {
     reportFrontendError("editor.local-storage", error, { operation: "write", key });
     // Local storage is only a fallback; quota/security errors must not block the editor.
   }
+}
+
+function projectForBrowserStorage(project: EditorProjectFile): EditorProjectFile {
+  return stripEmbeddedAssetPayloadsFromProject(project);
+}
+
+function recentProjectRecordForBrowserStorage(record: RecentProjectRecord): RecentProjectRecord {
+  return {
+    ...record,
+    project: record.project ? projectForBrowserStorage(record.project) : undefined,
+  };
+}
+
+function recentProjectsForBrowserStorage(records: RecentProjectRecord[]): RecentProjectRecord[] {
+  return records.map(recentProjectRecordForBrowserStorage);
+}
+
+function writeCurrentDraftToLocalStorage(projectFile?: EditorProjectFile): void {
+  if (!projectFile) return;
+  writeJsonToLocalStorage(currentDraftKey, projectForBrowserStorage(projectFile), { maxChars: browserProjectStorageMaxChars });
+}
+
+function removeCurrentDraftFromLocalStorage(): void {
+  try {
+    window.localStorage.removeItem(currentDraftKey);
+  } catch (error) {
+    reportFrontendError("editor.local-storage", error, { operation: "remove", key: currentDraftKey });
+  }
+}
+
+function writeRecentProjectsToLocalStorage(records: RecentProjectRecord[]): void {
+  writeJsonToLocalStorage(recentProjectsKey, recentProjectsForBrowserStorage(records), { maxChars: browserProjectStorageMaxChars });
 }
 
 function prefersReducedMotion(): boolean {
@@ -96,21 +138,46 @@ function EditorRouteFallback() {
   return (
     <div className="editor-route-loading" role="status" aria-live="polite">
       <strong>正在载入编辑器</strong>
-      <span>画布、节点检查器和工具面板将按需加载。</span>
     </div>
   );
 }
 
 async function waitForEditorPrerender(timeoutMs: number): Promise<void> {
-  const requiredSelectors = [".editor-shell", ".editor-toolbar", ".flow-surface", ".node-palette", ".inspector-panel"];
+  const requiredSelectors = [
+    ".editor-shell",
+    ".editor-toolbar",
+    '.flow-surface[data-editor-prerender-ready="true"]',
+    ".node-palette",
+    ".inspector-panel",
+  ];
   const startedAt = performance.now();
   while (performance.now() - startedAt < timeoutMs) {
     if (requiredSelectors.every((selector) => document.querySelector(selector))) {
       await nextAnimationFrame();
       await nextAnimationFrame();
-      return;
+      break;
     }
     await nextAnimationFrame();
+  }
+
+  // Keep the loading surface visible until the initial editor commit yields
+  // real browser idle time. This avoids starting the visible container morph
+  // on top of ReactFlow/observer work; it does not add time to the morph.
+  if (typeof window.requestIdleCallback !== "function") {
+    await nextAnimationFrame();
+    await nextAnimationFrame();
+    return;
+  }
+
+  const idleStartedAt = performance.now();
+  let consecutiveIdlePeriods = 0;
+  while (consecutiveIdlePeriods < 2 && performance.now() - idleStartedAt < timeoutMs) {
+    const deadline = await new Promise<IdleDeadline>((resolve) => {
+      window.requestIdleCallback(resolve, { timeout: Math.min(1000, timeoutMs) });
+    });
+    consecutiveIdlePeriods = !deadline.didTimeout && deadline.timeRemaining() >= 8
+      ? consecutiveIdlePeriods + 1
+      : 0;
   }
 }
 
@@ -158,6 +225,8 @@ function summaryToRecentProjectRecord(summary: ProjectSummary): RecentProjectRec
     updated_at: summary.updated_at,
     node_count: summary.node_count,
     edge_count: summary.edge_count,
+    size_bytes: summary.size_bytes,
+    size_source: summary.size_source ?? "unknown",
     schema_version: summary.schema_version,
     has_detail: summary.has_detail,
   };
@@ -170,7 +239,12 @@ function projectToRecentProjectRecord(project: EditorProjectFile): RecentProject
 function normalizeRecentProjects(projects: RecentProjectRecord[], currentDraft?: EditorProjectFile): RecentProjectRecord[] {
   const records = projects.map((record) => ({ ...record }));
   if (!currentDraft) return records;
-  const currentRecord = projectToRecentProjectRecord(currentDraft);
+  const existingRecord = records.find((item) => item.project_id === currentDraft.project_id);
+  const currentRecord = {
+    ...projectToRecentProjectRecord(currentDraft),
+    size_bytes: existingRecord?.size_bytes,
+    size_source: existingRecord?.size_source,
+  };
   return [currentRecord, ...records.filter((item) => item.project_id !== currentDraft.project_id)];
 }
 
@@ -189,7 +263,7 @@ function hydrateNovelImportFromProject(projectFile?: EditorProjectFile): void {
   useNovelImportStore.getState().hydratePersistence(projectFile?.editor_settings?.novelPersistence as NovelPersistenceState | undefined);
 }
 
-function migrateLegacyState(remote: SharedEditorState): Partial<SharedEditorState> {
+function migrateLegacyState(remote: SharedEditorState, migrateProjects: boolean): Partial<SharedEditorState> {
   const payload: Partial<SharedEditorState> = {};
 
   const legacyProviderConnections = remote.provider_connections.length === 0
@@ -217,7 +291,7 @@ function migrateLegacyState(remote: SharedEditorState): Partial<SharedEditorStat
     payload.provider_secrets = legacyProviderSecrets;
   }
 
-  if (remote.project_graph.nodes.length === 0) {
+  if (migrateProjects && remote.project_graph.nodes.length === 0) {
     const legacyCurrentDraft = readJsonFromLocalStorage<EditorProjectFile>(currentDraftKey, { maxChars: legacyProjectStorageMaxChars });
     if (legacyCurrentDraft) {
       payload.project_graph = {
@@ -275,7 +349,7 @@ function migrateLegacyState(remote: SharedEditorState): Partial<SharedEditorStat
     }
   }
 
-  const legacyRecentProjects = remote.recent_projects.length === 0
+  const legacyRecentProjects = migrateProjects && remote.recent_projects.length === 0
     ? readJsonFromLocalStorage<RecentProjectRecord[]>(recentProjectsKey, { maxChars: legacyProjectStorageMaxChars })
     : undefined;
   if (remote.recent_projects.length === 0 && Array.isArray(legacyRecentProjects) && legacyRecentProjects.length > 0) {
@@ -298,9 +372,14 @@ export function App() {
   const [entryOverlayState, setEntryOverlayState] = useState<EntryOverlayState>("idle");
   const [homeHydrationOverlayState, setHomeHydrationOverlayState] = useState<EntryOverlayState>("loading");
   const [isCreatingProject, setIsCreatingProject] = useState(false);
+  const [isImportingProject, setIsImportingProject] = useState(false);
+  const [backendEndpointReady, setBackendEndpointReady] = useState(false);
+  const [supportsNativeProjectPicker, setSupportsNativeProjectPicker] = useState(false);
   const [didHydrate, setDidHydrate] = useState(false);
-  const transitionTimerRef = useRef<number | null>(null);
   const createProjectInFlightRef = useRef(false);
+  const importProjectInFlightRef = useRef(false);
+  const deleteProjectInFlightRef = useRef(new Set<string>());
+  const entryTransitionStartedRef = useRef(false);
   const homeHydrationStartedAtRef = useRef(typeof performance === "undefined" ? 0 : performance.now());
   const committedHomeSnapshotRef = useRef<TransitionHomeSnapshot>({
     recentProjects: [],
@@ -318,14 +397,38 @@ export function App() {
   useEffect(() => installNativeInteractionGuards(document), []);
 
   useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) {
+      backendClient.setBaseUrl(DEFAULT_BACKEND_BASE_URL);
+      setBackendEndpointReady(true);
+      return;
+    }
+    let active = true;
+    void import("@tauri-apps/api/core")
+      .then(({ invoke }) => invoke<string[]>("get_native_capabilities"))
+      .then((capabilities) => {
+        if (!active) return;
+        setSupportsNativeProjectPicker(capabilities.includes("project-import-ticket-v1"));
+        const backendCapability = capabilities.find((item) => item.startsWith("backend-base-url="));
+        backendClient.setBaseUrl(backendCapability?.slice("backend-base-url=".length) || DEFAULT_BACKEND_BASE_URL);
+        setBackendEndpointReady(true);
+      })
+      .catch(() => {
+        if (!active) return;
+        setSupportsNativeProjectPicker(false);
+        backendClient.setBaseUrl(DEFAULT_BACKEND_BASE_URL);
+        setBackendEndpointReady(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
     document.documentElement.dataset.theme = themeTone;
   }, [themeTone]);
 
   useEffect(() => {
-    backendClient.setBaseUrl(DEFAULT_BACKEND_BASE_URL);
-  }, []);
-
-  useEffect(() => {
+    if (!backendEndpointReady) return;
     let mounted = true;
 
     const localDraft = readJsonFromLocalStorage<EditorProjectFile>(currentDraftKey, { maxChars: legacyProjectStorageMaxChars });
@@ -345,20 +448,29 @@ export function App() {
         setDidHydrate(true);
         return;
       }
-      const migrationPayload = migrateLegacyState(loaded);
+      // Keys are restored only through an explicit no-store request, never a
+      // normal project-state response that Chromium could retain on disk.
+      const providerSecrets = await backendClient.loadProviderSecrets();
+      if (!mounted) return;
+      const existingCatalog = await backendClient.loadProjectCatalog();
+      if (!mounted) return;
+      // The lightweight state response deliberately omits project data.
+      // Its empty placeholders are not evidence that the database is empty:
+      // replaying stale browser snapshots here overwrites saved layouts.
+      const migrationPayload = migrateLegacyState({ ...loaded, provider_secrets: providerSecrets }, existingCatalog.length === 0);
       const hasMigration = Object.keys(migrationPayload).length > 0;
       const sharedState = hasMigration ? await backendClient.saveProjectState(migrationPayload) : loaded;
       if (!mounted) return;
 
       hydrateProviderState(sharedState);
-      hydrateApiKeys(sharedState.provider_secrets);
+      hydrateApiKeys(migrationPayload.provider_secrets ?? providerSecrets);
 
       const draft = buildDraftFromSharedState(sharedState);
       if (draft) {
         hydrateEditorFromProjectShared(draft);
         setCurrentDraft(draft);
       }
-      const catalog = await backendClient.loadProjectCatalog();
+      const catalog = hasMigration ? await backendClient.loadProjectCatalog() : existingCatalog;
       if (!mounted) return;
       const catalogRecords = catalog.map(summaryToRecentProjectRecord);
       const sharedRecentRecords = Array.isArray(sharedState.recent_projects)
@@ -366,7 +478,7 @@ export function App() {
         : [];
       const nextRecentProjects = normalizeRecentProjects(mergeRecentProjectRecords(catalogRecords, sharedRecentRecords), draft);
       setRecentProjects(nextRecentProjects);
-      writeJsonToLocalStorage(recentProjectsKey, nextRecentProjects);
+      writeRecentProjectsToLocalStorage(nextRecentProjects);
       setDidHydrate(true);
     }
 
@@ -378,22 +490,19 @@ export function App() {
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [backendEndpointReady]);
 
   const isSwitchingView = Boolean(previousScreen);
   const isEntryOverlayVisible = entryOverlayState !== "idle";
   const isHomeHydrationOverlayVisible = homeHydrationOverlayState !== "idle";
   const isEnterCartridgeTransition = isSwitchingView && transitionIntent === "enter-cartridge";
   const isExitCartridgeTransition = isSwitchingView && transitionIntent === "exit-cartridge";
+  const isEditorEntryTransitionPending = isEnterCartridgeTransition && entryOverlayState !== "closing";
 
   useLayoutEffect(() => {
     if (screen !== "home" || previousScreen) return;
     committedHomeSnapshotRef.current = { recentProjects, currentDraft, homeStatus };
   }, [screen, previousScreen, recentProjects, currentDraft, homeStatus]);
-
-  useEffect(() => () => {
-    if (transitionTimerRef.current !== null) window.clearTimeout(transitionTimerRef.current);
-  }, []);
 
   useEffect(() => {
     if (entryOverlayState !== "loading" || screen !== "editor" || previousScreen !== "home" || transitionIntent !== "enter-cartridge") return;
@@ -432,17 +541,37 @@ export function App() {
   }, [homeHydrationOverlayState]);
 
   useEffect(() => {
-    if (entryOverlayState !== "closing") return;
-    const closingMs = prefersReducedMotion() ? reducedMotionTransitionMs : projectEntryClosingMs;
-    const timer = window.setTimeout(() => {
+    if (!previousScreen || transitionIntent === "enter-cartridge" || entryOverlayState !== "idle") return;
+    let cancelled = false;
+    let startFrame = 0;
+    const finishViewTransition = () => {
+      if (cancelled) return;
       setPreviousScreen(undefined);
       setTransitionIntent("standard");
       setExitingHomeSnapshot(undefined);
-      setEntryOverlayState("idle");
-      transitionTimerRef.current = null;
-    }, closingMs);
-    return () => window.clearTimeout(timer);
-  }, [entryOverlayState]);
+    };
+    startFrame = window.requestAnimationFrame(() => {
+      if (cancelled) return;
+      const transitionNames = new Set([
+        "app-view-enter",
+        "app-view-exit",
+        "project-library-return",
+        "cartridge-container-unload",
+      ]);
+      const transitionAnimations = [...document.querySelectorAll(".app-view.is-entering, .app-view.is-exiting")]
+        .flatMap(view => view.getAnimations())
+        .filter(animation => animation instanceof CSSAnimation && transitionNames.has(animation.animationName));
+      if (transitionAnimations.length === 0) {
+        finishViewTransition();
+        return;
+      }
+      void Promise.allSettled(transitionAnimations.map(animation => animation.finished)).then(finishViewTransition);
+    });
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(startFrame);
+    };
+  }, [entryOverlayState, previousScreen, transitionIntent]);
 
   useEffect(() => {
     if (!didHydrate || screen !== "editor") return;
@@ -454,7 +583,7 @@ export function App() {
       editorSettings: { ...project.settings },
       createdAt: project.createdAt,
     });
-    setCurrentDraft(snapshot);
+    setCurrentDraft(projectForBrowserStorage(snapshot));
   }, [
     didHydrate,
     nodes,
@@ -473,7 +602,7 @@ export function App() {
 
   function navigateTo(next: "home" | "editor") {
     if (next === screen || previousScreen) return;
-    if (transitionTimerRef.current !== null) window.clearTimeout(transitionTimerRef.current);
+    if (next === "editor") entryTransitionStartedRef.current = false;
     setExitingHomeSnapshot(screen === "home" ? committedHomeSnapshotRef.current : undefined);
     const nextIntent: TransitionIntent = screen === "home" && next === "editor"
       ? "enter-cartridge"
@@ -487,40 +616,42 @@ export function App() {
       setScreen(next);
       return;
     }
-    const transitionDuration = prefersReducedMotion()
-      ? reducedMotionTransitionMs
-      : nextIntent === "exit-cartridge"
-        ? cartridgeExitTransitionMs
-        : defaultViewTransitionMs;
     setTransitionIntent(nextIntent);
     setPreviousScreen(screen);
     setScreen(next);
-    transitionTimerRef.current = window.setTimeout(() => {
-      setPreviousScreen(undefined);
-      setTransitionIntent("standard");
-      setExitingHomeSnapshot(undefined);
-      transitionTimerRef.current = null;
-    }, transitionDuration);
   }
 
-  async function refreshProjectCatalog(currentProject?: EditorProjectFile): Promise<RecentProjectRecord[]> {
+  async function refreshProjectCatalog({
+    currentProject,
+    fallbackRecords = recentProjects,
+    useCurrentDraftFallback = true,
+  }: {
+    currentProject?: EditorProjectFile;
+    fallbackRecords?: RecentProjectRecord[];
+    useCurrentDraftFallback?: boolean;
+  } = {}): Promise<RecentProjectRecord[]> {
+    const projectToKeep = currentProject ?? (useCurrentDraftFallback ? currentDraft : undefined);
     try {
       const catalog = await backendClient.loadProjectCatalog();
-      const records = normalizeRecentProjects(catalog.map(summaryToRecentProjectRecord), currentProject ?? currentDraft);
+      const records = normalizeRecentProjects(catalog.map(summaryToRecentProjectRecord), projectToKeep);
       setRecentProjects(records);
-      writeJsonToLocalStorage(recentProjectsKey, records);
+      writeRecentProjectsToLocalStorage(records);
       return records;
     } catch (error) {
       reportFrontendError("editor.project", error, { operation: "refresh-catalog" });
-      const records = normalizeRecentProjects(recentProjects, currentProject ?? currentDraft);
+      const records = normalizeRecentProjects(fallbackRecords, projectToKeep);
       setRecentProjects(records);
-      writeJsonToLocalStorage(recentProjectsKey, records);
+      writeRecentProjectsToLocalStorage(records);
       setHomeStatus("后端暂不可用，已保留本机项目列表。");
       return records;
     }
   }
 
-  async function rememberProject(projectFile?: EditorProjectFile, backupTrigger = "return_home"): Promise<RecentProjectRecord[]> {
+  async function rememberProject(
+    projectFile?: EditorProjectFile,
+    backupTrigger = "return_home",
+    sourceSizeBytes?: number,
+  ): Promise<RecentProjectRecord[]> {
     const snapshot = projectFile ?? exportProject({
       projectId: project.projectId,
       title: project.title,
@@ -529,19 +660,32 @@ export function App() {
       editorSettings: { ...project.settings },
       createdAt: project.createdAt,
     });
-    const next = normalizeRecentProjects(recentProjects, snapshot);
-    setCurrentDraft(snapshot);
+    const browserSafeSnapshot = projectForBrowserStorage(snapshot);
+    const next = normalizeRecentProjects(recentProjects, browserSafeSnapshot);
+    setCurrentDraft(browserSafeSnapshot);
     setRecentProjects(next);
-    writeJsonToLocalStorage(currentDraftKey, snapshot);
-    writeJsonToLocalStorage(recentProjectsKey, next);
-    const persistedSnapshot = await backendClient.saveProject(snapshot).catch((error) => {
+    writeCurrentDraftToLocalStorage(snapshot);
+    writeRecentProjectsToLocalStorage(next);
+    const persistedSnapshot = await backendClient.saveProject(snapshot, { sourceSizeBytes }).catch((error) => {
       reportFrontendError("editor.project", error, {
         operation: "save-project",
         projectId: snapshot.project_id,
       });
-      return snapshot;
+      return browserSafeSnapshot;
     });
-    setCurrentDraft(persistedSnapshot);
+    return await rememberPersistedProject(persistedSnapshot, backupTrigger);
+  }
+
+  async function rememberPersistedProject(
+    persistedSnapshot: EditorProjectFile,
+    backupTrigger = "return_home"
+  ): Promise<RecentProjectRecord[]> {
+    const browserSafeSnapshot = projectForBrowserStorage(persistedSnapshot);
+    const next = normalizeRecentProjects(recentProjects, browserSafeSnapshot);
+    setCurrentDraft(browserSafeSnapshot);
+    setRecentProjects(next);
+    writeCurrentDraftToLocalStorage(persistedSnapshot);
+    writeRecentProjectsToLocalStorage(next);
     await writeProjectBackupIfChanged(persistedSnapshot, backupTrigger).catch((error) => {
       reportFrontendError("editor.timeline", error, {
         operation: "automatic-backup",
@@ -549,26 +693,55 @@ export function App() {
         trigger: backupTrigger,
       });
     });
-    return await refreshProjectCatalog(persistedSnapshot);
+    return await refreshProjectCatalog({ currentProject: persistedSnapshot });
   }
 
   async function deleteProject(record: RecentProjectRecord) {
-    const nextRecentProjects = recentProjects.filter((item) => item.project_id !== record.project_id);
-    const isCurrentDraft = currentDraft?.project_id === record.project_id;
+    if (deleteProjectInFlightRef.current.has(record.project_id)) return;
+    deleteProjectInFlightRef.current.add(record.project_id);
+
+    const previousRecentProjects = recentProjects;
+    const previousCurrentDraft = currentDraft;
+    const nextRecentProjects = previousRecentProjects.filter((item) => item.project_id !== record.project_id);
+    const isCurrentDraft = previousCurrentDraft?.project_id === record.project_id;
     const isActiveProject = project.projectId === record.project_id;
+
+    setHomeStatus(`正在删除项目：${record.title || "未命名视觉小说"}…`);
     setRecentProjects(nextRecentProjects);
-    writeJsonToLocalStorage(recentProjectsKey, nextRecentProjects);
+    writeRecentProjectsToLocalStorage(nextRecentProjects);
     if (isCurrentDraft) setCurrentDraft(undefined);
-    await backendClient.deleteProject(record.project_id);
 
-    if (isActiveProject) {
-      project.createProject({ title: "未命名视觉小说", author: "" });
-      resetGraph();
-      hydrateNovelImportFromProject(undefined);
+    try {
+      await backendClient.deleteProject(record.project_id);
+
+      if (isCurrentDraft) removeCurrentDraftFromLocalStorage();
+      if (isActiveProject) {
+        project.createProject({ title: "未命名视觉小说", author: "" });
+        resetGraph();
+        hydrateNovelImportFromProject(undefined);
+      }
+      await refreshProjectCatalog({
+        currentProject: isCurrentDraft ? undefined : previousCurrentDraft,
+        fallbackRecords: nextRecentProjects,
+        useCurrentDraftFallback: false,
+      });
+      setHomeStatus(`已删除项目：${record.title || "未命名视觉小说"}`);
+    } catch (error) {
+      reportFrontendError("editor.project", error, {
+        operation: "delete-project",
+        projectId: record.project_id,
+      });
+      setRecentProjects(previousRecentProjects);
+      writeRecentProjectsToLocalStorage(previousRecentProjects);
+      if (isCurrentDraft && previousCurrentDraft) {
+        setCurrentDraft(previousCurrentDraft);
+        writeCurrentDraftToLocalStorage(previousCurrentDraft);
+      }
+      const detail = error instanceof Error ? error.message : String(error);
+      setHomeStatus(`删除失败，项目已保留：${detail}`);
+    } finally {
+      deleteProjectInFlightRef.current.delete(record.project_id);
     }
-    await refreshProjectCatalog(isCurrentDraft ? undefined : currentDraft);
-
-    setHomeStatus(`已删除项目：${record.title || "未命名视觉小说"}`);
   }
 
   async function createProject() {
@@ -611,12 +784,12 @@ export function App() {
           settings: { ...nextProject.settings },
         },
       });
-    setCurrentDraft(nextDraft);
-    writeJsonToLocalStorage(currentDraftKey, nextDraft);
+    setCurrentDraft(projectForBrowserStorage(nextDraft));
+    writeCurrentDraftToLocalStorage(nextDraft);
       const savedDraft = await backendClient.saveProject(nextDraft);
       setCurrentDraft(savedDraft);
-      writeJsonToLocalStorage(currentDraftKey, savedDraft);
-      await refreshProjectCatalog(savedDraft);
+      writeCurrentDraftToLocalStorage(savedDraft);
+      await refreshProjectCatalog({ currentProject: savedDraft });
       navigateTo("editor");
     } catch (error) {
       reportFrontendError("editor.project", error, { operation: "create-project" });
@@ -629,11 +802,10 @@ export function App() {
 
   function openDraft() {
     if (!currentDraft) return;
-    importProject(currentDraft);
-    project.loadProjectMetadata(currentDraft);
-    hydrateNovelImportFromProject(currentDraft);
-    setHomeStatus(undefined);
-    navigateTo("editor");
+    // The browser draft is a home-screen cache and can predate a successful
+    // layout save. Resume through the persisted-project path, just like a
+    // catalog entry, instead of importing that stale snapshot into autosave.
+    void openProject({ ...projectToRecentProjectRecord(currentDraft), project: undefined });
   }
 
   async function openProject(record: RecentProjectRecord) {
@@ -644,7 +816,7 @@ export function App() {
       project.loadProjectMetadata(projectFile);
       hydrateNovelImportFromProject(projectFile);
       setCurrentDraft(projectFile);
-      setRecentProjects(normalizeRecentProjects(recentProjects, projectFile));
+      setRecentProjects(normalizeRecentProjects(recentProjects, projectForBrowserStorage(projectFile)));
       navigateTo("editor");
     } catch (error) {
       reportFrontendError("editor.project", error, { operation: "open-project", projectId: record.project_id });
@@ -652,27 +824,130 @@ export function App() {
     }
   }
 
-  async function importProjectFile(file: File) {
-    const result = await parseProjectFile(file);
-    if (!result.project) {
-      reportFrontendError("editor.project", result.error ?? "导入失败。", {
-        operation: "import-project-file",
-        fileName: file.name,
-      });
-      setHomeStatus(result.error ?? "导入失败。");
-      return;
-    }
-    importProject(result.project);
-    project.loadProjectMetadata(result.project);
-    hydrateNovelImportFromProject(result.project);
-    const persisted = await rememberProject(result.project);
-    const persistedProject = persisted.find((item) => item.project_id === result.project?.project_id)?.project;
-    if (persistedProject) {
-      project.loadProjectMetadata(persistedProject);
-      hydrateNovelImportFromProject(persistedProject);
-    }
+  async function finishProjectImport(
+    importedProject: EditorProjectFile,
+    alreadyPersisted: boolean,
+    sourceSizeBytes?: number,
+  ) {
+    // Import is a commit boundary, unlike ordinary offline draft caching.
+    // Never replace the current graph, task session or home cache until the
+    // backend has accepted the new project. rememberProject deliberately
+    // tolerates save errors for other callers, so it cannot gate this path.
+    const savedProject = alreadyPersisted
+      ? importedProject
+      : await backendClient.saveProject(importedProject, { sourceSizeBytes });
+    await rememberPersistedProject(savedProject, "import_project");
+    importProject(importedProject);
+    /*
+     * Browser persistence strips embedded asset payloads by design.  Keep the
+     * freshly imported in-memory metadata (including data URLs) for the live
+     * preview instead of replacing it with the stripped recent-project copy.
+     */
+    project.loadProjectMetadata(importedProject);
+    hydrateNovelImportFromProject(importedProject);
     setHomeStatus(undefined);
     navigateTo("editor");
+  }
+
+  async function selectProjectImportFile() {
+    if (importProjectInFlightRef.current) return;
+    importProjectInFlightRef.current = true;
+    setIsImportingProject(true);
+    setHomeStatus("请选择要导入的 AgentVN 工程文件…");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const ticket = await invoke<string | null>("select_project_import_file");
+      if (!ticket) {
+        setHomeStatus(undefined);
+        return;
+      }
+      setHomeStatus("正在通过桌面原生通道导入工程并托管素材…");
+      let backendProject: EditorProjectFile;
+      try {
+        backendProject = await backendClient.importProjectTicket(ticket);
+      } catch (error) {
+        if (error instanceof BackendProjectImportUnavailableError) {
+          throw new Error("后端版本不匹配，无法导入工程。请完全退出 AgentVN，重新安装最新版后再试。");
+        }
+        throw error;
+      }
+      const validation = parseProjectJson(backendProject);
+      if (!validation.project) {
+        throw new Error(validation.error ?? "后端返回的工程结构无效。");
+      }
+      await finishProjectImport(validation.project, true);
+    } catch (error) {
+      reportFrontendError("editor.project", error, {
+        operation: "import-project-ticket",
+      });
+      setHomeStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      importProjectInFlightRef.current = false;
+      setIsImportingProject(false);
+    }
+  }
+
+  async function importProjectFile(file: File) {
+    if (importProjectInFlightRef.current) return;
+    importProjectInFlightRef.current = true;
+    setIsImportingProject(true);
+    setHomeStatus(`正在通过后端安全导入 ${file.name}（${Math.max(1, Math.round(file.size / 1024 / 1024))}MB）…`);
+    try {
+      let importedProject: EditorProjectFile;
+      let alreadyPersisted = true;
+      const browserRuntime = !("__TAURI_INTERNALS__" in window);
+      if (browserRuntime) {
+        /*
+         * The backend intentionally externalizes ZIP assets before returning
+         * the project.  A browser cannot read those server-side file paths,
+         * so use the bundle parser here to keep data URLs available to the
+         * live preview.  Persistence still happens through rememberProject.
+         */
+        const fallback = await parseProjectFile(file);
+        if (fallback.project) {
+          importedProject = fallback.project;
+          alreadyPersisted = false;
+          setHomeStatus("工程已读取，正在准备素材预览…");
+        } else {
+          const backendProject = await backendClient.importProjectFile(file);
+          const validation = parseProjectJson(backendProject);
+          if (!validation.project) {
+            throw new Error(`${fallback.error ?? "浏览器兼容导入失败。"} ${validation.error ?? "后端返回的工程结构无效。"}`);
+          }
+          importedProject = validation.project;
+        }
+      } else {
+        try {
+          const backendProject = await backendClient.importProjectFile(file);
+          const validation = parseProjectJson(backendProject);
+          if (!validation.project) {
+            throw new Error(validation.error ?? "后端返回的工程结构无效。");
+          }
+          importedProject = validation.project;
+        } catch (error) {
+          if (!(error instanceof BackendProjectImportUnavailableError)) throw error;
+          alreadyPersisted = false;
+          setHomeStatus("后端原生导入不可用，正在尝试浏览器兼容导入…");
+          const fallback = await parseProjectFile(file);
+          if (!fallback.project) {
+            throw new Error(`${error.message} ${fallback.error ?? "浏览器兼容导入失败。"}`);
+          }
+          importedProject = fallback.project;
+        }
+      }
+
+      await finishProjectImport(importedProject, alreadyPersisted, file.size);
+    } catch (error) {
+      reportFrontendError("editor.project", error, {
+        operation: "import-project-file",
+        fileName: file.name,
+        fileSize: file.size,
+      });
+      setHomeStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      importProjectInFlightRef.current = false;
+      setIsImportingProject(false);
+    }
   }
 
   function returnHome() {
@@ -690,7 +965,45 @@ export function App() {
   }
 
   function completeProjectEntryCycle() {
-    setEntryOverlayState((current) => current === "ready" ? "closing" : current);
+    if (entryOverlayState !== "ready" || entryTransitionStartedRef.current) return;
+    const editorView = document.querySelector<HTMLElement>(".app-view-editor.is-entry-pending");
+    const overlay = document.querySelector<HTMLElement>('.project-entry-loading-overlay[data-overlay-kind="project-entry"].is-ready');
+    if (!editorView || !overlay) return;
+
+    // Start the established CSS animations after the state-render that prepared
+    // the editor has settled. A React state update here would make that same
+    // commit compete with the first visible container-morph frames.
+    entryTransitionStartedRef.current = true;
+    editorView.classList.remove("is-entry-pending");
+    editorView.classList.add("is-entering");
+    overlay.classList.remove("is-ready");
+    overlay.classList.add("is-closing");
+
+    let cancelled = false;
+    window.requestAnimationFrame(() => {
+      if (cancelled) return;
+      const transitionAnimations = [
+        ...editorView.getAnimations(),
+        ...overlay.getAnimations(),
+      ].filter(animation => {
+        if (!(animation instanceof CSSAnimation)) return false;
+        return animation.animationName === "container-boot"
+          || animation.animationName === "project-entry-overlay-out";
+      });
+      const finishEntryTransition = () => {
+        if (cancelled) return;
+        setPreviousScreen(undefined);
+        setTransitionIntent("standard");
+        setExitingHomeSnapshot(undefined);
+        setEntryOverlayState("idle");
+      };
+      if (transitionAnimations.length === 0) {
+        finishEntryTransition();
+        return;
+      }
+      void Promise.allSettled(transitionAnimations.map(animation => animation.finished))
+        .then(finishEntryTransition);
+    });
   }
 
   function renderScreen(target: "home" | "editor", useExitingSnapshot = false) {
@@ -704,12 +1017,16 @@ export function App() {
         onOpenProject={(record) => void openProject(record)}
         onDeleteProject={(record) => void deleteProject(record)}
         onImportProject={(file) => void importProjectFile(file)}
+        onSelectProjectFile={supportsNativeProjectPicker ? () => void selectProjectImportFile() : undefined}
         statusMessage={homeSnapshot ? homeSnapshot.homeStatus : homeStatus}
-        isHydrating={!didHydrate || isCreatingProject}
+        isHydrating={!didHydrate || isCreatingProject || isImportingProject}
       />
     ) : (
       <Suspense fallback={<EditorRouteFallback />}>
-        <VisualNovelEditor onReturnHome={returnHome} />
+        <VisualNovelEditor
+          onReturnHome={returnHome}
+          deferRuntimePreview={isEnterCartridgeTransition && !useExitingSnapshot}
+        />
         {!useExitingSnapshot && !isSwitchingView && !isEntryOverlayVisible && <NovelProcessTaskWorkbench />}
       </Suspense>
     );
@@ -726,14 +1043,16 @@ export function App() {
               {renderScreen(previousScreen, true)}
             </div>
           )}
-          <div className={`app-view app-view-${screen}${isSwitchingView ? " is-entering" : " is-active"}`}>
+          <div className={`app-view app-view-${screen}${isSwitchingView
+            ? isEditorEntryTransitionPending ? " is-entry-pending" : " is-entering"
+            : " is-active"}`}>
             {renderScreen(screen)}
           </div>
           {isHomeHydrationOverlayVisible && (
-            <ProjectEntryLoadingOverlay state={homeHydrationOverlayState} onReadyCycleComplete={completeHomeHydrationCycle} />
+            <ProjectEntryLoadingOverlay kind="home-hydration" state={homeHydrationOverlayState} onReadyCycleComplete={completeHomeHydrationCycle} />
           )}
           {isEntryOverlayVisible && (
-            <ProjectEntryLoadingOverlay state={entryOverlayState} onReadyCycleComplete={completeProjectEntryCycle} />
+            <ProjectEntryLoadingOverlay kind="project-entry" state={entryOverlayState} onReadyCycleComplete={completeProjectEntryCycle} />
           )}
         </div>
         <HoverHelpLayer />

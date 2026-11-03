@@ -1,0 +1,11 @@
+[package]
+name = "agentvn-e2-webview2-diagnostic-host"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+tao = "=0.35.3"
+wry = "=0.55.1"
+
+[workspace]

@@ -2,6 +2,7 @@ import type { EditorProjectFile } from "../types/nodes";
 import { countEmbeddedAssetPayloads, embeddedProjectPayloadImportLimitBytes, embeddedProjectPayloadInlineLimitChars } from "./embeddedAssetPayloads";
 import { validateProject } from "./validation";
 import { reportFrontendError } from "../../../shared/logging/frontendErrorLogger";
+import { isProjectZipBytes, readProjectJsonFromBundle } from "./projectBundle";
 
 export interface ProjectImportResult {
   project?: EditorProjectFile;
@@ -49,19 +50,34 @@ export function parseProjectJson(parsed: unknown): ProjectImportResult {
 }
 
 export async function parseProjectFile(file: File): Promise<ProjectImportResult> {
+  const header = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+  if (isProjectZipBytes(header)) {
+    try {
+      return parseProjectJson(await readProjectJsonFromBundle(file));
+    } catch (error) {
+      reportFrontendError("editor.project-import", error, {
+        operation: "parse-zip",
+        fileName: file.name,
+        fileSize: file.size,
+      });
+      return { error: error instanceof Error ? error.message : "工程 ZIP 无法读取。" };
+    }
+  }
   if (file.size > embeddedProjectPayloadImportLimitBytes) {
     return {
-      error: `导入失败：工程文件约 ${Math.round(file.size / 1024 / 1024)}MB，超过安全上限。请先外置素材或运行修复脚本再导入。`,
+      error: `LEGACY_JSON_SIZE_LIMIT：旧 JSON 工程约 ${Math.round(file.size / 1024 / 1024)}MB，超过兼容导入安全上限。请使用桌面版先转换为 ZIP .vnproj。`,
     };
   }
   try {
-    return parseProjectJson(JSON.parse(await file.text()));
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes).replace(/^\uFEFF/, "");
+    return parseProjectJson(JSON.parse(text));
   } catch (error) {
     reportFrontendError("editor.project-import", error, {
       operation: "parse",
       fileName: file.name,
       fileSize: file.size,
     });
-    return { error: "导入失败：文件不是有效的 JSON。" };
+    return { error: "PROJECT_CONTAINER_INVALID：文件不是严格 UTF-8 JSON，也不是 AgentVN ZIP 工程。" };
   }
 }

@@ -1,5 +1,5 @@
 import { Layers, Palette, RotateCcw, Save, Users } from "lucide-react";
-import { useState, type CSSProperties } from "react";
+import { useId, useState, type CSSProperties } from "react";
 import type { DialogCommand } from "../../types/commands";
 import { useEditorStore } from "../../store/editorStore";
 import { useProjectStore } from "../../store/projectStore";
@@ -8,7 +8,9 @@ import { FieldHelp } from "../common/FieldHelp";
 import { AssetPicker } from "../common/AssetPicker";
 import { ColorPickerDialog } from "../common/ColorPickerDialog";
 import { RichSelect } from "../common/RichSelect";
+import { DialogTextLengthHint } from "./DialogTextLengthHint";
 import { DialogTextStyleControls, pickDialogTextStyle } from "./DialogTextStyleControls";
+import { DialogPresentationControls } from "./DialogPresentationControls";
 
 type DialogStyle = NonNullable<DialogCommand["dialog_style"]>;
 
@@ -28,6 +30,7 @@ function cleanDialogStyle(style: DialogStyle | null | undefined): DialogStyle | 
 }
 
 export function DialogCommandEditor({ command, onChange }: { command: DialogCommand; onChange: (command: DialogCommand) => void }) {
+  const textLengthHintId = useId();
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
   const applyDialogPortraitToCharacter = useEditorStore((state) => state.applyDialogPortraitToCharacter);
   const applyDialogTextStyleToCharacter = useEditorStore((state) => state.applyDialogTextStyleToCharacter);
@@ -86,8 +89,18 @@ export function DialogCommandEditor({ command, onChange }: { command: DialogComm
   }
   return (
     <div className="form-grid">
+      <DialogPresentationControls command={command} onChange={patch => onChange({ ...command, ...patch })} />
       <label>角色编号 <FieldHelp field="character_id" /><input value={command.character_id} data-help-key="command.dialog.characterId" onChange={(e) => onChange({ ...command, character_id: e.target.value })} /></label>
-      <label>台词文本 <FieldHelp field="text" /><textarea value={command.text} data-help-key="command.dialog.text" onChange={(e) => onChange({ ...command, text: e.target.value })} /></label>
+      <label className="dialog-text-input">
+        <span>台词文本 <FieldHelp field="text" /></span>
+        <textarea
+          value={command.text}
+          data-help-key="command.dialog.text"
+          aria-describedby={textLengthHintId}
+          onChange={(e) => onChange({ ...command, text: e.target.value })}
+        />
+        <DialogTextLengthHint id={textLengthHintId} text={command.text} />
+      </label>
       <label>情绪 / 表情 <FieldHelp field="emotion" /><input value={command.emotion ?? ""} data-help-key="command.dialog.emotion" onChange={(e) => onChange({ ...command, emotion: e.target.value })} /></label>
       <AssetPicker
         label="头像素材"

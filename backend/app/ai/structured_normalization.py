@@ -1080,6 +1080,10 @@ def _normalize_command(command: dict[str, Any]) -> None:
         command.setdefault("blocking", True)
     if command.get("type") == "bgm":
         command.setdefault("action", "play")
+        if command.get("action") == "fade":
+            command["action"] = "stop"
+            if command.get("fade_ms") is None:
+                command["fade_ms"] = 500
     if command.get("type") == "sfx":
         command.setdefault("sfx_id", "unknown_sfx")
     if command.get("type") == "camera":
@@ -1092,7 +1096,7 @@ def _normalize_command(command: dict[str, Any]) -> None:
 def _strip_unknown_command_fields(command: dict[str, Any]) -> None:
     allowed_by_type = {
         "dialog": {"type", "character_id", "text", "emotion", "portrait", "voice", "side", "font_asset_id", "dialog_style", "dialog_style_mode"},
-        "narration": {"type", "text", "font_asset_id", "dialog_style", "dialog_style_mode"},
+        "narration": {"type", "text", "font_asset_id", "dialog_style", "dialog_style_mode", "narration_style"},
         "hide_dialog": {"type"},
         "background": {"type", "background_id", "background_fit", "transition", "transition_display_name", "transition_config"},
         "show_image": {
@@ -1106,8 +1110,8 @@ def _strip_unknown_command_fields(command: dict[str, Any]) -> None:
             "backdrop_blur_px",
         },
         "video": {"type", "video_id", "video_fit", "fade_in_ms", "fade_out_ms"},
-        "sprite": {"type", "character_id", "sprite_id", "position", "layer", "animation", "animation_display_name", "animation_config", "switch_transition", "scale", "visible"},
-        "choice": {"type", "choices"},
+        "sprite": {"type", "character_id", "sprite_id", "position", "offset_x", "offset_y", "layer", "animation", "animation_display_name", "animation_config", "switch_transition", "scale", "visible"},
+        "choice": {"type", "choices", "button_style"},
         "state_update": {"type", "key", "operation", "value", "value_type"},
         "conditional_jump": {"type", "condition", "target_scene_id", "else_target_scene_id"},
         "jump": {"type", "target_scene_id"},
@@ -1116,6 +1120,7 @@ def _strip_unknown_command_fields(command: dict[str, Any]) -> None:
         "sfx": {"type", "sfx_id", "volume"},
         "camera": {"type", "action", "params", "motion", "blocking"},
         "wait": {"type", "duration_ms"},
+        "rollback": {"type", "action", "hard"},
     }
     allowed = allowed_by_type.get(command.get("type"))
     if not allowed:
@@ -1135,7 +1140,7 @@ def _strip_unknown_command_fields(command: dict[str, Any]) -> None:
             choice.setdefault("target_scene_id", "")
             choice.setdefault("conditions", [])
             for key in list(choice.keys()):
-                if key not in {"choice_id", "choice_display_name", "text", "target_scene_id", "conditions"}:
+                if key not in {"choice_id", "choice_display_name", "text", "target_scene_id", "conditions", "button_style"}:
                     choice.pop(key, None)
 
 

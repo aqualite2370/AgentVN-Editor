@@ -1,5 +1,5 @@
 import type { GameCommand } from "./commands";
-import type { DialogVisualStyle } from "../../../shared/cartridge/types";
+import type { DialogPresentationMode, DialogVisualStyle, OpeningAudioTrack } from "../../../shared/cartridge/types";
 
 export type LoadingAnimationConfig =
   | { kind: "default" }
@@ -12,14 +12,25 @@ export interface SpeakerFocusConfig {
   duration_ms: number;
 }
 
+export interface RollbackRuntimeConfig {
+  enabled?: boolean;
+  hard_limit?: number;
+  log_length?: number;
+  pause_as_checkpoint?: boolean;
+  fixed_choice_mode?: "selected_only" | "selected_marked";
+}
+
 export interface RuntimeScript {
   schema_version: string;
   game_id: string;
   title: string;
   entry_scene_id: string;
   default_sprite_scale?: number;
+  default_dialog_presentation?: DialogPresentationMode;
   speaker_focus?: SpeakerFocusConfig;
   loading_animation?: LoadingAnimationConfig;
+  opening_audio?: OpeningAudioTrack[];
+  rollback?: RollbackRuntimeConfig;
   characters?: CharacterProfile[];
   scenes: RuntimeScene[];
 }
@@ -29,6 +40,7 @@ export interface CharacterProfile {
   name: string;
   aliases?: string[];
   dialog_style?: DialogVisualStyle | null;
+  dialog_presentation?: DialogPresentationMode;
 }
 
 export interface RuntimeScene {

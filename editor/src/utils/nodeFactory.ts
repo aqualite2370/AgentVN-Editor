@@ -194,6 +194,11 @@ export function cloneNode(node: EditorNode): EditorNode {
     cloned.data.scene.scene_id = `scene_${nanoid(8)}`;
     cloned.data.scene.title = `${cloned.data.scene.title} 副本`;
     cloned.data.label = cloned.data.scene.title;
+    cloned.data.scene.commands = cloned.data.scene.commands.map((command) => (
+      command.type === "gallery_anchor"
+        ? { ...command, anchor_id: `gallery_anchor_${nanoid(8)}` }
+        : command
+    ));
   }
   cloned.data.editorMeta = { ...cloned.data.editorMeta, source: "manual", generatedAt: undefined, generatedFromNodeId: undefined };
   return cloned;

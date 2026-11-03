@@ -19,6 +19,8 @@ import {
   MoveRight,
   PanelLeft,
   Pencil,
+  RotateCcw,
+  Search,
   Trash2,
   Type,
   UploadCloud,
@@ -58,6 +60,12 @@ import { RichSelect } from "../common/RichSelect";
 
 const ASSET_DRAG_MIME = "application/x-agentvn-asset-ids";
 const ROOT_FOLDER_DROP_KEY = "__root__";
+const ALL_ASSET_TYPES = "__all_asset_types__";
+const ALL_ASSET_SOURCES = "__all_asset_sources__";
+
+type AssetTypeFilter = AssetType | typeof ALL_ASSET_TYPES;
+type AssetSourceFilter = keyof typeof sourceLabels | typeof ALL_ASSET_SOURCES;
+type AssetSortMode = "newest" | "name" | "type";
 
 const sourceLabels: Record<string, string> = {
   generated: "生成素材",
@@ -65,6 +73,17 @@ const sourceLabels: Record<string, string> = {
   edited: "编辑素材",
   bundled: "内置素材",
 };
+
+const assetSourceOptions = [
+  { value: ALL_ASSET_SOURCES, label: "全部来源" },
+  ...Object.entries(sourceLabels).map(([value, label]) => ({ value, label })),
+];
+
+const assetSortOptions: Array<{ value: AssetSortMode; label: string }> = [
+  { value: "newest", label: "最近加入" },
+  { value: "name", label: "按名称" },
+  { value: "type", label: "按类型" },
+];
 
 interface PendingImport {
   dataUrl: string;
@@ -110,13 +129,20 @@ function readFileAsDataUrl(file: File): Promise<string> {
   });
 }
 
-function readVideoMetadata(source: string): Promise<Pick<PendingImport, "width" | "height" | "durationMs">> {
+function readMediaMetadata(source: string): Promise<Pick<PendingImport, "width" | "height" | "durationMs">> {
   return new Promise((resolve, reject) => {
     const video = document.createElement("video");
     const cleanup = () => {
+      window.clearTimeout(timeout);
+      video.onloadedmetadata = null;
+      video.onerror = null;
       video.removeAttribute("src");
       video.load();
     };
+    const timeout = window.setTimeout(() => {
+      cleanup();
+      reject(new Error("音视频元数据读取超时。"));
+    }, 10000);
     video.preload = "metadata";
     video.muted = true;
     video.onloadedmetadata = () => {
@@ -131,7 +157,7 @@ function readVideoMetadata(source: string): Promise<Pick<PendingImport, "width" 
     };
     video.onerror = () => {
       cleanup();
-      reject(new Error("当前 WebView 无法解析该视频的编码或容器。素材仍可导入，但运行时可能无法播放。"));
+      reject(new Error("当前 WebView 无法解析该音视频的编码或容器。"));
     };
     video.src = source;
   });
@@ -204,6 +230,22 @@ function fileNameFromPath(filePath: string): string {
 
 function assetDisplayName(asset: LibraryAssetRecord): string {
   return safeVisibleText(asset.display_name, safeAssetFilename(asset));
+}
+
+function updateAssetType(asset: AssetRef, nextAssetType: AssetType): AssetRef {
+  return {
+    ...asset,
+    asset_type: nextAssetType,
+    metadata: {
+      ...asset.metadata,
+      source: "edited",
+      project_path: buildProjectAssetPath(
+        nextAssetType,
+        asset.asset_id,
+        asset.metadata.filename ?? `${asset.asset_id}.bin`,
+      ),
+    },
+  };
 }
 
 function safeAssetFilename(asset: LibraryAssetRecord): string {
@@ -304,7 +346,7 @@ async function prepareAutomaticImport(file: File): Promise<PendingImport> {
     Object.assign(pending, await readImageMetadata(dataUrl));
   } else if (pending.mimeType.startsWith("video/") || /\.(mp4|webm|mov)$/i.test(file.name)) {
     try {
-      Object.assign(pending, await readVideoMetadata(dataUrl));
+      Object.assign(pending, await readMediaMetadata(dataUrl));
     } catch (error) {
       reportFrontendError("editor.asset-library", error, {
         operation: "read-video-metadata",
@@ -367,30 +409,42 @@ function isInteractiveTarget(target: EventTarget | null): boolean {
 export function AssetLibraryPanel({
   assets,
   assetLibrary,
-  onDelete,
   onImportMany,
-  onUpdate,
+  onUpdateMany,
   onAssetLibraryChange,
+  onDeleteMany,
 }: {
   assets: AssetRef[];
   assetLibrary: AssetLibrarySettings;
-  onDelete: (assetId: string) => void;
   onImportMany: (entries: Array<{ asset: AssetRef; folderId: string | null }>) => void;
-  onUpdate: (asset: AssetRef) => void;
+  onUpdateMany: (assets: AssetRef[]) => void;
   onAssetLibraryChange: (assetLibrary: AssetLibrarySettings) => void;
+  onDeleteMany: (assetIds: string[]) => void;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const fontInputRef = useRef<HTMLInputElement>(null);
-  const hoverExpandTimerRef = useRef<number>();
-  const hoverExpandFolderRef = useRef<string>();
+  const replaceInputRef = useRef<HTMLInputElement>(null);
+  const replacementReadGenerationRef = useRef(0);
+  const replacementReadTypeRef = useRef<AssetType | undefined>(undefined);
+  useEffect(() => () => { ++replacementReadGenerationRef.current; }, []);
+  const hoverExpandTimerRef = useRef<number | undefined>(undefined);
+  const hoverExpandFolderRef = useRef<string | undefined>(undefined);
   const nativePathsRef = useRef<string[]>([]);
   const [pendingImport, setPendingImport] = useState<PendingImport | null>(null);
+  const [replacementTargetId, setReplacementTargetId] = useState<string | null>(null);
+  const [pendingReplacement, setPendingReplacement] = useState<PendingImport | null>(null);
   const [assetType, setAssetType] = useState<AssetType>("background");
   const [licenseNote, setLicenseNote] = useState("");
   const [error, setError] = useState<string>();
   const [feedback, setFeedback] = useState<FeedbackState>();
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
+  const [showAllAssets, setShowAllAssets] = useState(false);
   const [selectedAssetIds, setSelectedAssetIds] = useState<Set<string>>(() => new Set());
+  const [searchQuery, setSearchQuery] = useState("");
+  const [typeFilter, setTypeFilter] = useState<AssetTypeFilter>(ALL_ASSET_TYPES);
+  const [sourceFilter, setSourceFilter] = useState<AssetSourceFilter>(ALL_ASSET_SOURCES);
+  const [sortMode, setSortMode] = useState<AssetSortMode>("newest");
+  const [batchAssetType, setBatchAssetType] = useState<AssetType>("background");
   const [folderDraftName, setFolderDraftName] = useState("");
   const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
   const [editingFolderName, setEditingFolderName] = useState("");
@@ -415,12 +469,51 @@ export function AssetLibraryPanel({
     }
     return children;
   }, [folders]);
-  const visibleAssets = useMemo(
-    () => libraryAssets.filter((asset) => assetIsVisibleInFolder(assetLibrary, asset.asset_id, currentFolderId)),
-    [assetLibrary, currentFolderId, libraryAssets],
+  const folderAssets = useMemo(
+    () => showAllAssets
+      ? libraryAssets
+      : libraryAssets.filter((asset) => assetIsVisibleInFolder(assetLibrary, asset.asset_id, currentFolderId)),
+    [assetLibrary, currentFolderId, libraryAssets, showAllAssets],
   );
+  const visibleAssets = useMemo(() => {
+    const query = searchQuery.trim().toLocaleLowerCase("zh-CN");
+    const filtered = folderAssets.filter((asset) => {
+      if (typeFilter !== ALL_ASSET_TYPES && asset.asset_type !== typeFilter) return false;
+      if (sourceFilter !== ALL_ASSET_SOURCES && asset.source !== sourceFilter) return false;
+      if (!query) return true;
+      return [
+        assetDisplayName(asset),
+        asset.asset_id,
+        safeAssetFilename(asset),
+        asset.license_note ?? "",
+        assetTypeDisplayLabel(asset.asset_type),
+        sourceLabels[asset.source] ?? "",
+      ].some((value) => value.toLocaleLowerCase("zh-CN").includes(query));
+    });
+    return [...filtered].sort((left, right) => {
+      if (sortMode === "name") {
+        return assetDisplayName(left).localeCompare(assetDisplayName(right), "zh-CN", { numeric: true });
+      }
+      if (sortMode === "type") {
+        const typeOrder = assetTypeDisplayLabel(left.asset_type).localeCompare(assetTypeDisplayLabel(right.asset_type), "zh-CN");
+        return typeOrder || assetDisplayName(left).localeCompare(assetDisplayName(right), "zh-CN", { numeric: true });
+      }
+      return Date.parse(right.created_at) - Date.parse(left.created_at)
+        || assetDisplayName(left).localeCompare(assetDisplayName(right), "zh-CN", { numeric: true });
+    });
+  }, [folderAssets, searchQuery, sortMode, sourceFilter, typeFilter]);
   const selectedCount = selectedAssetIds.size;
+  const allVisibleSelected = visibleAssets.length > 0
+    && visibleAssets.every((asset) => selectedAssetIds.has(asset.asset_id));
+  const hasActiveFilters = Boolean(searchQuery.trim())
+    || typeFilter !== ALL_ASSET_TYPES
+    || sourceFilter !== ALL_ASSET_SOURCES
+    || sortMode !== "newest";
   const folderOptions = useMemo(() => buildFolderOptions(folders), [folders]);
+  const typeFilterOptions = useMemo(
+    () => [{ value: ALL_ASSET_TYPES, label: "全部类型" }, ...assetTypeOptions],
+    [],
+  );
   const folderCounts = useMemo(() => {
     const counts = new Map<string | null, number>();
     for (const asset of assets) {
@@ -432,7 +525,11 @@ export function AssetLibraryPanel({
     }
     return counts;
   }, [assetLibrary, assets]);
-  const breadcrumbs = useMemo(() => folderPath(folders, currentFolderId), [currentFolderId, folders]);
+  const breadcrumbs = useMemo(
+    () => showAllAssets ? [] : folderPath(folders, currentFolderId),
+    [currentFolderId, folders, showAllAssets],
+  );
+  const activeFolderId = showAllAssets ? null : currentFolderId;
 
   useEffect(() => {
     if (currentFolderId && !folders.some((folder) => folder.folder_id === currentFolderId)) {
@@ -536,9 +633,11 @@ export function AssetLibraryPanel({
       const folderId = folderTarget.dataset.assetDropFolder;
       return folderId === ROOT_FOLDER_DROP_KEY ? null : folderId ?? currentFolderId;
     }
-    if (element?.closest("[data-asset-drop-surface='current']")) return currentFolderId;
+    if (element?.closest("[data-asset-drop-surface='current']")) {
+      return showAllAssets ? undefined : currentFolderId;
+    }
     return undefined;
-  }, [currentFolderId]);
+  }, [currentFolderId, showAllAssets]);
 
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;
@@ -605,9 +704,13 @@ export function AssetLibraryPanel({
   }
 
   async function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
+    const files = Array.from(event.target.files ?? []);
     event.target.value = "";
-    if (file) await prepareImport(file);
+    if (files.length === 1) {
+      await prepareImport(files[0]);
+      return;
+    }
+    if (files.length > 1) await importFiles(files, activeFolderId);
   }
 
   async function handleFontFileChange(event: ChangeEvent<HTMLInputElement>) {
@@ -616,18 +719,104 @@ export function AssetLibraryPanel({
     if (file) await prepareImport(file, "font");
   }
 
+  async function handleReplacementFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const generation = ++replacementReadGenerationRef.current;
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || !replacementTargetId) return;
+    setPendingReplacement(null);
+    setError(undefined);
+    const original = assetsById.get(replacementTargetId);
+    if (!original) {
+      setReplacementTargetId(null);
+      setError("原素材已不存在，请重新选择。");
+      return;
+    }
+    replacementReadTypeRef.current = original.asset_type;
+    const mime = inferImportMimeType(file);
+    const category = mime.startsWith("image/") ? "image"
+      : mime.startsWith("audio/") ? "audio"
+      : mime.startsWith("video/") ? "video"
+      : mime.startsWith("font/") ? "font"
+      : mime === "application/json" ? "animation" : "unsupported";
+    const expected = ["background", "sprite", "portrait", "ui"].includes(original.asset_type) ? "image"
+      : ["bgm", "sfx", "voice"].includes(original.asset_type) ? "audio"
+      : original.asset_type === "other" ? category : original.asset_type;
+    if (category === "unsupported" || category !== expected) {
+      setError(`文件格式与${assetTypeDisplayLabel(original.asset_type)}不兼容，原素材未改变。`);
+      return;
+    }
+    try {
+      const pending = await prepareAutomaticImport(file);
+      if (pending.mediaWarning) throw new Error(pending.mediaWarning);
+      if (category === "audio") {
+        Object.assign(pending, await readMediaMetadata(pending.dataUrl));
+      }
+      if (generation !== replacementReadGenerationRef.current) return;
+      setPendingReplacement(pending);
+      setError(undefined);
+    } catch (reason) {
+      if (generation !== replacementReadGenerationRef.current) {
+        reportFrontendError("editor.asset-library", reason, { operation: "stale-replacement-read", fileName: file.name });
+        return;
+      }
+      setError(`${reason instanceof Error ? reason.message : "无法读取替换文件。"} 原素材未改变。`);
+    }
+  }
+
+  function confirmReplacement() {
+    if (!replacementTargetId || !pendingReplacement) return;
+    const original = assetsById.get(replacementTargetId);
+    if (!original) {
+      setError("原素材已不存在，请重新选择。");
+      return;
+    }
+    if (original.asset_type !== replacementReadTypeRef.current) {
+      setError("原素材类型已改变，请重新选择替换文件。原素材未改变。");
+      return;
+    }
+    ++replacementReadGenerationRef.current;
+    const replacement = pendingImportToAsset(pendingReplacement, original.asset_type, original.asset_id);
+    onUpdateMany([{
+      ...original,
+      metadata: {
+        ...original.metadata,
+        ...replacement.metadata,
+        display_name: original.metadata.display_name,
+        source: "imported",
+        license_note: undefined,
+        provider_id: undefined,
+        model: undefined,
+        prompt: undefined,
+        generation: undefined,
+        filePath: undefined,
+        url: undefined,
+        backend_asset_path: undefined,
+        bytes: undefined,
+        path: undefined,
+        hash_sha256: undefined,
+        placeholder: undefined,
+        created_at: original.metadata.created_at,
+      },
+    }]);
+    setFeedback({ tone: "success", text: `已替换“${assetDisplayName(assetRefToLibraryRecord(original))}”的文件；原素材 ID 与引用保持不变。请重新核对授权说明。` });
+    setPendingReplacement(null);
+    setReplacementTargetId(null);
+    setError(undefined);
+  }
+
   function confirmImport() {
     if (!pendingImport) return;
     const assetId = uniqueLibraryAssetId(fileStem(pendingImport.fileName), new Set(assets.map((asset) => asset.asset_id)));
     onImportMany([{
       asset: pendingImportToAsset(pendingImport, assetType, assetId, licenseNote),
-      folderId: currentFolderId,
+      folderId: activeFolderId,
     }]);
     setPendingImport(null);
     setAssetType("background");
     setLicenseNote("");
     setError(undefined);
-    setFeedback({ tone: "success", text: `已将 ${pendingImport.fileName} 保存到${folderName(folders, currentFolderId)}。` });
+    setFeedback({ tone: "success", text: `已将 ${pendingImport.fileName} 保存到${folderName(folders, activeFolderId)}。` });
   }
 
   function cancelImport() {
@@ -652,14 +841,14 @@ export function AssetLibraryPanel({
         {
           folder_id: folderId,
           name,
-          parent_folder_id: currentFolderId,
+          parent_folder_id: activeFolderId,
           created_at: timestamp,
           updated_at: timestamp,
         },
       ],
     });
-    if (currentFolderId) {
-      setExpandedFolderIds((current) => new Set(current).add(currentFolderId));
+    if (activeFolderId) {
+      setExpandedFolderIds((current) => new Set(current).add(activeFolderId));
     }
     setFolderDraftName("");
     setError(undefined);
@@ -721,12 +910,72 @@ export function AssetLibraryPanel({
     });
   }
 
-  function selectAllVisibleAssets() {
-    setSelectedAssetIds(new Set(visibleAssets.map((asset) => asset.asset_id)));
+  function toggleAllVisibleAssets() {
+    setSelectedAssetIds((current) => {
+      const next = new Set(current);
+      if (allVisibleSelected) {
+        for (const asset of visibleAssets) next.delete(asset.asset_id);
+      } else {
+        for (const asset of visibleAssets) next.add(asset.asset_id);
+      }
+      return next;
+    });
+  }
+
+  function invertVisibleSelection() {
+    setSelectedAssetIds((current) => {
+      const next = new Set(current);
+      for (const asset of visibleAssets) {
+        if (next.has(asset.asset_id)) next.delete(asset.asset_id);
+        else next.add(asset.asset_id);
+      }
+      return next;
+    });
   }
 
   function clearSelection() {
     setSelectedAssetIds(new Set());
+  }
+
+  function resetManagementFilters() {
+    setSearchQuery("");
+    setTypeFilter(ALL_ASSET_TYPES);
+    setSourceFilter(ALL_ASSET_SOURCES);
+    setSortMode("newest");
+  }
+
+  function changeSelectedAssetType() {
+    const updatedAssets = [...selectedAssetIds]
+      .map((assetId) => assetsById.get(assetId))
+      .filter((asset): asset is AssetRef => Boolean(asset))
+      .filter((asset) => asset.asset_type !== batchAssetType)
+      .map((asset) => updateAssetType(asset, batchAssetType));
+    if (updatedAssets.length === 0) {
+      setFeedback({ tone: "warning", text: `选中的素材已经全部是${assetTypeDisplayLabel(batchAssetType)}。` });
+      return;
+    }
+    onUpdateMany(updatedAssets);
+    setFeedback({
+      tone: "success",
+      text: `已将 ${updatedAssets.length} 个素材批量修改为${assetTypeDisplayLabel(batchAssetType)}。`,
+    });
+  }
+
+  function deleteSelectedAssets() {
+    const selectedAssets = [...selectedAssetIds]
+      .map((assetId) => assetsById.get(assetId))
+      .filter((asset): asset is AssetRef => Boolean(asset));
+    if (selectedAssets.length === 0) return;
+    const sampleNames = selectedAssets
+      .slice(0, 3)
+      .map((asset) => safeVisibleText(asset.metadata.display_name, asset.metadata.filename ?? asset.asset_id))
+      .join("、");
+    const extraCount = Math.max(0, selectedAssets.length - 3);
+    const summary = `${sampleNames}${extraCount > 0 ? ` 等 ${selectedAssets.length} 个素材` : ""}`;
+    if (!window.confirm(`确定删除 ${summary}？已引用这些素材的位置可能会显示缺失，此操作无法撤销。`)) return;
+    onDeleteMany(selectedAssets.map((asset) => asset.asset_id));
+    clearSelection();
+    setFeedback({ tone: "success", text: `已批量删除 ${selectedAssets.length} 个素材。` });
   }
 
   function performAssetDrop(payload: AssetDragPayload, targetFolderId: string | null, mode: AssetDropMode) {
@@ -750,7 +999,7 @@ export function AssetLibraryPanel({
 
   function moveSelectedAssets() {
     performAssetDrop(
-      { assetIds: [...selectedAssetIds], sourceFolderId: currentFolderId },
+      { assetIds: [...selectedAssetIds], sourceFolderId: activeFolderId },
       batchTargetFolderId,
       "move",
     );
@@ -758,7 +1007,7 @@ export function AssetLibraryPanel({
 
   function copySelectedAssets() {
     performAssetDrop(
-      { assetIds: [...selectedAssetIds], sourceFolderId: currentFolderId },
+      { assetIds: [...selectedAssetIds], sourceFolderId: activeFolderId },
       batchTargetFolderId,
       "link",
     );
@@ -832,7 +1081,7 @@ export function AssetLibraryPanel({
 
   function startAssetDrag(event: DragEvent<HTMLElement>, assetId: string) {
     const assetIds = selectedAssetIds.has(assetId) ? [...selectedAssetIds] : [assetId];
-    const payload: AssetDragPayload = { assetIds, sourceFolderId: currentFolderId };
+    const payload: AssetDragPayload = { assetIds, sourceFolderId: activeFolderId };
     if (!selectedAssetIds.has(assetId)) setSelectedAssetIds(new Set([assetId]));
     setDragPayload(payload);
     event.dataTransfer.effectAllowed = "copyMove";
@@ -847,11 +1096,19 @@ export function AssetLibraryPanel({
   }
 
   function openFolder(folderId: string | null) {
+    setShowAllAssets(false);
     setCurrentFolderId(folderId);
+    clearSelection();
     setSidebarOpen(false);
   }
 
-  function renderFolderNode(folder: AssetLibraryFolder, depth: number): JSX.Element {
+  function openAllAssets() {
+    setShowAllAssets(true);
+    clearSelection();
+    setSidebarOpen(false);
+  }
+
+  function renderFolderNode(folder: AssetLibraryFolder, depth: number): React.ReactElement {
     const children = childrenByFolderId.get(folder.folder_id) ?? [];
     const expanded = expandedFolderIds.has(folder.folder_id);
     const current = currentFolderId === folder.folder_id;
@@ -943,11 +1200,12 @@ export function AssetLibraryPanel({
           <button type="button" data-help-key="asset.folder.create" onClick={() => setFolderDraftName((current) => current || "新建文件夹")}>
             <FolderPlus size={15} /> 新建文件夹
           </button>
-          <input ref={fontInputRef} type="file" accept=".ttf,.otf,.woff,.woff2,font/*" hidden onChange={handleFontFileChange} />
+          <input data-help-key="editor.control" ref={fontInputRef} type="file" accept=".ttf,.otf,.woff,.woff2,font/*" hidden onChange={handleFontFileChange} />
           <button type="button" data-help-key="asset.importFont" onClick={() => fontInputRef.current?.click()}>
             <Type size={15} /> 导入字体
           </button>
-          <input ref={fileInputRef} type="file" accept="image/*,audio/*,video/*,font/*,.png,.jpg,.jpeg,.webp,.gif,.bmp,.svg,.wav,.mp3,.ogg,.m4a,.flac,.mp4,.webm,.mov,.json,.ttf,.otf,.woff,.woff2" hidden onChange={handleFileChange} />
+          <input data-help-key="editor.control" ref={fileInputRef} type="file" multiple accept="image/*,audio/*,video/*,font/*,.png,.jpg,.jpeg,.webp,.gif,.bmp,.svg,.wav,.mp3,.ogg,.m4a,.flac,.mp4,.webm,.mov,.json,.ttf,.otf,.woff,.woff2" hidden onChange={handleFileChange} />
+          <input data-help-key="asset.replace.file" ref={replaceInputRef} type="file" accept="image/*,audio/*,video/*,font/*,.png,.jpg,.jpeg,.webp,.gif,.bmp,.svg,.wav,.mp3,.ogg,.m4a,.flac,.mp4,.webm,.mov,.json,.ttf,.otf,.woff,.woff2" hidden onChange={(event) => void handleReplacementFileChange(event)} />
           <button type="button" data-help-key="asset.importImage" onClick={() => fileInputRef.current?.click()}>
             <UploadCloud size={15} /> 导入素材
           </button>
@@ -997,18 +1255,41 @@ export function AssetLibraryPanel({
         </section>
       )}
 
+      {pendingReplacement && replacementTargetId && (
+        <section className="asset-import-card" role="dialog" aria-label="确认替换素材">
+          <div className="asset-import-form">
+            <strong>替换素材文件</strong>
+            <p>将以“{pendingReplacement.fileName}”替换当前内容，保留素材 ID、类型、展示名、文件夹及工程引用。原文件授权和生成来源说明不会沿用，请重新核对。</p>
+            <div className="row-actions">
+              <button type="button" onClick={confirmReplacement}>确认替换</button>
+              <button type="button" onClick={() => { ++replacementReadGenerationRef.current; setPendingReplacement(null); setReplacementTargetId(null); }}>取消</button>
+            </div>
+          </div>
+        </section>
+      )}
+
       <div className={`asset-library-workspace${dragPayload || dropTarget ? " is-drag-active" : ""}`}>
         {sidebarOpen && <button type="button" className="asset-library-sidebar-scrim" data-help-key="asset.sidebar.close" aria-label="关闭文件夹目录" onClick={() => setSidebarOpen(false)} />}
         <aside className={`asset-library-sidebar${sidebarOpen ? " is-open" : ""}`} aria-label="素材文件夹">
           <div className="asset-library-sidebar-header">
             <strong>文件夹</strong>
-            <span>{folders.length}</span>
+            <span>{assets.length} 个素材 · {folders.length} 个文件夹</span>
           </div>
           <nav aria-label="素材文件夹目录">
             <ul className="asset-folder-tree">
               <li className="asset-folder-tree-item">
+                <div className={`asset-folder-tree-row asset-folder-tree-all${showAllAssets ? " is-current" : ""}`}>
+                  <span className="asset-folder-tree-toggle" aria-hidden="true"><span /></span>
+                  <button type="button" className="asset-folder-tree-main" data-help-key="asset.viewAll" onClick={openAllAssets}>
+                    <ImageIcon size={17} />
+                    <span>全部素材</span>
+                    <small>{assets.length}</small>
+                  </button>
+                </div>
+              </li>
+              <li className="asset-folder-tree-item">
                 <div
-                  className={`asset-folder-tree-row asset-folder-tree-root${currentFolderId === null ? " is-current" : ""}${dropTarget && dropTarget.folderId === null ? " is-drop-target" : ""}${dropTarget?.invalid && dropTarget.folderId === null ? " is-drop-invalid" : ""}`}
+                  className={`asset-folder-tree-row asset-folder-tree-root${!showAllAssets && currentFolderId === null ? " is-current" : ""}${dropTarget && dropTarget.folderId === null ? " is-drop-target" : ""}${dropTarget?.invalid && dropTarget.folderId === null ? " is-drop-invalid" : ""}`}
                   data-asset-drop-folder={ROOT_FOLDER_DROP_KEY}
                   onDragEnter={(event) => handleDragOver(event, null)}
                   onDragOver={(event) => handleDragOver(event, null)}
@@ -1034,47 +1315,71 @@ export function AssetLibraryPanel({
         </aside>
 
         <main
-          className={`asset-library-content${dropTarget?.folderId === currentFolderId ? " is-drop-target" : ""}${isImporting ? " is-importing" : ""}`}
-          data-asset-drop-surface="current"
-          onDragEnter={(event) => handleDragOver(event, currentFolderId)}
-          onDragOver={(event) => handleDragOver(event, currentFolderId)}
+          className={`asset-library-content${!showAllAssets && dropTarget?.folderId === currentFolderId ? " is-drop-target" : ""}${isImporting ? " is-importing" : ""}`}
+          data-asset-drop-surface={showAllAssets ? undefined : "current"}
+          onDragEnter={(event) => {
+            if (!showAllAssets) handleDragOver(event, currentFolderId);
+          }}
+          onDragOver={(event) => {
+            if (showAllAssets) {
+              event.preventDefault();
+              event.dataTransfer.dropEffect = "none";
+              return;
+            }
+            handleDragOver(event, currentFolderId);
+          }}
           onDragLeave={handleDragLeave}
-          onDrop={(event) => handleDrop(event, currentFolderId)}
+          onDrop={(event) => {
+            if (showAllAssets) {
+              event.preventDefault();
+              setFeedback({ tone: "warning", text: "“全部素材”是总览视图，请把文件或素材拖到左侧具体文件夹。" });
+              return;
+            }
+            handleDrop(event, currentFolderId);
+          }}
         >
           <div className="asset-library-content-toolbar">
             <button type="button" className="asset-library-sidebar-toggle" data-help-key="asset.sidebar.open" aria-label="打开文件夹目录" onClick={() => setSidebarOpen(true)}>
               <PanelLeft size={17} />
             </button>
             <nav className="asset-library-breadcrumbs" aria-label="素材库路径">
-              <button
-                type="button"
-                data-help-key="asset.breadcrumb.root"
-                data-asset-drop-folder={ROOT_FOLDER_DROP_KEY}
-                className={!currentFolderId ? "is-current" : ""}
-                onDragOver={(event) => handleDragOver(event, null)}
-                onDrop={(event) => handleDrop(event, null)}
-                onClick={() => setCurrentFolderId(null)}
-              >
-                未归档素材
-              </button>
-              {breadcrumbs.map((folder) => (
-                <span key={folder.folder_id} className="asset-library-breadcrumb-item">
-                  <ChevronRight size={14} aria-hidden="true" />
+              {showAllAssets ? (
+                <span className="asset-library-view-title"><ImageIcon size={15} /> 全部素材</span>
+              ) : (
+                <>
                   <button
                     type="button"
-                    data-help-key="asset.breadcrumb.folder"
-                    data-asset-drop-folder={folder.folder_id}
-                    className={folder.folder_id === currentFolderId ? "is-current" : ""}
-                    onDragOver={(event) => handleDragOver(event, folder.folder_id)}
-                    onDrop={(event) => handleDrop(event, folder.folder_id)}
-                    onClick={() => setCurrentFolderId(folder.folder_id)}
+                    data-help-key="asset.breadcrumb.root"
+                    data-asset-drop-folder={ROOT_FOLDER_DROP_KEY}
+                    className={!currentFolderId ? "is-current" : ""}
+                    onDragOver={(event) => handleDragOver(event, null)}
+                    onDrop={(event) => handleDrop(event, null)}
+                    onClick={() => openFolder(null)}
                   >
-                    {folder.name}
+                    未归档素材
                   </button>
-                </span>
-              ))}
+                  {breadcrumbs.map((folder) => (
+                    <span key={folder.folder_id} className="asset-library-breadcrumb-item">
+                      <ChevronRight size={14} aria-hidden="true" />
+                      <button
+                        type="button"
+                        data-help-key="asset.breadcrumb.folder"
+                        data-asset-drop-folder={folder.folder_id}
+                        className={folder.folder_id === currentFolderId ? "is-current" : ""}
+                        onDragOver={(event) => handleDragOver(event, folder.folder_id)}
+                        onDrop={(event) => handleDrop(event, folder.folder_id)}
+                        onClick={() => openFolder(folder.folder_id)}
+                      >
+                        {folder.name}
+                      </button>
+                    </span>
+                  ))}
+                </>
+              )}
             </nav>
-            <span className="asset-library-item-count">{visibleAssets.length} 个素材</span>
+            <span className="asset-library-item-count">
+              {visibleAssets.length === folderAssets.length ? `${folderAssets.length} 个素材` : `${visibleAssets.length} / ${folderAssets.length} 个素材`}
+            </span>
           </div>
 
           {folderDraftName && (
@@ -1099,24 +1404,115 @@ export function AssetLibraryPanel({
             </section>
           )}
 
-          {selectedCount > 0 ? (
-            <div className="asset-library-batchbar" role="region" aria-label="批量整理素材">
-              <strong><CheckSquare size={15} /> 已选择 {selectedCount} 个素材</strong>
-              <RichSelect
-                value={batchTargetFolderId ?? ROOT_FOLDER_DROP_KEY}
-                options={folderOptions.map((option) => ({ value: option.id ?? ROOT_FOLDER_DROP_KEY, label: option.label }))}
-                helpKey="asset.batch.target"
-                variant="compact"
-                onChange={(nextFolderId) => setBatchTargetFolderId(nextFolderId === ROOT_FOLDER_DROP_KEY ? null : nextFolderId)}
+          <div className="asset-library-managementbar" role="search" aria-label="筛选素材">
+            <label className="asset-library-search">
+              <Search size={15} aria-hidden="true" />
+              <input
+                type="search"
+                value={searchQuery}
+                data-help-key="asset.search"
+                aria-label="搜索素材"
+                placeholder="搜索名称、ID、文件名或授权备注"
+                onChange={(event) => setSearchQuery(event.target.value)}
               />
-              <button type="button" data-help-key="asset.batch.move" onClick={moveSelectedAssets}><MoveRight size={14} /> 移动</button>
-              <button type="button" data-help-key="asset.batch.copy" disabled={!batchTargetFolderId} onClick={copySelectedAssets}><Copy size={14} /> 复制分类</button>
-              <button type="button" data-help-key="asset.batch.clearSelection" aria-label="取消选择素材" title="取消选择" onClick={clearSelection}><X size={14} /></button>
+              {searchQuery && (
+                <button data-help-key="editor.control" type="button" aria-label="清空搜索" title="清空搜索" onClick={() => setSearchQuery("")}>
+                  <X size={13} />
+                </button>
+              )}
+            </label>
+            <RichSelect
+              value={typeFilter}
+              options={typeFilterOptions}
+              helpKey="asset.filterType"
+              ariaLabel="按素材类型筛选"
+              variant="compact"
+              className="asset-library-type-filter"
+              onChange={(nextType) => setTypeFilter(nextType as AssetTypeFilter)}
+            />
+            <RichSelect
+              value={sourceFilter}
+              options={assetSourceOptions}
+              helpKey="asset.filterSource"
+              ariaLabel="按素材来源筛选"
+              variant="compact"
+              className="asset-library-source-filter"
+              onChange={(nextSource) => setSourceFilter(nextSource as AssetSourceFilter)}
+            />
+            <RichSelect
+              value={sortMode}
+              options={assetSortOptions}
+              helpKey="asset.sort"
+              ariaLabel="素材排序方式"
+              variant="compact"
+              className="asset-library-sort"
+              onChange={setSortMode}
+            />
+            <button
+              type="button"
+              className="asset-library-reset-filters"
+              data-help-key="asset.filters.reset"
+              disabled={!hasActiveFilters}
+              aria-label="重置素材筛选"
+              title="重置筛选"
+              onClick={resetManagementFilters}
+            >
+              <RotateCcw size={14} />
+            </button>
+          </div>
+
+          <div className="asset-library-grid-tools">
+            <div className="asset-library-selection-tools">
+              <button type="button" data-help-key="asset.selectAllVisible" disabled={visibleAssets.length === 0} onClick={toggleAllVisibleAssets}>
+                {allVisibleSelected ? "取消全选" : "全选筛选结果"}
+              </button>
+              <button type="button" data-help-key="asset.invertSelection" disabled={visibleAssets.length === 0} onClick={invertVisibleSelection}>反选</button>
             </div>
-          ) : (
-            <div className="asset-library-grid-tools">
-              <button type="button" data-help-key="asset.selectAllVisible" disabled={visibleAssets.length === 0} onClick={selectAllVisibleAssets}>全选当前素材</button>
-              <span>点击卡片选择，也可直接拖到左侧文件夹</span>
+            <span>
+              {selectedCount > 0
+                ? `已选 ${selectedCount} 个；当前显示 ${visibleAssets.length} 个`
+                : showAllAssets
+                  ? "正在浏览整个素材库"
+                  : "点击卡片选择，也可拖到左侧文件夹"}
+            </span>
+          </div>
+
+          {selectedCount > 0 && (
+            <div className="asset-library-batchbar" role="region" aria-label="批量整理素材">
+              <div className="asset-library-batch-summary">
+                <strong><CheckSquare size={15} /> 已选择 {selectedCount} 个素材</strong>
+                <small>批量操作只作用于已选项目</small>
+              </div>
+              <div className="asset-library-batch-group">
+                <RichSelect
+                  value={batchAssetType}
+                  options={assetTypeOptions}
+                  helpKey="asset.batch.changeType"
+                  ariaLabel="批量素材类型"
+                  variant="compact"
+                  onChange={(nextAssetType) => setBatchAssetType(nextAssetType as AssetType)}
+                />
+                <button type="button" data-help-key="asset.batch.applyType" onClick={changeSelectedAssetType}>
+                  <Type size={14} /> 应用类型
+                </button>
+              </div>
+              <div className="asset-library-batch-divider" aria-hidden="true" />
+              <div className="asset-library-batch-group">
+                <RichSelect
+                  value={batchTargetFolderId ?? ROOT_FOLDER_DROP_KEY}
+                  options={folderOptions.map((option) => ({ value: option.id ?? ROOT_FOLDER_DROP_KEY, label: option.label }))}
+                  helpKey="asset.batch.target"
+                  ariaLabel="批量目标文件夹"
+                  variant="compact"
+                  onChange={(nextFolderId) => setBatchTargetFolderId(nextFolderId === ROOT_FOLDER_DROP_KEY ? null : nextFolderId)}
+                />
+                <button type="button" data-help-key="asset.batch.move" onClick={moveSelectedAssets}><MoveRight size={14} /> 移动</button>
+                <button type="button" data-help-key="asset.batch.copy" disabled={!batchTargetFolderId} onClick={copySelectedAssets}><Copy size={14} /> 复制分类</button>
+              </div>
+              <button type="button" className="is-danger" data-help-key="asset.batch.delete" onClick={deleteSelectedAssets}>
+                <Trash2 size={14} /> 删除
+              </button>
+              <button type="button" className="asset-library-clear-selection" data-help-key="asset.batch.clearSelection" aria-label="取消选择素材" title="取消选择" onClick={clearSelection}><X size={14} /></button>
             </div>
           )}
 
@@ -1128,12 +1524,26 @@ export function AssetLibraryPanel({
             </p>
           )}
 
-          <div className="asset-library-grid" role="listbox" aria-label={`${folderName(folders, currentFolderId)}中的素材`} aria-multiselectable="true">
+          <div className="asset-library-grid" role="listbox" aria-label={`${showAllAssets ? "全部素材" : folderName(folders, currentFolderId)}中的素材`} aria-multiselectable="true">
             {visibleAssets.length === 0 && (
-              <div className={`empty-state asset-library-empty${dropTarget?.folderId === currentFolderId ? " is-drop-target" : ""}`}>
-                <UploadCloud size={26} />
-                <strong>{currentFolderId ? "这个文件夹还是空的" : "还没有未归档素材"}</strong>
-                <span>从电脑拖入文件，或将其他文件夹中的素材移动到这里。</span>
+              <div className={`empty-state asset-library-empty${!showAllAssets && dropTarget?.folderId === currentFolderId ? " is-drop-target" : ""}`}>
+                {folderAssets.length > 0 ? <Search size={26} /> : <UploadCloud size={26} />}
+                <strong>
+                  {folderAssets.length > 0
+                    ? "没有符合筛选条件的素材"
+                    : showAllAssets
+                      ? "素材库还是空的"
+                      : currentFolderId
+                        ? "这个文件夹还是空的"
+                        : "还没有未归档素材"}
+                </strong>
+                <span>
+                  {folderAssets.length > 0
+                    ? "调整关键词、类型或来源筛选后再试。"
+                    : showAllAssets
+                      ? "导入图片、音频、视频、字体或动画配置开始整理。"
+                      : "从电脑拖入文件，或将其他文件夹中的素材移动到这里。"}
+                </span>
               </div>
             )}
             {visibleAssets.map((asset) => (
@@ -1148,20 +1558,19 @@ export function AssetLibraryPanel({
                 onUpdateType={(nextAssetType) => {
                   const original = assetsById.get(asset.asset_id);
                   if (!original) return;
-                  onUpdate({
-                    ...original,
-                    asset_type: nextAssetType,
-                    metadata: {
-                      ...original.metadata,
-                      source: "edited",
-                      project_path: buildProjectAssetPath(nextAssetType, original.asset_id, original.metadata.filename ?? `${original.asset_id}.bin`),
-                    },
-                  });
+                  onUpdateMany([updateAssetType(original, nextAssetType)]);
                   setFeedback({ tone: "success", text: `已将 ${assetDisplayName(asset)} 修改为${assetTypeDisplayLabel(nextAssetType)}。` });
+                }}
+                onReplace={() => {
+                  ++replacementReadGenerationRef.current;
+                  setReplacementTargetId(asset.asset_id);
+                  setPendingReplacement(null);
+                  setError(undefined);
+                  replaceInputRef.current?.click();
                 }}
                 onDelete={() => {
                   if (!window.confirm(`从素材库删除“${assetDisplayName(asset)}”？已引用该素材的位置可能会显示缺失。`)) return;
-                  onDelete(asset.asset_id);
+                  onDeleteMany([asset.asset_id]);
                   setFeedback({ tone: "success", text: `已删除素材“${assetDisplayName(asset)}”。` });
                 }}
               />
@@ -1188,6 +1597,7 @@ function AssetLibraryCard({
   onDragStart,
   onDragEnd,
   onUpdateType,
+  onReplace,
   onDelete,
 }: {
   asset: LibraryAssetRecord;
@@ -1197,6 +1607,7 @@ function AssetLibraryCard({
   onDragStart: (event: DragEvent<HTMLElement>) => void;
   onDragEnd: () => void;
   onUpdateType: (assetType: AssetType) => void;
+  onReplace: () => void;
   onDelete: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -1278,6 +1689,9 @@ function AssetLibraryCard({
             <div className="asset-card-menu-popover" role="menu">
               <button type="button" role="menuitem" data-help-key="asset.editType" onClick={() => setEditingType(true)}>
                 <Pencil size={14} /> 修改类型
+              </button>
+              <button type="button" role="menuitem" data-help-key="asset.replace" onClick={() => { setMenuOpen(false); onReplace(); }}>
+                <UploadCloud size={14} /> 替换文件
               </button>
               <button type="button" role="menuitem" className="is-danger" data-help-key="asset.delete" onClick={onDelete}>
                 <Trash2 size={14} /> 删除素材

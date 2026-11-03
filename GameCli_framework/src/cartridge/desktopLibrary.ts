@@ -169,7 +169,11 @@ function unpackedPreviewToGame(payload: UnpackedPreviewPayload, previewRoot: str
     gallery: galleryItems.map((item) => ({
       item_id: item.item_id,
       title: item.title,
+      description: item.description,
       asset_id: item.asset_id,
+      anchor_id: item.anchor_id ?? item.item_id,
+      scene_id: item.scene_id,
+      command_index: item.command_index,
       unlock_condition: item.unlock_condition as LibraryGame["gallery"][number]["unlock_condition"],
       unlocked: false,
     })),
@@ -200,7 +204,11 @@ function packageToGame(cartridge: SharedCartridgePackage, record: InstalledCartr
     gallery: cartridge.gallery.items.map((item) => ({
       item_id: item.item_id,
       title: item.title,
+      description: item.description,
       asset_id: item.asset_id,
+      anchor_id: item.anchor_id ?? item.item_id,
+      scene_id: item.scene_id,
+      command_index: item.command_index,
       unlock_condition: item.unlock_condition as LibraryGame["gallery"][number]["unlock_condition"],
       unlocked: false,
     })),

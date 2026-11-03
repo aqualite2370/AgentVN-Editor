@@ -10,7 +10,7 @@ export interface EditorAssetReference {
   scene_title: string;
   node_id: string;
   node_label: string;
-  command_type: GameCommand["type"] | "loading_animation";
+  command_type: GameCommand["type"] | "loading_animation" | "loading_audio";
   command_index: number;
   field: string;
   location: string;
@@ -31,12 +31,12 @@ function nodeSceneTitle(node: EditorNode): string {
     || nodeSceneId(node);
 }
 
-function commandLocation(node: EditorNode, command: GameCommand | { type: "loading_animation" }, commandIndex: number, field: string): string {
+function commandLocation(node: EditorNode, command: GameCommand | { type: "loading_animation" | "loading_audio" }, commandIndex: number, field: string): string {
   const commandLabel = commandIndex >= 0 ? `第 ${commandIndex + 1} 条 ${command.type}.${field}` : `${command.type}.${field}`;
   return `场景「${nodeSceneTitle(node)}」 / 节点「${node.data.label || node.id}」 / ${commandLabel}`;
 }
 
-function reference(node: EditorNode, command: GameCommand | { type: "loading_animation" }, commandIndex: number, field: string, assetId: string | null | undefined, assetType: AssetType): EditorAssetReference[] {
+function reference(node: EditorNode, command: GameCommand | { type: "loading_animation" | "loading_audio" }, commandIndex: number, field: string, assetId: string | null | undefined, assetType: AssetType): EditorAssetReference[] {
   if (!assetId) return [];
   const location = commandLocation(node, command, commandIndex, field);
   return [{
@@ -54,28 +54,31 @@ function reference(node: EditorNode, command: GameCommand | { type: "loading_ani
   }];
 }
 
-function collectCommandAssetReferences(node: EditorNode, command: GameCommand, commandIndex: number): EditorAssetReference[] {
-  if (command.type === "background") return reference(node, command, commandIndex, "background_id", command.background_id, "background");
-  if (command.type === "show_image") return reference(node, command, commandIndex, "image_id", command.image_id, "ui");
-  if (command.type === "video") return reference(node, command, commandIndex, "video_id", command.video_id, "video");
-  if (command.type === "sprite") return reference(node, command, commandIndex, "sprite_id", command.sprite_id, "sprite");
-  if (command.type === "narration") {
+export function collectCommandAssetFields(command: GameCommand): Array<{
+  asset_id: string; asset_type: AssetType; field: string; allowedTypes?: AssetType[];
+}> {
+  // Preserve empty IDs for required fields so the inspector can explain an unconfigured command.
+  const field = (name: string, id: string | null | undefined, type: AssetType) => ({ field: name, asset_id: id?.trim() ?? "", asset_type: type });
+  if (command.type === "background") return [field("background_id", command.background_id, "background")];
+  if (command.type === "show_image") return [{ ...field("image_id", command.image_id, "ui"), allowedTypes: ["background", "sprite", "portrait", "ui"] }];
+  if (command.type === "video") return [field("video_id", command.video_id, "video")];
+  if (command.type === "sprite") return command.visible === false ? [] : [field("sprite_id", command.sprite_id, "sprite")];
+  if (command.type === "bgm") return command.action === "stop" ? [] : [field("bgm_id", command.bgm_id, "bgm")];
+  if (command.type === "sfx") return [field("sfx_id", command.sfx_id, "sfx")];
+  if (command.type === "gallery_anchor") return [{ ...field("asset_id", command.asset_id, "ui"), allowedTypes: ["background", "sprite", "portrait", "ui"] }];
+  if (command.type === "dialog" || command.type === "narration") {
     return [
-      ...reference(node, command, commandIndex, "font_asset_id", command.font_asset_id, "font"),
-      ...reference(node, command, commandIndex, "dialog_style.background_asset_id", command.dialog_style?.background_asset_id, "ui"),
-    ];
-  }
-  if (command.type === "bgm") return reference(node, command, commandIndex, "bgm_id", command.bgm_id, "bgm");
-  if (command.type === "sfx") return reference(node, command, commandIndex, "sfx_id", command.sfx_id, "sfx");
-  if (command.type === "dialog") {
-    return [
-      ...reference(node, command, commandIndex, "portrait", command.portrait, "portrait"),
-      ...reference(node, command, commandIndex, "voice", command.voice, "voice"),
-      ...reference(node, command, commandIndex, "font_asset_id", command.font_asset_id, "font"),
-      ...reference(node, command, commandIndex, "dialog_style.background_asset_id", command.dialog_style?.background_asset_id, "ui"),
-    ];
+      ...(command.type === "dialog" ? [field("portrait", command.portrait, "portrait"), field("voice", command.voice, "voice")] : []),
+      field("font_asset_id", command.font_asset_id, "font"),
+      field("dialog_style.background_asset_id", command.dialog_style?.background_asset_id, "ui"),
+    ].filter(item => Boolean(item.asset_id));
   }
   return [];
+}
+
+function collectCommandAssetReferences(node: EditorNode, command: GameCommand, commandIndex: number): EditorAssetReference[] {
+  return collectCommandAssetFields(command).flatMap(item =>
+    reference(node, command, commandIndex, item.field, item.asset_id, item.asset_type));
 }
 
 export function collectEditorAssetReferences(nodes: EditorNode[]): EditorAssetReference[] {
@@ -92,6 +95,11 @@ export function collectEditorAssetReferences(nodes: EditorNode[]): EditorAssetRe
     if (node.data.nodeKind === "start" && loadingAnimation?.kind === "image_sequence") {
       loadingAnimation.image_asset_ids.forEach((assetId, index) => {
         references.push(...reference(node, { type: "loading_animation" }, -1, `image_asset_ids.${index}`, assetId, "ui"));
+      });
+    }
+    if (node.data.nodeKind === "start") {
+      node.data.openingAudio?.forEach((track, index) => {
+        references.push(...reference(node, { type: "loading_audio" }, -1, `opening_audio.${index}.asset_id`, track.asset_id, track.asset_type));
       });
     }
   }

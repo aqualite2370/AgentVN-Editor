@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Personal component library acceptance harness</title>
+    <style>
+      :root { color-scheme: dark; font: 14px "Segoe UI", sans-serif; }
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 24px; background: #080d17; color: #f6f8ff; }
+      main { width: min(100%, 1080px); margin: 0 auto; }
+      @media (max-width: 600px) { body { padding: 10px; } }
+    </style>
+  </head>
+  <body>
+    <main id="root"></main>
+    <script type="module" src="/src/__custom_component_library_harness__.tsx"></script>
+  </body>
+</html>

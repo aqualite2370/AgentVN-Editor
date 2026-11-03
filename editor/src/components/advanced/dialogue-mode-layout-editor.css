@@ -1,0 +1,13 @@
+.advanced-tools-panel.layout-mode .dialogue-mode-layout-editor .runtime-layout-center{grid-template-rows:minmax(0,1fr) auto auto}
+.dialogue-mode-layout-editor .runtime-layout-sidebar{display:flex;flex-direction:column;gap:10px}
+.dialogue-mode-layout-editor .runtime-layout-sidebar>button{padding:9px 12px;text-align:left;border:1px solid var(--line);border-radius:6px;background:var(--field);color:var(--ink);font:inherit}
+.dialogue-mode-layout-editor .runtime-layout-sidebar>button[aria-pressed="true"]{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,var(--field))}
+.dialogue-mode-layout-editor .runtime-layout-sidebar p,.dialogue-mode-fields>p{font-size:12px;line-height:1.6;color:var(--ink-muted)}
+.dialogue-mode-fields details{margin-top:12px}
+.dialogue-mode-field{display:flex;flex-direction:column;gap:6px;padding:7px 0;min-width:0}
+.dialogue-mode-field small{color:var(--ink-muted);margin-left:6px}
+.dialogue-mode-number{display:grid;grid-template-columns:minmax(0,1fr) 76px;gap:8px;align-items:center}
+.dialogue-mode-field input{min-width:0;width:100%;box-sizing:border-box}
+.dialogue-mode-field>button{align-self:flex-start}
+.dialogue-mode-drag-region{position:absolute;z-index:2;pointer-events:none;border:2px dashed var(--accent);box-sizing:border-box}
+.dialogue-mode-drag-handle{pointer-events:auto;touch-action:none;cursor:move;padding:9px 12px;border:1px solid var(--accent);border-radius:5px;background:var(--field);color:var(--ink);font:inherit;max-width:100%}

@@ -10,6 +10,9 @@ import {
   Undo2,
 } from "lucide-react";
 import type { ImageGenerationRecipeV1 } from "../../../asset-studio/types";
+import { reportFrontendError } from "../../../../../shared/logging/frontendErrorLogger";
+import { GlassSelectionGroup } from "../../common/GlassSelectionGroup";
+import { RangeControl } from "../../common/RangeControl";
 
 interface AssetStudioCanvasEditorProps {
   sourceUrl: string;
@@ -33,7 +36,7 @@ export function AssetStudioCanvasEditor({
   const baseRef = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const drawingRef = useRef(false);
-  const lastPointRef = useRef<{ x: number; y: number }>();
+  const lastPointRef = useRef<{ x: number; y: number } | undefined>(undefined);
   const [tool, setTool] = useState<EditorTool>("mask");
   const [brushSize, setBrushSize] = useState(54);
   const [zoom, setZoom] = useState(1);
@@ -185,7 +188,8 @@ export function AssetStudioCanvasEditor({
       context.globalCompositeOperation = "destination-out";
       context.drawImage(overlay, 0, 0);
       onLocalOutput(canvasDataUrl(output), "透明擦除");
-    } catch {
+    } catch (error) {
+      reportFrontendError("editor.asset-studio-canvas", error, { operation: "transparent-erase" });
       setError("当前图片不允许导出本地编辑结果，请先保存到素材库后再试。");
     }
   }
@@ -204,7 +208,8 @@ export function AssetStudioCanvasEditor({
       const drawHeight = base.height * scale;
       context.drawImage(base, (output.width - drawWidth) / 2, (output.height - drawHeight) / 2, drawWidth, drawHeight);
       onLocalOutput(canvasDataUrl(output), "居中裁切");
-    } catch {
+    } catch (error) {
+      reportFrontendError("editor.asset-studio-canvas", error, { operation: "crop" });
       setError("当前图片不允许导出裁切结果。");
     }
   }
@@ -222,17 +227,17 @@ export function AssetStudioCanvasEditor({
       }}
     >
       <div className="asset-studio-canvas-toolbar">
-        <div role="group" aria-label="蒙版工具">
-          <button type="button" data-help-key="asset.maskBrush" disabled={!supportsMask} className={tool === "mask" ? "is-active" : ""} aria-pressed={tool === "mask"} onClick={() => setTool("mask")}>
+        <GlassSelectionGroup role="group" ariaLabel="蒙版工具" selectedKey={tool}>
+          <button type="button" data-help-key="asset.maskBrush" disabled={!supportsMask} className={tool === "mask" ? "is-active" : ""} data-glass-selected={tool === "mask"} aria-pressed={tool === "mask"} onClick={() => setTool("mask")}>
             <Brush size={16} aria-hidden="true" />蒙版
           </button>
-          <button type="button" data-help-key="asset.maskEraser" disabled={!supportsMask} className={tool === "erase" ? "is-active" : ""} aria-pressed={tool === "erase"} onClick={() => setTool("erase")}>
+          <button type="button" data-help-key="asset.maskEraser" disabled={!supportsMask} className={tool === "erase" ? "is-active" : ""} data-glass-selected={tool === "erase"} aria-pressed={tool === "erase"} onClick={() => setTool("erase")}>
             <Eraser size={16} aria-hidden="true" />擦除蒙版
           </button>
-        </div>
+        </GlassSelectionGroup>
         <label>
           <span>笔刷 {brushSize}px</span>
-          <input data-help-key="asset.brushSize" type="range" min={12} max={180} value={brushSize} onChange={(event) => setBrushSize(Number(event.target.value))} />
+          <RangeControl ariaLabel="笔刷大小" helpKey="asset.brushSize" min={12} max={180} value={brushSize} onChange={setBrushSize} />
         </label>
         <div role="group" aria-label="历史与缩放">
           <button type="button" data-help-key="asset.canvasUndo" aria-label="撤销" disabled={history.length === 0} onClick={undo}><Undo2 size={16} /></button>

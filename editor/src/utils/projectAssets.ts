@@ -239,6 +239,7 @@ export function assetRefToManifestItem(asset: AssetRef): AssetManifestItem {
     asset_id: asset.asset_id,
     asset_type: asset.asset_type,
     path: normalizeAssetManifestPath(asset.asset_type, asset.asset_id, filename, asset.metadata.project_path ?? asset.metadata.path),
+    display_name: asset.metadata.display_name,
     filename,
     mime_type: asset.metadata.mime_type,
     size_bytes: asset.metadata.size_bytes,

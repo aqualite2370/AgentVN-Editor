@@ -1,5 +1,6 @@
 import {
   getDefaultUISkinLayout,
+  isBuiltinTitleButton,
   type UILayoutComponentStyle,
   type UILayoutComponentType,
   type UILayoutTokens,
@@ -48,7 +49,7 @@ interface ThemeInput {
   fontScale?: number;
 }
 
-export const defaultRuntimeThemePresetId = "default_blue_gray";
+export const defaultRuntimeThemePresetId = "kanagawa";
 
 function buildTokens(input: ThemeInput): UILayoutTokens {
   return {
@@ -116,8 +117,8 @@ export function componentStylesFromThemeTokens(tokens: UILayoutTokens): RuntimeT
     speaker_label: definedStyle({
       backgroundColor: tokens.colorSpeakerPlate,
       color: tokens.colorSpeakerText,
-      borderColor: tokens.colorAccent,
-      borderRadius: Math.max(4, Math.round((tokens.radius ?? 8) * 0.85)),
+      borderColor: tokens.colorLine,
+      borderRadius: Math.min(6, Math.max(0, Math.round((tokens.radius ?? 8) * 0.75))),
       fontWeight: 760,
     }),
     dialog_text: definedStyle({
@@ -133,7 +134,7 @@ export function componentStylesFromThemeTokens(tokens: UILayoutTokens): RuntimeT
       backgroundColor: tokens.colorQuickMenu,
       color: tokens.colorControlText,
       borderColor: tokens.colorLine,
-      borderRadius: 999,
+      borderRadius: Math.max(12, Math.round((tokens.radius ?? 8) * 1.6)),
       shadow: "soft",
       backdropBlur: 16,
     }),
@@ -142,7 +143,6 @@ export function componentStylesFromThemeTokens(tokens: UILayoutTokens): RuntimeT
     main_menu_continue_button: control,
     main_menu_start_button: control,
     main_menu_save_load_button: control,
-    main_menu_library_button: control,
     main_menu_gallery_button: control,
     main_menu_settings_button: control,
     main_menu_about_button: control,
@@ -166,6 +166,15 @@ function makePreset(preset_id: string, name: string, description: string, input:
 }
 
 export const runtimeThemePresets: RuntimeThemePreset[] = [
+  makePreset("kanagawa", "Kanagawa", "墨黑、纸白、赭金与低饱和青绿。", {
+    bg: "#1f1f28", surface: "#363646", strong: "#3b3b4d", ink: "#dcd7ba", muted: "#a6a69c", accent: "#dca561", accent2: "#7e9cd8", line: "#54546d", dialog: "#2a2a37", speaker: "#3b3b4d", speakerText: "#e6c384", choice: "#dca561", quickMenu: "#2a2a37", focus: "#7e9cd8",
+  }),
+  makePreset("nord", "Nord", "冷灰蓝、冰蓝和极低饱和强调色。", {
+    bg: "#2e3440", surface: "#434c5e", strong: "#4c566a", ink: "#eceff4", muted: "#d8dee9", accent: "#88c0d0", accent2: "#81a1c1", line: "#616e88", dialog: "#3b4252", speaker: "#4c566a", speakerText: "#8fbcbb", choice: "#ebcb8b", quickMenu: "#3b4252", focus: "#88c0d0",
+  }),
+  makePreset("rose_pine", "Rosé Pine", "深色玫瑰、松绿与柔和高亮。", {
+    bg: "#191724", surface: "#26233a", strong: "#393552", ink: "#e0def4", muted: "#908caa", accent: "#ebbcba", accent2: "#9ccfd8", line: "#524d70", dialog: "#1f1d2e", speaker: "#393552", speakerText: "#f6c177", choice: "#f6c177", quickMenu: "#1f1d2e", focus: "#9ccfd8",
+  }),
   makePreset("default_blue_gray", "默认蓝灰", "清爽、轻量、适合多数作品的默认 GameCLI 外观。", {
     bg: "#eef5fb", surface: "#f7fbff", strong: "#e2edf8", ink: "#0b1d2e", muted: "#3e5266", accent: "#256eb8", accent2: "#0d9f9a", line: "#345170",
     panel: "#f7fbff", control: "#e2edf8", controlHover: "#d9e8f6", controlActive: "#256eb8", controlText: "#0b1d2e", dialog: "#f8fcff", speaker: "#e8f2fb", speakerText: "#1b5f9d", choice: "#b87918", quickMenu: "#f1f7fd", focus: "#256eb8",
@@ -269,6 +278,7 @@ export function applyRuntimeThemePreset(skin: UISkinLayout | undefined, presetOr
     screens: next.screens.map((screen) => ({
       ...screen,
       components: screen.components.map((component) => {
+        if (isBuiltinTitleButton(component)) return component;
         const style = preset.componentStyles[component.component_type];
         return style
           ? { ...component, style: { ...(component.style ?? {}), ...style } }
@@ -291,6 +301,7 @@ export function applyRuntimeThemeTokens(skin: UISkinLayout | undefined, tokens: 
     screens: next.screens.map((screen) => ({
       ...screen,
       components: screen.components.map((component) => {
+        if (isBuiltinTitleButton(component)) return component;
         const style = componentStyles[component.component_type];
         return style
           ? { ...component, style: { ...(component.style ?? {}), ...style } }

@@ -34,7 +34,6 @@ export function AnimationTimeline({
       <header className="animation-section-header">
         <div>
           <h3>高级关键帧</h3>
-          <p>需要精修时，再调整时间点、位移、缩放和滤镜。CSS 只在专家模式中显示。</p>
         </div>
       </header>
       <div className="animation-keyframe-list">

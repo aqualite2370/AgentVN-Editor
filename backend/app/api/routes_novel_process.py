@@ -263,29 +263,32 @@ def _phase_progress(job: NovelProcessJob, finished: int) -> list[dict[str, objec
     chunk_percent = round((finished / max(1, job.totalChunks)) * 100)
     merge_done = any(event.eventType == "chapter_merge_completed" for event in job.eventLogs)
     review_done = any(event.eventType == "continuity_review_completed" for event in job.eventLogs)
-    imported = job.status in {"completed", "failed_partial", "cancelled"}
     failed = job.status in {"failed", "failed_partial"}
-    validation_done = imported and not failed
+    # Generated results are not Editor graph writes. This service has no
+    # authoring graph/validation receipt; only the Editor can supply those facts.
+    editor_phase_status = "cancelled" if job.status == "cancelled" else "waiting"
     status_by_phase = {
-        "chunk_parse": "completed" if chunk_percent >= 100 else ("running" if job.status in {"running", "retrying"} else job.status),
+        "chunk_parse": "completed" if job.completedChunks >= max(1, job.totalChunks) else (
+            "failed" if failed else "waiting" if job.status == "created" else job.status
+        ),
         "chapter_merge": "completed" if merge_done else ("running" if job.activePhase == "chapter_merge" else "waiting"),
         "continuity_review": "completed" if review_done else ("running" if job.activePhase == "continuity_review" else "waiting"),
-        "import_write": "completed" if imported else "waiting",
-        "validation": "completed" if validation_done else ("blocked" if failed else "waiting"),
+        "import_write": editor_phase_status,
+        "validation": editor_phase_status,
     }
     percent_by_phase = {
         "chunk_parse": chunk_percent,
         "chapter_merge": 100 if merge_done else 0,
         "continuity_review": 100 if review_done else 0,
-        "import_write": 100 if imported else 0,
-        "validation": 100 if validation_done else 0,
+        "import_write": 0,
+        "validation": 0,
     }
     blocking_by_phase = {
         "chunk_parse": next((chunk.errorMessage for chunk in job.chunks if chunk.errorMessage), None),
         "chapter_merge": None if merge_done or chunk_percent >= 100 else "等待全部可用切片完成。",
         "continuity_review": None if review_done or merge_done else "等待章节合并完成。",
-        "import_write": "存在失败切片，写入前需要重跑或接受风险。" if failed else None,
-        "validation": "存在失败切片或质量阻断项。" if failed else None,
+        "import_write": "由编辑器核对当前工程实际写入的章节；任务终态不代表已写入蓝图。",
+        "validation": "由编辑器对实际写入节点执行结构校验；尚无工程写入校验证据。",
     }
     started_at = job.startedAt or job.createdAt
     updated_at = job.updatedAt

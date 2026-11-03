@@ -1,9 +1,31 @@
 import type { BackgroundFit, CartridgeValidationResult, ValidationIssue } from "./types";
+import { validateCustomComponentDefinition, type CustomComponentDefinition } from "./customComponent";
 import { validateExternalUrl } from "./externalAction";
 import { assetIdFromUILayoutReference, isUILayoutAssetReference } from "./uiAssetReference";
+import { normalizeQuickMenuVariant } from "./quickMenuMetrics";
+import type { QuickMenuVariant } from "./quickMenuMetrics";
+import { renpyGUIErrors, type RenpyGUI } from "./renpyGui";
+import type { DialogueModeLayouts } from "./dialogueModeLayout";
+import type { ConfirmationLayout } from "./confirmationLayout";
+import { dialogPortraitLayoutErrors, type DialogPortraitLayout } from "./dialogPortraitLayout";
+import { compileControlPresentation, type ControlPresentationSource } from "./controlPresentation";
+import { ensureRenpyQuickControls } from "./renpyQuickBar";
+import { ensureRenpyTitleControls, renpyTitleTextErrors, type RenpyTitleText } from "./renpyTitleControls";
+import { gameViewportErrors, type GameViewportConfig } from "./gameViewport";
+import {
+  QUICK_MENU_BUTTON_DEFINITIONS,
+  QUICK_MENU_DEFAULT_ACTION_STYLE,
+  QUICK_MENU_KNOWN_DEFAULT_FINGERPRINTS,
+  QUICK_MENU_DEFAULT_MOBILE_RECT,
+  QUICK_MENU_DEFAULT_RECT,
+  QUICK_MENU_DEFAULT_SURFACE_STYLE,
+} from "./quickMenuDefaults";
 
-export const UI_LAYOUT_VERSION = "1.0.0";
+export { QUICK_MENU_BUTTON_DEFINITIONS } from "./quickMenuDefaults";
+
+export const UI_LAYOUT_VERSION = "2.0.0";
 export const DEFAULT_UI_LAYOUT_PATH = "ui/layout.json";
+export const DEFAULT_TITLE_ACTION_MASK_COMPONENT_ID = "title_default_action_mask";
 
 export type UILayoutScreenId =
   | "title"
@@ -13,9 +35,11 @@ export type UILayoutScreenId =
   | "preferences"
   | "history"
   | "gallery"
-  | "about";
+  | "about"
+  | "help";
 
 export type UILayoutComponentType =
+  | "mask"
   | "stage_background"
   | "dialog_panel"
   | "speaker_label"
@@ -33,6 +57,7 @@ export type UILayoutComponentType =
   | "main_menu_gallery_button"
   | "main_menu_settings_button"
   | "main_menu_about_button"
+  | "main_menu_exit_button"
   | "main_menu_custom_button_container"
   | "main_menu_custom_button"
   | "game_menu_nav"
@@ -42,9 +67,12 @@ export type UILayoutComponentType =
   | "history_list"
   | "gallery_grid"
   | "about_panel"
-  | "import_panel";
+  | "help_panel"
+  | "import_panel"
+  | "custom_component";
 
 export type UILayoutBreakpoint = "desktop" | "mobile";
+export type UILayoutQuickMenuDirection = "auto" | "up" | "down" | "left" | "right";
 export type UILayoutAnchor =
   | "top_left"
   | "top_center"
@@ -63,6 +91,7 @@ export interface UILayoutRect {
 }
 
 export interface UILayoutComponentStyle {
+  maskMode?: "blur" | "solid" | "image";
   backgroundColor?: string;
   backgroundImage?: string;
   backgroundFit?: BackgroundFit;
@@ -72,6 +101,10 @@ export interface UILayoutComponentStyle {
   borderWidth?: number;
   borderRadius?: number;
   opacity?: number;
+  /** Page material only; independent of content, including background images. */
+  backgroundOpacity?: number;
+  /** Page foreground (text, controls and content images), never its material. */
+  contentOpacity?: number;
   fontSize?: number;
   fontWeight?: number;
   fontStyle?: "normal" | "italic";
@@ -82,6 +115,40 @@ export interface UILayoutComponentStyle {
   backdropBlur?: number;
   textAlign?: "left" | "center" | "right";
   columns?: number;
+  quickMenuDirection?: UILayoutQuickMenuDirection;
+  quickMenuVariant?: QuickMenuVariant;
+}
+
+/** Existing background-material defaults, not the CSS opacity of the entire
+ * component. Authoring must not write these inherited values into a layout.
+ * Legacy generic components also apply an explicit opacity to the element;
+ * this resolver intentionally does not change that separate behavior.
+ */
+export function resolveUILayoutBackgroundOpacity(
+  componentType: UILayoutComponentType,
+  style?: UILayoutComponentStyle,
+): number {
+  if (style?.backgroundOpacity !== undefined) return style.backgroundOpacity;
+  if (style?.opacity !== undefined) return style.opacity;
+  if (componentType === "quick_menu") return 0.94;
+  if (["mask", "choice_list", "choice_option", "quick_button",
+    "main_menu_continue_button", "main_menu_start_button", "main_menu_save_load_button",
+    "main_menu_gallery_button", "main_menu_settings_button", "main_menu_about_button",
+    "main_menu_custom_button"].includes(componentType)) {
+    return 1;
+  }
+  return 0.78;
+}
+
+/** Only these shipped renderers own independent page material/content layers.
+ * Button states, masks and dialogue have separate existing contracts. */
+export function supportsUILayoutOpacityLayers(type: UILayoutComponentType): boolean {
+  return ["main_menu_hero", "settings_group", "save_slot_grid", "history_list",
+    "gallery_grid", "about_panel", "help_panel"].includes(type);
+}
+
+export function hasUILayoutOpacityLayers(style?: UILayoutComponentStyle): boolean {
+  return style?.backgroundOpacity !== undefined || style?.contentOpacity !== undefined;
 }
 
 export interface UILayoutMotion {
@@ -106,10 +173,54 @@ export interface UILayoutComponent {
   visible?: boolean;
   zIndex?: number;
   rect?: UILayoutRect;
+  /** @deprecated Legacy import-only field. Unified layouts never export it. */
   mobileRect?: UILayoutRect;
   style?: UILayoutComponentStyle;
+  /** Local states inherit from this control's normal style, then shared roles. */
+  stateStyles?: Partial<Record<"normal" | "hover" | "selected" | "disabled", UILayoutComponentStyle>>;
+  /** Built-in title styling is opt-in through the client layout editor. */
+  titleButtonStyleSource?: "layout";
   motion?: UILayoutMotion;
   action?: UILayoutAction;
+  /** Safe, structured component AST; never executable HTML or script. */
+  customComponent?: CustomComponentDefinition;
+  /** Author-owned safe HTML/CSS, active only when the layout enables it. */
+  presentation?: ControlPresentationSource;
+}
+
+/** Display aliases only; preserve an author's custom label and stored styles. */
+export function speakerContainerDisplayLabel(component: Pick<UILayoutComponent, "label">): string {
+  return component.label === undefined || ["说话人名牌", "人物名牌", "姓名容器"].includes(component.label)
+    ? "姓名容器"
+    : component.label;
+}
+
+export function isBuiltinTitleButton(component: Pick<UILayoutComponent, "component_type">): boolean {
+  return ["main_menu_continue_button", "main_menu_start_button", "main_menu_save_load_button",
+    "main_menu_gallery_button", "main_menu_settings_button", "main_menu_about_button"].includes(component.component_type);
+}
+
+export const DEFAULT_TITLE_TEXT_BUTTON_STYLE: Readonly<UILayoutComponentStyle> = {
+  backgroundColor: "transparent", borderColor: "transparent", borderWidth: 0, borderRadius: 0,
+  color: "#f6f8ff", fontSize: 18, fontWeight: 600, shadow: "none", backdropBlur: 0, padding: 0,
+};
+
+/** Resolve display only: legacy project/theme styles remain in the saved source. */
+export function resolveTitleButtonStyle(component: UILayoutComponent): UILayoutComponentStyle | undefined {
+  if (!isBuiltinTitleButton(component)) return component.style;
+  return component.titleButtonStyleSource === "layout"
+    ? { ...DEFAULT_TITLE_TEXT_BUTTON_STYLE, ...component.style }
+    : { ...DEFAULT_TITLE_TEXT_BUTTON_STYLE };
+}
+
+/** All explicit style edits use the effective style, not a hidden legacy base. */
+export function editUILayoutComponentStyle(component: UILayoutComponent, patch: Partial<UILayoutComponentStyle>): UILayoutComponent {
+  return {
+    ...component,
+    ...(isBuiltinTitleButton(component) ? { titleButtonStyleSource: "layout" as const } : {}),
+    style: Object.fromEntries(Object.entries({ ...resolveTitleButtonStyle(component), ...patch })
+      .filter(([, value]) => value !== undefined)),
+  };
 }
 
 export const SAFE_DIALOG_PLAYER_RECTS: Record<
@@ -121,8 +232,8 @@ export const SAFE_DIALOG_PLAYER_RECTS: Record<
     mobileRect: { x: 3.8, y: 62.8, width: 92.4, height: 30.0 },
   },
   speaker_label: {
-    rect: { x: 5.7, y: 72.2, width: 10.8, height: 4.8 },
-    mobileRect: { x: 5.8, y: 65.8, width: 15.4, height: 6.6 },
+    rect: { x: 5.7, y: 71.4, width: 13.6, height: 6.4 },
+    mobileRect: { x: 5.8, y: 65.2, width: 17, height: 8 },
   },
   dialog_text: {
     rect: { x: 6.6, y: 78.4, width: 82.2, height: 13.8 },
@@ -182,6 +293,20 @@ export interface UISkinAsset {
 }
 
 export interface UISkinLayout {
+  /** Absent in legacy layouts: preserve the AgentVN renderer. */
+  layout_type?: "agentvn" | "renpy";
+  /** Absent in old projects: retain their 16:9 canvas. Stored per layout. */
+  gameViewport?: GameViewportConfig;
+  renpy?: RenpyGUI;
+  /** Optional independent title/version wording, only rendered by Ren'Py. */
+  renpyTitleText?: RenpyTitleText;
+  advancedPresentationEnabled?: boolean;
+  /** Optional visual overrides; narrative presentation remains a script concern. */
+  dialogueLayouts?: DialogueModeLayouts;
+  /** Absent in old projects: preserve their existing confirmation presentation. */
+  confirmationLayout?: ConfirmationLayout;
+  /** Optional nameplate-relative portrait geometry; old layouts stay automatic. */
+  dialogPortrait?: DialogPortraitLayout;
   ui_layout_version: string;
   name: string;
   target_runtime: string;
@@ -202,6 +327,53 @@ export interface UISkinHealthOptions {
 }
 
 export const CUSTOM_BUTTON_CONTAINER_COMPONENT_ID = "title_custom_button_container";
+
+export type QuickMenuButtonComponentId = typeof QUICK_MENU_BUTTON_DEFINITIONS[number]["component_id"];
+
+export function createDefaultQuickMenuButtons(): UILayoutComponent[] {
+  return QUICK_MENU_BUTTON_DEFINITIONS.map(({ component_id, label }) => ({
+    component_id,
+    component_type: "quick_button",
+    label,
+    required: false,
+    locked: false,
+    visible: true,
+    style: { ...QUICK_MENU_DEFAULT_ACTION_STYLE },
+  }));
+}
+
+export function createDefaultMask(componentId = "mask_1", label = "遮罩"): UILayoutComponent {
+  return {
+    component_id: componentId,
+    component_type: "mask",
+    label,
+    required: false,
+    locked: false,
+    visible: true,
+    zIndex: 1,
+    rect: { x: 8, y: 20, width: 34, height: 60 },
+    mobileRect: { x: 8, y: 16, width: 84, height: 68 },
+    style: {
+      maskMode: "blur",
+      backgroundColor: "rgba(8, 13, 22, 0.62)",
+      opacity: 0.85,
+      backdropBlur: 20,
+      borderRadius: 9,
+      borderWidth: 1,
+      borderColor: "rgba(255, 255, 255, 0.18)",
+      shadow: "soft",
+    },
+  };
+}
+
+export function createDefaultTitleActionMask(): UILayoutComponent {
+  return {
+    ...createDefaultMask(DEFAULT_TITLE_ACTION_MASK_COMPONENT_ID, "默认按钮遮罩"),
+    zIndex: 20,
+    rect: { x: 77, y: 27, width: 20, height: 57 },
+    mobileRect: { x: 71, y: 27, width: 27, height: 57 },
+  };
+}
 
 export function createDefaultCustomButtonContainer(): UILayoutComponent {
   return {
@@ -224,8 +396,9 @@ export function createDefaultCustomButtonContainer(): UILayoutComponent {
   };
 }
 
-const allowedScreens: UILayoutScreenId[] = ["title", "player", "game_menu", "save_load", "preferences", "history", "gallery", "about"];
+const allowedScreens: UILayoutScreenId[] = ["title", "player", "game_menu", "save_load", "preferences", "history", "gallery", "about", "help"];
 const allowedComponentTypes: UILayoutComponentType[] = [
+  "mask",
   "stage_background",
   "dialog_panel",
   "speaker_label",
@@ -243,6 +416,7 @@ const allowedComponentTypes: UILayoutComponentType[] = [
   "main_menu_gallery_button",
   "main_menu_settings_button",
   "main_menu_about_button",
+  "main_menu_exit_button",
   "main_menu_custom_button_container",
   "main_menu_custom_button",
   "game_menu_nav",
@@ -252,14 +426,15 @@ const allowedComponentTypes: UILayoutComponentType[] = [
   "history_list",
   "gallery_grid",
   "about_panel",
+  "help_panel",
   "import_panel",
+  "custom_component",
 ];
 const requiredByScreen: Partial<Record<UILayoutScreenId, UILayoutComponentType[]>> = {
   title: [
     "main_menu_continue_button",
     "main_menu_start_button",
     "main_menu_save_load_button",
-    "main_menu_library_button",
     "main_menu_gallery_button",
     "main_menu_settings_button",
     "main_menu_about_button",
@@ -270,10 +445,406 @@ const requiredByScreen: Partial<Record<UILayoutScreenId, UILayoutComponentType[]
   history: ["history_list"],
   gallery: ["gallery_grid"],
   about: ["about_panel"],
+  help: ["help_panel"],
 };
 
 const legacyMainMenuActionsType = "main_menu_actions";
 const titleActionComponentTypes = requiredByScreen.title ?? [];
+const legacyTitleActionComponentTypes: UILayoutComponentType[] = [
+  "main_menu_continue_button",
+  "main_menu_start_button",
+  "main_menu_save_load_button",
+  "main_menu_library_button",
+  "main_menu_gallery_button",
+  "main_menu_settings_button",
+  "main_menu_about_button",
+];
+const titleButtonFontSize = 18;
+
+const defaultTitleButtonLabels: Partial<Record<UILayoutComponentType, string>> = {
+  main_menu_continue_button: "继续游戏",
+  main_menu_start_button: "开始游戏",
+  main_menu_save_load_button: "存档",
+  main_menu_gallery_button: "画廊",
+  main_menu_settings_button: "设置",
+  main_menu_about_button: "关于",
+};
+
+const legacyDefaultTitleButtonLabels: Partial<Record<UILayoutComponentType, readonly string[]>> = {
+  main_menu_continue_button: ["继续游戏按钮"],
+  main_menu_start_button: ["开始/重新开始按钮"],
+  main_menu_save_load_button: ["存档/读档按钮"],
+  main_menu_gallery_button: ["画廊按钮"],
+  main_menu_settings_button: ["选项按钮", "选项"],
+  main_menu_about_button: ["关于按钮"],
+};
+
+/**
+ * Resolves the player-facing copy for a fixed title action.
+ *
+ * Layout labels historically doubled as editor-only identifiers (for example
+ * “选项按钮”). Those legacy defaults, and the current generated defaults,
+ * must not leak into the player UI. Any other non-empty label is an explicit
+ * author override and wins over the runtime fallback.
+ */
+export function resolveTitleButtonLabel(
+  componentType: UILayoutComponentType,
+  authoredLabel: string | undefined,
+  fallback: string,
+): string {
+  const label = authoredLabel?.trim();
+  if (!label) return fallback;
+  const defaultLabel = defaultTitleButtonLabels[componentType];
+  if (label === defaultLabel) return fallback;
+  if (legacyDefaultTitleButtonLabels[componentType]?.includes(label)) return fallback;
+  return label;
+}
+
+const legacyDefaultTitleActionRects: Partial<Record<UILayoutComponentType, UILayoutRect>> = {
+  main_menu_continue_button: { x: 78, y: 28, width: 18, height: 7 },
+  main_menu_start_button: { x: 78, y: 36, width: 18, height: 7 },
+  main_menu_save_load_button: { x: 78, y: 44, width: 18, height: 7 },
+  main_menu_library_button: { x: 78, y: 52, width: 18, height: 7 },
+  main_menu_gallery_button: { x: 78, y: 60, width: 18, height: 7 },
+  main_menu_settings_button: { x: 78, y: 68, width: 18, height: 7 },
+  main_menu_about_button: { x: 78, y: 76, width: 18, height: 7 },
+};
+
+const currentDefaultTitleActionRects: Partial<Record<UILayoutComponentType, UILayoutRect>> = {
+  main_menu_continue_button: { x: 78, y: 28, width: 18, height: 7 },
+  main_menu_start_button: { x: 78, y: 36, width: 18, height: 7 },
+  main_menu_save_load_button: { x: 78, y: 44, width: 18, height: 7 },
+  main_menu_gallery_button: { x: 78, y: 52, width: 18, height: 7 },
+  main_menu_settings_button: { x: 78, y: 60, width: 18, height: 7 },
+  main_menu_about_button: { x: 78, y: 68, width: 18, height: 7 },
+};
+
+const currentDefaultTitleActionMobileRects: Partial<Record<UILayoutComponentType, UILayoutRect>> = {
+  main_menu_continue_button: { x: 72, y: 28, width: 25, height: 7 },
+  main_menu_start_button: { x: 72, y: 36, width: 25, height: 7 },
+  main_menu_save_load_button: { x: 72, y: 44, width: 25, height: 7 },
+  main_menu_gallery_button: { x: 72, y: 52, width: 25, height: 7 },
+  main_menu_settings_button: { x: 72, y: 60, width: 25, height: 7 },
+  main_menu_about_button: { x: 72, y: 68, width: 25, height: 7 },
+};
+
+const v11DefaultTitleActionRects: Partial<Record<UILayoutComponentType, UILayoutRect>> = {
+  main_menu_continue_button: { x: 78, y: 28, width: 18, height: 7 },
+  main_menu_start_button: { x: 78, y: 36, width: 18, height: 7 },
+  main_menu_save_load_button: { x: 78, y: 44, width: 18, height: 7 },
+  main_menu_gallery_button: { x: 78, y: 52, width: 18, height: 7 },
+  main_menu_settings_button: { x: 78, y: 60, width: 18, height: 7 },
+  main_menu_about_button: { x: 78, y: 68, width: 18, height: 7 },
+};
+
+const v11DefaultTitleActionMobileRects: Partial<Record<UILayoutComponentType, UILayoutRect>> = {
+  main_menu_continue_button: { x: 74, y: 28, width: 22, height: 7 },
+  main_menu_start_button: { x: 74, y: 36, width: 22, height: 7 },
+  main_menu_save_load_button: { x: 74, y: 44, width: 22, height: 7 },
+  main_menu_gallery_button: { x: 74, y: 52, width: 22, height: 7 },
+  main_menu_settings_button: { x: 74, y: 60, width: 22, height: 7 },
+  main_menu_about_button: { x: 74, y: 68, width: 22, height: 7 },
+};
+
+function compareNumericVersions(left: unknown, right: string): number | undefined {
+  if (typeof left !== "string") return -1;
+  const parse = (value: string): number[] | undefined => {
+    const match = value.trim().match(/^(\d+)\.(\d+)\.(\d+)$/);
+    return match ? match.slice(1).map(Number) : undefined;
+  };
+  const leftParts = parse(left);
+  const rightParts = parse(right);
+  if (!leftParts || !rightParts) return undefined;
+  for (let index = 0; index < rightParts.length; index += 1) {
+    const difference = leftParts[index] - rightParts[index];
+    if (difference !== 0) return difference < 0 ? -1 : 1;
+  }
+  return 0;
+}
+
+function rectMatches(left: UILayoutRect | undefined, right: UILayoutRect | undefined): boolean {
+  if (!left || !right) return false;
+  return ["x", "y", "width", "height"].every((key) => (
+    Math.abs(left[key as keyof Pick<UILayoutRect, "x" | "y" | "width" | "height">] - right[key as keyof Pick<UILayoutRect, "x" | "y" | "width" | "height">]) <= 0.01
+  ));
+}
+
+function serializableValue(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(serializableValue).join(",")}]`;
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${serializableValue(entry)}`);
+    return `{${entries.join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function quickMenuStyleMatchesFingerprint(
+  actual: UILayoutComponentStyle | undefined,
+  expected: Partial<UILayoutComponentStyle>,
+  defaults: Partial<UILayoutComponentStyle> = {},
+): boolean {
+  const actualStyle = actual ?? {};
+  const expectedKeys = new Set(Object.keys(expected));
+  for (const key of expectedKeys) {
+    const expectedValue = expected[key as keyof UILayoutComponentStyle];
+    const actualValue = actualStyle[key as keyof UILayoutComponentStyle]
+      ?? defaults[key as keyof UILayoutComponentStyle];
+    if (serializableValue(actualValue) !== serializableValue(expectedValue)) return false;
+  }
+  // Unknown user-authored style keys are treated as customization. This keeps
+  // migration conservative while allowing legacy fingerprints to omit fields
+  // introduced in a later layout version (for example quickMenuVariant).
+  for (const key of Object.keys(actualStyle)) {
+    if (expectedKeys.has(key)) continue;
+    if ((key === "quickMenuVariant" || key === "quickMenuDirection")
+      && (key === "quickMenuVariant" ? actualStyle[key] === "C" : actualStyle[key] === "auto")) continue;
+    return false;
+  }
+  return true;
+}
+
+function quickMenuClusterMatchesKnownDefault(screen: UILayoutScreen): boolean {
+  const quickMenu = screen.components.find((component) => component.component_type === "quick_menu");
+  const quickButtons = screen.components.filter((component) => component.component_type === "quick_button");
+  if (!quickMenu || quickButtons.length !== QUICK_MENU_BUTTON_DEFINITIONS.length) return false;
+  return QUICK_MENU_KNOWN_DEFAULT_FINGERPRINTS.some((fingerprint) => {
+    if (!rectMatches(quickMenu.rect, fingerprint.rect) || !rectMatches(quickMenu.mobileRect, fingerprint.mobileRect)) return false;
+    if (!quickMenuStyleMatchesFingerprint(
+      quickMenu.style,
+      fingerprint.surfaceStyle,
+      { quickMenuVariant: "C", quickMenuDirection: "auto" },
+    )) return false;
+    if (quickMenu.visible !== fingerprint.quickMenuVisible
+      || quickMenu.locked !== fingerprint.quickMenuLocked
+      || quickMenu.zIndex !== fingerprint.quickMenuZIndex) return false;
+    return QUICK_MENU_BUTTON_DEFINITIONS.every(({ component_id }) => {
+      const button = quickButtons.find((component) => component.component_id === component_id);
+      return Boolean(button)
+        && quickMenuStyleMatchesFingerprint(button?.style, fingerprint.actionStyle)
+        && button?.visible === fingerprint.actionVisible
+        && button?.locked === fingerprint.actionLocked;
+    });
+  });
+}
+
+function titleUsesLegacyDefaultActionLayout(screen: UILayoutScreen): boolean {
+  return legacyTitleActionComponentTypes.every((componentType) => {
+    const matches = screen.components.filter((component) => component.component_type === componentType);
+    if (matches.length !== 1) return false;
+    const component = matches[0];
+    const expected = legacyDefaultTitleActionRects[componentType];
+    return rectMatches(component.rect, expected) && rectMatches(component.mobileRect, expected);
+  });
+}
+
+function titleUsesV11DefaultActionLayout(screen: UILayoutScreen): boolean {
+  return Object.keys(v11DefaultTitleActionRects).every((componentType) => {
+    const typedComponentType = componentType as UILayoutComponentType;
+    const matches = screen.components.filter((component) => component.component_type === typedComponentType);
+    if (matches.length !== 1) return false;
+    const component = matches[0];
+    return rectMatches(component.rect, v11DefaultTitleActionRects[typedComponentType])
+      && rectMatches(component.mobileRect, v11DefaultTitleActionMobileRects[typedComponentType]);
+  });
+}
+
+function migrateTitleActionsForVersion(screen: UILayoutScreen, _sourceVersion: unknown): UILayoutScreen {
+  const useNewDefaultGeometry = titleUsesLegacyDefaultActionLayout(screen)
+    || titleUsesV11DefaultActionLayout(screen);
+  const components = screen.components.flatMap((component) => {
+    if (component.component_type === "main_menu_library_button") return [];
+    if (component.component_type === "main_menu_exit_button") return [];
+    if (component.component_id === DEFAULT_TITLE_ACTION_MASK_COMPONENT_ID && useNewDefaultGeometry) {
+      const defaultMask = createDefaultTitleActionMask();
+      return [{
+        ...component,
+        rect: { ...defaultMask.rect! },
+        mobileRect: { ...defaultMask.mobileRect! },
+      }];
+    }
+    if (!titleActionComponentTypes.includes(component.component_type)) return [component];
+    const nextRect = useNewDefaultGeometry ? currentDefaultTitleActionRects[component.component_type] : undefined;
+    const nextMobileRect = useNewDefaultGeometry ? currentDefaultTitleActionMobileRects[component.component_type] : undefined;
+    return [{
+      ...component,
+      ...(nextRect ? { rect: { ...nextRect }, mobileRect: { ...(nextMobileRect ?? nextRect) } } : {}),
+      style: { ...(component.style ?? {}), fontSize: titleButtonFontSize },
+      ...(useNewDefaultGeometry ? {
+        zIndex: 20 + titleActionComponentTypes.indexOf(component.component_type),
+      } : {}),
+    }];
+  });
+
+  return {
+    ...screen,
+    // Defaults belong to new/reset layouts only. Absence in a saved layout
+    // is authoritative, including layouts where the user deleted the mask.
+    components,
+  };
+}
+
+const v11DefaultQuickMenuRect: UILayoutRect = {
+  x: 98,
+  y: 2,
+  width: 48,
+  height: 8,
+  anchor: "top_right",
+};
+
+const v11DefaultQuickMenuMobileRect: UILayoutRect = {
+  x: 98,
+  y: 2,
+  width: 58,
+  height: 12,
+  anchor: "top_right",
+};
+
+const v12DefaultQuickMenuRect: UILayoutRect = {
+  x: 98,
+  y: 2,
+  width: 42,
+  height: 9,
+  anchor: "top_right",
+};
+
+const v12DefaultQuickMenuMobileRect: UILayoutRect = {
+  x: 98,
+  y: 2,
+  width: 50,
+  height: 10,
+  anchor: "top_right",
+};
+
+const currentDefaultQuickMenuRect: UILayoutRect = {
+  ...QUICK_MENU_DEFAULT_RECT,
+};
+
+const currentDefaultQuickMenuMobileRect: UILayoutRect = {
+  ...QUICK_MENU_DEFAULT_MOBILE_RECT,
+};
+
+function migratePlayerLayoutForVersion(screen: UILayoutScreen, migrateDeprecatedComponents: boolean,
+  layoutType?: UISkinLayout["layout_type"]): UILayoutScreen {
+  if (screen.screen_id !== "player") return screen;
+  const quickMenu = screen.components.find((component) => component.component_type === "quick_menu");
+  const replaceKnownDefaultQuickMenuCluster = migrateDeprecatedComponents
+    && quickMenuClusterMatchesKnownDefault(screen);
+  const preserveCustomQuickMenuCluster = migrateDeprecatedComponents
+    && Boolean(quickMenu)
+    && !replaceKnownDefaultQuickMenuCluster;
+  const speakerLabel = screen.components.find((component) => component.component_type === "speaker_label");
+  const usesRecognizedDefaultSpeakerGeometry = (
+    rectMatches(speakerLabel?.rect, { x: 8, y: 71, width: 20, height: 5.5 })
+    && rectMatches(speakerLabel?.mobileRect, { x: 6, y: 63, width: 24, height: 7 })
+  );
+  const usesCurrentDefaultQuickMenuGeometry = migrateDeprecatedComponents
+    && (
+      (
+        rectMatches(quickMenu?.rect, v11DefaultQuickMenuRect)
+        && rectMatches(quickMenu?.mobileRect, v11DefaultQuickMenuMobileRect)
+      )
+      || (
+        rectMatches(quickMenu?.rect, v12DefaultQuickMenuRect)
+        && rectMatches(quickMenu?.mobileRect, v12DefaultQuickMenuMobileRect)
+      )
+      || (
+        rectMatches(quickMenu?.rect, currentDefaultQuickMenuRect)
+        && rectMatches(quickMenu?.mobileRect, currentDefaultQuickMenuMobileRect)
+      )
+    );
+  return {
+    ...screen,
+    components: screen.components.flatMap((component) => {
+      if (migrateDeprecatedComponents && component.component_id === "quick_settings_button") {
+        // AgentVN removed this legacy action; Ren'Py still has a native settings
+        // action. Preserve its authored source before legacy cluster replacement.
+        return layoutType === "renpy" ? [component] : [];
+      }
+      const mobileRect = component.mobileRect;
+      let nextComponent = component;
+      if (replaceKnownDefaultQuickMenuCluster && component.component_type === "quick_menu") {
+        nextComponent = {
+          ...component,
+          label: "快捷菜单",
+          required: true,
+          rect: { ...currentDefaultQuickMenuRect },
+          mobileRect: { ...currentDefaultQuickMenuMobileRect },
+          style: { ...QUICK_MENU_DEFAULT_SURFACE_STYLE },
+          zIndex: 50,
+        };
+      } else if (replaceKnownDefaultQuickMenuCluster && component.component_type === "quick_button") {
+        nextComponent = {
+          ...component,
+          required: false,
+          locked: false,
+          visible: true,
+          style: { ...QUICK_MENU_DEFAULT_ACTION_STYLE },
+        };
+      } else if (!preserveCustomQuickMenuCluster && usesCurrentDefaultQuickMenuGeometry && component.component_type === "quick_menu") {
+        nextComponent = {
+          ...component,
+          rect: { ...currentDefaultQuickMenuRect },
+          mobileRect: { ...currentDefaultQuickMenuMobileRect },
+          style: {
+            ...(component.style ?? {}),
+            padding: 4,
+            gap: 3,
+            quickMenuDirection: component.style?.quickMenuDirection ?? "up",
+            quickMenuVariant: normalizeQuickMenuVariant(component.style?.quickMenuVariant),
+          },
+        };
+      }
+      if (component.component_type === "quick_menu"
+        && !nextComponent.style?.quickMenuDirection) {
+        nextComponent = {
+          ...nextComponent,
+          style: {
+            ...(nextComponent.style ?? {}),
+            // Missing direction is a legacy omission, not a user override.
+            // Keep custom geometry/material intact while making the C drawer's
+            // historical upward default explicit for deterministic runtime
+            // resolution.
+            quickMenuDirection: "up",
+            quickMenuVariant: normalizeQuickMenuVariant(nextComponent.style?.quickMenuVariant),
+          },
+        };
+      }
+      if (component.component_type === "quick_menu"
+        && !preserveCustomQuickMenuCluster
+        && !nextComponent.style?.quickMenuVariant) {
+        nextComponent = {
+          ...nextComponent,
+          style: { ...(nextComponent.style ?? {}), quickMenuVariant: "C" },
+        };
+      }
+      if (component.component_type === "speaker_label" && usesRecognizedDefaultSpeakerGeometry) {
+        nextComponent = {
+          ...nextComponent,
+          rect: { ...SAFE_DIALOG_PLAYER_RECTS.speaker_label.rect },
+          mobileRect: { ...SAFE_DIALOG_PLAYER_RECTS.speaker_label.mobileRect },
+        };
+      }
+      const nextMobileRect = nextComponent.mobileRect;
+      if (!nextMobileRect) return [nextComponent];
+      if (component.component_type === "quick_menu"
+        && !preserveCustomQuickMenuCluster
+        && nextMobileRect.anchor === "top_right"
+        && nextMobileRect.x < 75
+        && usesCurrentDefaultQuickMenuGeometry) {
+        return [{ ...nextComponent, mobileRect: { ...currentDefaultQuickMenuMobileRect } }];
+      }
+      if (component.component_type === "choice_list"
+        && nextMobileRect.anchor === "center"
+        && Math.abs(nextMobileRect.x - 50) > 5) {
+        return [{ ...nextComponent, mobileRect: { ...nextMobileRect, x: 50 } }];
+      }
+      return [nextComponent];
+    }),
+  };
+}
 
 function roundLayoutValue(value: number): number {
   return Number(value.toFixed(2));
@@ -325,58 +896,259 @@ function inheritLegacyActionStyle(
 
 export function migrateLegacyUISkinLayout(layout?: UISkinLayout): UISkinLayout {
   if (!layout) return getDefaultUISkinLayout();
-  const titleScreen = layout.screens?.find((screen) => screen.screen_id === "title");
+  const versionComparison = compareNumericVersions(layout.ui_layout_version, UI_LAYOUT_VERSION);
+  if (versionComparison === 1) return layout;
+  const shouldMigrateTitleLayout = versionComparison === -1;
+  let migratedLayout = layout;
+  const titleScreen = migratedLayout.screens?.find((screen) => screen.screen_id === "title");
   const legacyIndex = titleScreen?.components.findIndex(
     (component) => String(component.component_type) === legacyMainMenuActionsType,
   ) ?? -1;
-  if (!titleScreen || legacyIndex < 0) return layout;
+  if (shouldMigrateTitleLayout && titleScreen && legacyIndex >= 0) {
+    const legacyComponent = titleScreen.components[legacyIndex];
+    const defaultTitleScreen = getDefaultUISkinLayout().screens.find((screen) => screen.screen_id === "title");
+    const defaultActions = defaultTitleScreen?.components.filter(
+      (component) => titleActionComponentTypes.includes(component.component_type),
+    ) ?? [];
+    const desktopBounds = getRectBounds(defaultActions.map((component) => component.rect));
+    const mobileBounds = getRectBounds(defaultActions.map((component) => component.mobileRect ?? component.rect));
+    const existingTypes = new Set(
+      titleScreen.components
+        .filter((_, index) => index !== legacyIndex)
+        .map((component) => component.component_type),
+    );
+    const migratedActions = defaultActions
+      .filter((component) => !existingTypes.has(component.component_type))
+      .map((component, index) => ({
+        ...component,
+        rect: component.rect && desktopBounds && legacyComponent.rect
+          ? remapRectToContainer(component.rect, desktopBounds, legacyComponent.rect)
+          : component.rect,
+        mobileRect: (component.mobileRect ?? component.rect) && mobileBounds && (legacyComponent.mobileRect ?? legacyComponent.rect)
+          ? remapRectToContainer(
+            component.mobileRect ?? component.rect!,
+            mobileBounds,
+            legacyComponent.mobileRect ?? legacyComponent.rect!,
+          )
+          : component.mobileRect,
+        style: inheritLegacyActionStyle(component.style, legacyComponent.style),
+        motion: legacyComponent.motion ?? component.motion,
+        locked: legacyComponent.locked ?? component.locked,
+        visible: legacyComponent.visible ?? component.visible,
+        zIndex: legacyComponent.zIndex !== undefined ? legacyComponent.zIndex + index : component.zIndex,
+      }));
 
-  const legacyComponent = titleScreen.components[legacyIndex];
-  const defaultTitleScreen = getDefaultUISkinLayout().screens.find((screen) => screen.screen_id === "title");
-  const defaultActions = defaultTitleScreen?.components.filter(
-    (component) => titleActionComponentTypes.includes(component.component_type),
-  ) ?? [];
-  const desktopBounds = getRectBounds(defaultActions.map((component) => component.rect));
-  const mobileBounds = getRectBounds(defaultActions.map((component) => component.mobileRect ?? component.rect));
-  const existingTypes = new Set(
-    titleScreen.components
-      .filter((_, index) => index !== legacyIndex)
-      .map((component) => component.component_type),
+    migratedLayout = {
+      ...migratedLayout,
+      screens: migratedLayout.screens.map((screen) => screen.screen_id !== "title" ? screen : {
+        ...screen,
+        components: screen.components.flatMap((component, index) => (
+          index === legacyIndex
+            ? migratedActions
+            : String(component.component_type) === legacyMainMenuActionsType
+              ? []
+              : [component]
+        )),
+      }),
+    };
+  }
+
+  if (shouldMigrateTitleLayout) {
+    migratedLayout = {
+      ...migratedLayout,
+      ui_layout_version: UI_LAYOUT_VERSION,
+      screens: migratedLayout.screens.map((screen) => {
+        if (screen.screen_id !== "title") return screen;
+        const migratedTitle = migrateTitleActionsForVersion(screen, layout.ui_layout_version);
+        return {
+          ...migratedTitle,
+          components: migratedTitle.components.filter(
+            (component) => migratedLayout.layout_type === "renpy" || component.component_type !== "main_menu_exit_button",
+          ),
+        };
+      }),
+    };
+  }
+
+  if (versionComparison === -1 || versionComparison === 0) {
+    migratedLayout = {
+      ...migratedLayout,
+      screens: migratedLayout.screens.map((screen) => {
+        const nextScreen = screen.screen_id === "title"
+          ? {
+            ...screen,
+            components: screen.components.filter((component) => migratedLayout.layout_type === "renpy"
+              || component.component_type !== "main_menu_exit_button"),
+          }
+          : screen;
+        return migratePlayerLayoutForVersion(nextScreen, versionComparison === -1, migratedLayout.layout_type);
+      }),
+    };
+  }
+
+  const playerScreen = migratedLayout.screens?.find((screen) => screen.screen_id === "player");
+  if (!playerScreen) return finalizeUnifiedLayout(migratedLayout);
+  const existingIds = new Set(playerScreen.components.map((component) => component.component_id));
+  const missingQuickButtons = createDefaultQuickMenuButtons().filter(
+    (component) => !existingIds.has(component.component_id),
   );
-  const migratedActions = defaultActions
-    .filter((component) => !existingTypes.has(component.component_type))
-    .map((component, index) => ({
-      ...component,
-      rect: component.rect && desktopBounds && legacyComponent.rect
-        ? remapRectToContainer(component.rect, desktopBounds, legacyComponent.rect)
-        : component.rect,
-      mobileRect: (component.mobileRect ?? component.rect) && mobileBounds && (legacyComponent.mobileRect ?? legacyComponent.rect)
-        ? remapRectToContainer(
-          component.mobileRect ?? component.rect!,
-          mobileBounds,
-          legacyComponent.mobileRect ?? legacyComponent.rect!,
-        )
-        : component.mobileRect,
-      style: inheritLegacyActionStyle(component.style, legacyComponent.style),
-      motion: legacyComponent.motion ?? component.motion,
-      locked: legacyComponent.locked ?? component.locked,
-      visible: legacyComponent.visible ?? component.visible,
-      zIndex: legacyComponent.zIndex !== undefined ? legacyComponent.zIndex + index : component.zIndex,
-    }));
+  if (missingQuickButtons.length === 0) return finalizeUnifiedLayout(migratedLayout);
+  return finalizeUnifiedLayout({
+    ...migratedLayout,
+    screens: migratedLayout.screens.map((screen) => screen.screen_id !== "player" ? screen : {
+      ...screen,
+      components: [...screen.components, ...missingQuickButtons],
+    }),
+  });
+}
 
+/**
+ * Collapse the legacy two-breakpoint schema into the single PC-authored
+ * layout. This is intentionally applied at every project/runtime/export
+ * boundary so old projects remain importable while newly saved cartridges
+ * never contain `mobileRect`.
+ */
+function finalizeUnifiedLayout(layout: UISkinLayout): UISkinLayout {
   return {
     ...layout,
-    screens: layout.screens.map((screen) => screen.screen_id !== "title" ? screen : {
+    ui_layout_version: UI_LAYOUT_VERSION,
+    screens: (layout.screens ?? []).map((screen) => ({
       ...screen,
-      components: screen.components.flatMap((component, index) => (
-        index === legacyIndex
-          ? migratedActions
-          : String(component.component_type) === legacyMainMenuActionsType
-            ? []
-            : [component]
-      )),
-    }),
+      // Group metadata is authored data, not a runtime-painted rectangle.
+      // Preserve it across save/export; renderers decide which components paint.
+      components: (screen.components ?? []).map((component) => {
+          const { mobileRect, ...withoutMobileRect } = component;
+          const rect = component.rect ?? mobileRect;
+          return rect ? { ...withoutMobileRect, rect } : withoutMobileRect;
+        }),
+    })),
   };
+}
+
+export interface UISkinRuntimeNormalization {
+  layout: UISkinLayout;
+  warnings: string[];
+}
+
+const runtimeColorFallbacks: Record<string, string> = {
+  backgroundColor: "#192234",
+  color: "#f6f8ff",
+  accentColor: "#82b6ff",
+  borderColor: "#d8e2ff",
+};
+
+function isSafeRuntimeColor(value: unknown): value is string {
+  return value === "transparent" || validateColor(value);
+}
+
+function normalizeRuntimeStyle(
+  style: unknown,
+  tokens: UILayoutTokens,
+  path: string,
+  warnings: string[],
+): UILayoutComponentStyle | undefined {
+  if (!isPlainRecord(style)) return style === undefined ? undefined : {};
+  const next = { ...style } as Record<string, unknown>;
+  const tokenFallbacks: Record<string, string | undefined> = {
+    backgroundColor: tokens.colorSurfaceStrong ?? runtimeColorFallbacks.backgroundColor,
+    color: tokens.colorInk ?? runtimeColorFallbacks.color,
+    accentColor: tokens.colorAccent ?? runtimeColorFallbacks.accentColor,
+    borderColor: tokens.colorLine ?? runtimeColorFallbacks.borderColor,
+  };
+  for (const field of ["backgroundColor", "color", "accentColor", "borderColor"]) {
+    if (next[field] === undefined) continue;
+    if (isSafeRuntimeColor(next[field])) continue;
+    const fallback = tokenFallbacks[field] ?? runtimeColorFallbacks[field];
+    warnings.push(`${path}.${field} 已从历史 CSS 表达式回退为 ${fallback}`);
+    next[field] = fallback;
+  }
+  if (next.backgroundImage !== undefined && !validateBackgroundImageReference(next.backgroundImage)) {
+    warnings.push(`${path}.backgroundImage 已清除：素材引用不是卡带内安全路径`);
+    delete next.backgroundImage;
+    delete next.backgroundFit;
+  }
+  if (typeof next.borderRadius === "number" && Number.isFinite(next.borderRadius)) {
+    const clamped = Math.max(0, Math.min(96, next.borderRadius));
+    if (clamped !== next.borderRadius) {
+      warnings.push(`${path}.borderRadius 已限制到 0-96 范围。`);
+      next.borderRadius = clamped;
+    }
+  }
+  if (typeof next.backdropBlur === "number" && Number.isFinite(next.backdropBlur)) {
+    const clamped = Math.max(0, Math.min(48, next.backdropBlur));
+    if (clamped !== next.backdropBlur) {
+      warnings.push(`${path}.backdropBlur 已限制到 0-48 范围。`);
+      next.backdropBlur = clamped;
+    }
+  }
+  return next as UILayoutComponentStyle;
+}
+
+function normalizeRuntimeTokens(
+  tokens: unknown,
+  warnings: string[],
+): UILayoutTokens {
+  const defaults = getDefaultUISkinLayout().tokens;
+  if (!isPlainRecord(tokens)) return { ...defaults };
+  const next = { ...tokens } as Record<string, unknown>;
+  for (const field of uiSkinColorTokenFields) {
+    if (next[field] === undefined) continue;
+    if (isSafeRuntimeColor(next[field])) continue;
+    const fallback = defaults[field] as string | undefined;
+    if (!fallback) continue;
+    warnings.push(`ui.tokens.${field} 已从历史 CSS 表达式回退为 ${fallback}`);
+    next[field] = fallback;
+  }
+  return next as UILayoutTokens;
+}
+
+/**
+ * Adds the independent help page to legacy Ren'Py layouts at read boundaries.
+ * Keeps every authored page/value intact and never mutates the supplied layout.
+ */
+export function ensureRenpyHelpScreen(layout: UISkinLayout): UISkinLayout {
+  layout = ensureRenpyTitleControls(ensureRenpyQuickControls(layout));
+  if (layout.layout_type !== "renpy" || layout.screens.some((screen) => screen.screen_id === "help")) {
+    return layout;
+  }
+  return {
+    ...layout,
+    screens: [...layout.screens, {
+      screen_id: "help",
+      components: [{
+        component_id: "help_panel",
+        component_type: "help_panel",
+        label: "帮助面板",
+        required: true,
+        rect: { x: 5, y: 18, width: 90, height: 68 },
+      }],
+    }],
+  };
+}
+
+/**
+ * Normalizes legacy UI skin values at runtime boundaries without mutating
+ * the project/store object. This keeps old projects previewable while
+ * preserving valid user-authored colors and image references.
+ */
+export function normalizeUISkinLayoutForRuntime(layout?: UISkinLayout): UISkinRuntimeNormalization {
+  const migrated = migrateLegacyUISkinLayout(layout);
+  const warnings: string[] = [];
+  const cloned = ensureRenpyHelpScreen(JSON.parse(JSON.stringify(migrated)) as UISkinLayout);
+  cloned.tokens = normalizeRuntimeTokens(cloned.tokens, warnings);
+  cloned.screens = (cloned.screens ?? []).map((screen, screenIndex) => ({
+    ...screen,
+    components: (screen.components ?? []).map((component, componentIndex) => ({
+      ...component,
+      style: normalizeRuntimeStyle(
+        resolveTitleButtonStyle(component),
+        cloned.tokens,
+        `ui.screens.${screenIndex}.components.${componentIndex}.style`,
+        warnings,
+      ),
+    })),
+  }));
+  return { layout: cloned, warnings };
 }
 
 export const uiSkinColorTokenFields = [
@@ -427,7 +1199,8 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function validateColor(value: unknown): boolean {
-  return typeof value === "string" && (/^#[0-9a-fA-F]{3,8}$/.test(value) || /^rgba?\([\d\s.,%]+\)$/.test(value));
+  return value === "transparent"
+    || (typeof value === "string" && (/^#[0-9a-fA-F]{3,8}$/.test(value) || /^rgba?\([\d\s.,%]+\)$/.test(value)));
 }
 
 function validateAssetPath(path: string): boolean {
@@ -462,12 +1235,16 @@ function validateRect(rect: unknown, path: string, issues: ValidationIssue[]): v
   }
 }
 
-function validateStyle(style: unknown, path: string, issues: ValidationIssue[]): void {
+function validateStyle(style: unknown, path: string, issues: ValidationIssue[], allowPageOpacityLayers = false): void {
   if (!isPlainRecord(style)) {
     issues.push(issue("ui_style", `界面样式格式错误（style）：${path} 必须是对象。原因：布局文件中的样式结构不正确。影响：GameCLI 无法读取颜色、透明度、字体等设置。解决方案：请回到布局设计器重新保存，或把 style 修正为对象。`, "error", path));
     return;
   }
+  if (hasUILayoutOpacityLayers(style) && !allowPageOpacityLayers) {
+    issues.push(issue("ui_opacity_layers", "背景与内容透明度仅用于支持分层的页面区域；按钮、对白、确认框和遮罩使用各自的外观设置。", "error", path));
+  }
   const allowed = new Set([
+    "maskMode",
     "backgroundColor",
     "backgroundImage",
     "backgroundFit",
@@ -477,6 +1254,8 @@ function validateStyle(style: unknown, path: string, issues: ValidationIssue[]):
     "borderWidth",
     "borderRadius",
     "opacity",
+    "backgroundOpacity",
+    "contentOpacity",
     "fontSize",
     "fontWeight",
     "fontStyle",
@@ -487,6 +1266,8 @@ function validateStyle(style: unknown, path: string, issues: ValidationIssue[]):
     "backdropBlur",
     "textAlign",
     "columns",
+    "quickMenuDirection",
+    "quickMenuVariant",
   ]);
   for (const [key, value] of Object.entries(style)) {
     if (!allowed.has(key)) {
@@ -496,14 +1277,27 @@ function validateStyle(style: unknown, path: string, issues: ValidationIssue[]):
     if (["backgroundColor", "color", "accentColor", "borderColor"].includes(key) && !validateColor(value)) {
       issues.push(issue("ui_color", `颜色值不安全或格式错误（${key}）：${path}.${key} 需要 #RRGGBB、#RGB 或 rgba(...)。原因：颜色字段不是可识别的安全颜色。影响：GameCLI 无法稳定渲染该控件颜色。解决方案：请在布局设计器中重新选择颜色。`, "error", `${path}.${key}`));
     }
+    if (key === "maskMode" && !["blur", "solid", "image"].includes(String(value))) {
+      issues.push(issue("ui_mask_mode", `遮罩模式不支持（maskMode）：${String(value)}。`, "error", `${path}.${key}`));
+    }
     if (key === "backgroundImage" && !validateBackgroundImageReference(value)) {
       issues.push(issue("ui_background_image", `背景图素材路径无效（backgroundImage）：${String(value)} 必须引用卡带内 ui/assets/ 或 assets/ 下的素材。原因：布局引用了未打包或不安全的素材路径。影响：玩家端无法显示该背景图。解决方案：请把图片导入素材库或 UI 素材，再在布局设计器中重新选择。`, "error", `${path}.${key}`));
     }
     if (key === "backgroundFit" && !["stretch", "contain", "cover"].includes(String(value))) {
       issues.push(issue("ui_background_fit", `背景图显示模式不支持（backgroundFit）：${String(value)} 不是有效选项。原因：GameCLI 只支持 stretch、contain 或 cover。影响：玩家端无法确定背景图如何铺放。解决方案：请在布局设计器中重新选择背景显示模式。`, "error", `${path}.${key}`));
     }
-    if (["borderWidth", "borderRadius", "opacity", "fontSize", "fontWeight", "padding", "gap", "backdropBlur", "columns"].includes(key)) {
+    if (["borderWidth", "borderRadius", "opacity", "backgroundOpacity", "contentOpacity", "fontSize", "fontWeight", "padding", "gap", "backdropBlur", "columns"].includes(key)) {
       if (typeof value !== "number" || !Number.isFinite(value)) issues.push(issue("ui_style_number", `界面样式数值无效（${key}）：${path}.${key} 必须是有限数字。原因：样式参数被写成了空值、文本或无限值。影响：GameCLI 无法正确渲染该控件。解决方案：请在布局设计器中重新输入该数值。`, "error", `${path}.${key}`));
+      if (["backgroundOpacity", "contentOpacity"].includes(key) && typeof value === "number"
+        && Number.isFinite(value) && (value < 0 || value > 1)) {
+        issues.push(issue("ui_opacity_range", `${path}.${key} 必须在 0 到 1 之间。`, "error", `${path}.${key}`));
+      }
+      if (key === "borderRadius" && typeof value === "number" && Number.isFinite(value) && (value < 0 || value > 96)) {
+        issues.push(issue("ui_border_radius", `圆角值超出范围：${path}.${key} 必须在 0 到 96 之间。`, "error", `${path}.${key}`));
+      }
+      if (key === "backdropBlur" && typeof value === "number" && Number.isFinite(value) && (value < 0 || value > 48)) {
+        issues.push(issue("ui_backdrop_blur", `背景模糊值超出范围：${path}.${key} 必须在 0 到 48 之间。`, "error", `${path}.${key}`));
+      }
     }
     if (key === "shadow" && !["none", "soft", "strong"].includes(String(value))) {
       issues.push(issue("ui_shadow", `阴影样式不支持（shadow）：${String(value)} 不是有效选项。原因：GameCLI 只支持 none、soft、strong。影响：控件阴影无法按预期显示。解决方案：请在布局设计器中重新选择阴影强度。`, "error", `${path}.${key}`));
@@ -516,6 +1310,12 @@ function validateStyle(style: unknown, path: string, issues: ValidationIssue[]):
     }
     if (key === "textAlign" && !["left", "center", "right"].includes(String(value))) {
       issues.push(issue("ui_text_align", `文本对齐方式不支持（textAlign）：${String(value)} 不是有效选项。原因：GameCLI 只支持 left、center、right。影响：文字排版可能错位。解决方案：请在布局设计器中重新选择文字对齐方式。`, "error", `${path}.${key}`));
+    }
+    if (key === "quickMenuDirection" && !["auto", "up", "down", "left", "right"].includes(String(value))) {
+      issues.push(issue("ui_quick_menu_direction", `快捷菜单方向不支持（quickMenuDirection）：${String(value)} 不是有效选项。原因：运行端只支持 auto、up、down、left、right。影响：快捷菜单可能无法展开。解决方案：请在布局设计器中重新选择快捷菜单方向。`, "error", `${path}.${key}`));
+    }
+    if (key === "quickMenuVariant" && !["A", "C"].includes(String(value))) {
+      issues.push(issue("ui_quick_menu_variant", `快捷菜单方案不支持（quickMenuVariant）：${String(value)} 不是有效选项。原因：运行端只支持 A（列表样式）和 C（抽屉样式）。影响：快捷菜单将回退为抽屉样式。解决方案：请在布局设计器中重新选择快捷菜单方案。`, "error", `${path}.${key}`));
     }
   }
 }
@@ -562,6 +1362,10 @@ function validateTokens(tokens: unknown, path: string, issues: ValidationIssue[]
 
 function validateForbiddenPayload(value: unknown, path: string, issues: ValidationIssue[]): void {
   if (!isPlainRecord(value) && !Array.isArray(value)) return;
+  // Only this declared, separately parsed source field may carry markup.
+  // Arbitrary html/css elsewhere in a cartridge remain forbidden.
+  if (/^ui\.screens\.\d+\.components\.\d+\.presentation$/.test(path)) return;
+  if (/^ui\.(?:confirmationLayout\.(?:panel|title|text)|dialogueLayouts\.(?:nvl|bubble)\.(?:panel|speaker|text))Presentation$/.test(path)) return;
   const entries = Array.isArray(value) ? value.map((item, index) => [String(index), item] as const) : Object.entries(value);
   for (const [key, child] of entries) {
     const nextPath = `${path}.${key}`;
@@ -617,6 +1421,66 @@ export function validateUISkinLayout(layout: unknown): CartridgeValidationResult
   const issues: ValidationIssue[] = [];
   if (!isPlainRecord(layout)) return splitIssues([issue("ui_layout", "客户端布局格式错误（ui）：布局根节点必须是对象。原因：ui/layout.json 结构损坏。影响：GameCLI 无法读取玩家界面布局。解决方案：请在布局设计器中恢复默认布局或重新保存。", "error", "ui")]);
   validateForbiddenPayload(layout, "ui", issues);
+  for (const field of gameViewportErrors(layout.gameViewport))
+    issues.push(issue("ui_viewport", "画面比例无效，请选择16:9、16:10或4:3。", "error", `ui.gameViewport.${field}`));
+  if (layout.renpyTitleText !== undefined) {
+    for (const field of renpyTitleTextErrors(layout.renpyTitleText))
+      issues.push(issue("ui_renpy_title_text", "主页文字设置无效，请检查显隐开关、文字类型与长度。", "error",
+        `ui.renpyTitleText${field ? `.${field}` : ""}`));
+  }
+  if (layout.advancedPresentationEnabled !== undefined && typeof layout.advancedPresentationEnabled !== "boolean")
+    issues.push(issue("ui_presentation_enabled", "进阶开关必须是布尔值。", "error", "ui.advancedPresentationEnabled"));
+  if (layout.dialogPortrait !== undefined) {
+    for (const field of dialogPortraitLayoutErrors(layout.dialogPortrait))
+      issues.push(issue("ui_dialog_portrait", "头像布局参数无效，请检查偏移及尺寸范围。", "error",
+        `ui.dialogPortrait${field ? `.${field}` : ""}`));
+  }
+  if (layout.confirmationLayout !== undefined) {
+    const config = layout.confirmationLayout;
+    if (!isPlainRecord(config)) {
+      issues.push(issue("ui_confirmation_layout", "确认提示布局必须是对象。", "error", "ui.confirmationLayout"));
+    } else {
+      for (const key of Object.keys(config)) {
+        if (!["rect", "panelStyle", "titleStyle", "textStyle", "panelPresentation", "titlePresentation", "textPresentation"].includes(key))
+          issues.push(issue("ui_confirmation_layout_field", "不支持的确认提示布局字段。", "error", `ui.confirmationLayout.${key}`));
+      }
+      if (config.rect !== undefined) validateRect(config.rect, "ui.confirmationLayout.rect", issues);
+      for (const key of ["panelStyle", "titleStyle", "textStyle"]) {
+        if (config[key] !== undefined) validateStyle(config[key], `ui.confirmationLayout.${key}`, issues);
+      }
+      for (const key of ["panelPresentation", "titlePresentation", "textPresentation"])
+        if (config[key] !== undefined) for (const message of compileControlPresentation(config[key]).issues)
+          issues.push(issue("ui_control_presentation", message, "error", `ui.confirmationLayout.${key}`));
+    }
+  }
+  if (layout.dialogueLayouts !== undefined) {
+    if (!isPlainRecord(layout.dialogueLayouts)) {
+      issues.push(issue("ui_dialogue_layout", "对白模式布局必须是对象。", "error", "ui.dialogueLayouts"));
+    } else for (const [mode, value] of Object.entries(layout.dialogueLayouts)) {
+      const path = `ui.dialogueLayouts.${mode}`;
+      if (!["nvl", "bubble"].includes(mode) || !isPlainRecord(value)) {
+        issues.push(issue("ui_dialogue_layout", "对白模式或布局格式不受支持。", "error", path));
+        continue;
+      }
+      for (const key of Object.keys(value)) {
+        if (!["rect", "panelStyle", "textStyle", "speakerStyle", "panelPresentation", "textPresentation", "speakerPresentation"].includes(key))
+          issues.push(issue("ui_dialogue_layout_field", "不支持的对白模式布局字段。", "error", `${path}.${key}`));
+      }
+      if (value.rect !== undefined) validateRect(value.rect, `${path}.rect`, issues);
+      for (const key of ["panelStyle", "textStyle", "speakerStyle"]) {
+        if (value[key] !== undefined) validateStyle(value[key], `${path}.${key}`, issues);
+      }
+      for (const key of ["panelPresentation", "textPresentation", "speakerPresentation"])
+        if (value[key] !== undefined) for (const message of compileControlPresentation(value[key]).issues)
+          issues.push(issue("ui_control_presentation", message, "error", `${path}.${key}`));
+    }
+  }
+  for (const path of renpyGUIErrors(layout.renpy)) {
+    issues.push(issue("ui_renpy_gui", "Ren’Py 导航参数无效，请在专用编辑页修正后保存。", "error", `ui.${path}`));
+  }
+  if (layout.layout_type !== undefined && layout.layout_type !== "agentvn" && layout.layout_type !== "renpy") {
+    issues.push(issue("ui_layout_type", "不支持的客户端布局类型，请更新编辑器与 GameCLI。", "error", "ui.layout_type"));
+  }
   if (layout.ui_layout_version !== UI_LAYOUT_VERSION) {
     issues.push(issue("ui_layout_version", `客户端布局版本不支持（ui_layout_version）：当前为 ${String(layout.ui_layout_version)}，需要 ${UI_LAYOUT_VERSION}。原因：布局来自其他版本。影响：GameCLI 可能无法正确渲染界面。解决方案：请用当前版本 AgentVN 打开布局设计器并重新保存。`, "error", "ui.ui_layout_version"));
   }
@@ -664,9 +1528,38 @@ export function validateUISkinLayout(layout: unknown): CartridgeValidationResult
       if (!allowedComponentTypes.includes(componentType)) issues.push(issue("ui_component_type", `界面控件类型不支持（component_type）：${String(component.component_type)}。原因：GameCLI 不认识该控件类型。影响：该控件无法渲染。解决方案：请使用布局设计器提供的控件类型，或删除这个未知控件。`, "error", `${componentPath}.component_type`));
       else componentTypes.add(componentType);
       if (component.rect !== undefined) validateRect(component.rect, `${componentPath}.rect`, issues);
-      if (component.mobileRect !== undefined) validateRect(component.mobileRect, `${componentPath}.mobileRect`, issues);
-      if (component.style !== undefined) validateStyle(component.style, `${componentPath}.style`, issues);
+      if (component.mobileRect !== undefined) {
+        issues.push(issue(
+          "ui_layout_legacy_mobile_rect",
+          "布局仍包含已废弃的 mobileRect 字段；移动端现在等比复用 PC authored rect。请重新导入并保存布局完成迁移。",
+          "error",
+          `${componentPath}.mobileRect`,
+        ));
+      }
+      if (component.style !== undefined) validateStyle(component.style, `${componentPath}.style`, issues,
+        supportsUILayoutOpacityLayers(componentType));
+      if (component.stateStyles !== undefined) {
+        if (!isPlainRecord(component.stateStyles))
+          issues.push(issue("ui_control_states", "控件状态样式必须为对象。", "error", `${componentPath}.stateStyles`));
+        else for (const [state, style] of Object.entries(component.stateStyles)) {
+          if (!["normal", "hover", "selected", "disabled"].includes(state))
+            issues.push(issue("ui_control_state", "不支持的控件状态。", "error", `${componentPath}.stateStyles.${state}`));
+          else validateStyle(style, `${componentPath}.stateStyles.${state}`, issues, supportsUILayoutOpacityLayers(componentType));
+        }
+      }
       if (component.action !== undefined) validateAction(component.action, `${componentPath}.action`, issues);
+      if (component.presentation !== undefined) {
+        for (const message of compileControlPresentation(component.presentation).issues)
+          issues.push(issue("ui_control_presentation", message, "error", `${componentPath}.presentation`));
+      }
+      if (componentType === "custom_component") {
+        const customIssues = validateCustomComponentDefinition(component.customComponent);
+        for (const message of customIssues) {
+          issues.push(issue("ui_custom_component", message, "error", `${componentPath}.customComponent`));
+        }
+      } else if (component.customComponent !== undefined) {
+        issues.push(issue("ui_custom_component_unexpected", "只有自定义组件控件可以包含结构化组件内容。", "error", `${componentPath}.customComponent`));
+      }
       if (component.zIndex !== undefined && (typeof component.zIndex !== "number" || component.zIndex < 0 || component.zIndex > 1000)) {
         issues.push(issue("ui_zindex", `界面层级超出范围（zIndex）：${componentPath}.zIndex 必须在 0 到 1000 之间。原因：控件层级值异常。影响：控件可能遮挡错误或无法点击。解决方案：请在布局设计器中调整层级。`, "error", `${componentPath}.zIndex`));
       }
@@ -690,6 +1583,15 @@ function getComponent(layout: UISkinLayout, screenId: UILayoutScreenId, componen
 function getEffectiveRect(component: UILayoutComponent | undefined, breakpoint: UILayoutBreakpoint): UILayoutRect | undefined {
   if (!component) return undefined;
   return breakpoint === "mobile" ? component.mobileRect ?? component.rect : component.rect;
+}
+
+const styleTemplateComponentTypes = new Set<UILayoutComponentType>([
+  "choice_option",
+  "quick_button",
+]);
+
+function componentRequiresLayoutRect(component: UILayoutComponent): boolean {
+  return !styleTemplateComponentTypes.has(component.component_type);
 }
 
 function rectIsOffCanvas(rect?: UILayoutRect): boolean {
@@ -735,6 +1637,39 @@ export function validateUISkinHealth(layout: UISkinLayout, options: UISkinHealth
   const issues: ValidationIssue[] = [];
   const assetPaths = new Set([...(options.availableAssetPaths ?? []), ...layout.assets.map((asset) => asset.path)]);
   const assetIds = new Set([...(options.availableAssetIds ?? []), ...layout.assets.map((asset) => asset.asset_id)]);
+  for (const screen of layout.screens) {
+    for (const component of screen.components) {
+      if (component.component_type !== "custom_component" || !component.customComponent) continue;
+      const visit = (node: CustomComponentDefinition["root"]) => {
+        if (node.assetId && !assetIds.has(node.assetId)) {
+          issues.push(issue(
+            "ui_missing_custom_component_asset",
+            `自定义组件“${component.label ?? component.component_id}”引用的图片素材不存在：${node.assetId}。请从个人组件库重新添加组件依赖，或恢复对应工程素材。`,
+            "error",
+            `ui.screens.${screen.screen_id}.${component.component_id}.customComponent`,
+          ));
+        }
+        node.children.forEach(visit);
+      };
+      visit(component.customComponent.root);
+    }
+  }
+  for (const [scope, pageStyle] of Object.entries(layout.renpy ?? {})) {
+    for (const [state, reference] of Object.entries(pageStyle?.buttonImages ?? {})) {
+      const assetId = assetIdFromUILayoutReference(reference);
+      const missing = assetId
+        ? !assetIds.has(assetId)
+        : !assetPaths.has(reference);
+      if (missing) {
+        issues.push(issue(
+          "ui_missing_renpy_button_state_asset",
+          `Ren’Py 按钮${state}状态图片不存在：${reference} 未出现在工程素材清单中，运行时会回退到默认按钮材质。`,
+          "warning",
+          `ui.renpy.${scope}.buttonImages.${state}`,
+        ));
+      }
+    }
+  }
   const tokenContrastPairs: Array<[string, string | undefined, string | undefined]> = [
     ["panel", layout.tokens.colorPanelText ?? layout.tokens.colorInk, layout.tokens.colorPanel ?? layout.tokens.colorSurface],
     ["control", layout.tokens.colorControlText ?? layout.tokens.colorInk, layout.tokens.colorControl ?? layout.tokens.colorSurfaceStrong],
@@ -758,7 +1693,9 @@ export function validateUISkinHealth(layout: UISkinLayout, options: UISkinHealth
       for (const breakpoint of ["desktop", "mobile"] as const) {
         const rect = getEffectiveRect(component, breakpoint);
         if (!rect) {
-          if (component.required) {
+          if (component.component_type === "mask" && breakpoint === "desktop") {
+            issues.push(issue("ui_mask_missing_rect", `遮罩缺少有效桌面布局矩形：${label}。`, "error", `ui.${screen.screen_id}.${component.component_id}.rect`));
+          } else if (component.required && componentRequiresLayoutRect(component)) {
             issues.push(issue("ui_component_missing_rect", `Required UI component is missing a layout rect: ${label} (${breakpoint}).`, "error", `ui.${screen.screen_id}.${component.component_id}`));
           }
           continue;
@@ -775,6 +1712,9 @@ export function validateUISkinHealth(layout: UISkinLayout, options: UISkinHealth
         }
       }
       const backgroundImage = component.style?.backgroundImage;
+      if (component.component_type === "mask" && component.style?.maskMode === "image" && !backgroundImage) {
+        issues.push(issue("ui_mask_image_missing", `图片遮罩未设置背景图：${label} 将回退为半透明纯色。`, "warning", `ui.${screen.screen_id}.${component.component_id}.style.backgroundImage`));
+      }
       const backgroundAssetId = assetIdFromUILayoutReference(backgroundImage);
       const backgroundAssetMissing = backgroundImage
         ? backgroundAssetId
@@ -787,6 +1727,23 @@ export function validateUISkinHealth(layout: UISkinLayout, options: UISkinHealth
       const contrast = contrastRatio(component.style?.color ?? layout.tokens.colorInk, component.style?.backgroundColor ?? layout.tokens.colorSurface);
       if (contrast !== undefined && contrast < 3) {
         issues.push(issue("ui_low_contrast", `文字对比度偏低（color/backgroundColor）：${label} 的文字和背景颜色太接近。原因：当前配色可读性不足。影响：玩家可能难以阅读按钮或对白文字。解决方案：请在布局设计器中提高文字颜色和背景颜色的明暗差。`, "warning", `ui.${screen.screen_id}.${component.component_id}.style`));
+      }
+    }
+  }
+
+  for (const screen of layout.screens) {
+    const masks = screen.components.filter((component) => component.component_type === "mask" && component.visible !== false);
+    const interactive = screen.components.filter((component) => component.component_type !== "mask" && component.visible !== false && component.component_type !== "stage_background");
+    for (const mask of masks) {
+      const maskLayer = mask.zIndex ?? 0;
+      const minimumInteractiveLayer = interactive.reduce((minimum, component) => Math.min(minimum, component.zIndex ?? 20), Infinity);
+      if (minimumInteractiveLayer !== Infinity && maskLayer >= minimumInteractiveLayer) {
+        issues.push(issue(
+          "ui_mask_zindex",
+          `遮罩层级已高于或等于交互控件：${mask.label || mask.component_id} 将在运行时自动下调。`,
+          "warning",
+          `ui.${screen.screen_id}.${mask.component_id}.zIndex`,
+        ));
       }
     }
   }
@@ -868,10 +1825,10 @@ export function validateUISkinHealth(layout: UISkinLayout, options: UISkinHealth
       issues.push(issue("ui_dialog_text_outside_panel", `\u5bf9\u8bdd\u6b63\u6587\u533a\u57df\u672a\u4e0e\u5bf9\u8bdd\u6846\u5145\u5206\u91cd\u53e0\uff08dialog_text\uff09\uff1a${breakpoint} \u4e0b\u6587\u5b57\u53ef\u80fd\u504f\u79bb\u5bf9\u767d\u6846\u3002\u8fd0\u884c\u7aef\u4f1a\u4e25\u683c\u6309\u7f16\u8f91\u5668\u5bfc\u51fa\u7ed3\u679c\u6e32\u67d3\uff0c\u8bf7\u56de\u7f16\u8f91\u5668\u8c03\u6574\u6b63\u6587\u533a\u57df\u4f4d\u7f6e\u3002`, "warning", "ui.player.dialog_text"));
     }
     if (speakerRect && dialogRect && rectOverlapRatio(speakerRect, dialogRect) < 0.12) {
-      issues.push(issue("ui_speaker_label_outside_panel", `\u8bf4\u8bdd\u4eba\u540d\u724c\u4e0e\u5bf9\u8bdd\u6846\u8ddd\u79bb\u8fc7\u8fdc\uff08speaker_label\uff09\uff1a${breakpoint} \u4e0b\u53ef\u80fd\u4e0d\u53ef\u89c1\u6216\u906e\u6321\u5176\u4ed6\u63a7\u4ef6\u3002\u8bf7\u56de\u7f16\u8f91\u5668\u8c03\u6574\u8bf4\u8bdd\u4eba\u540d\u724c\u4f4d\u7f6e\u3002`, "warning", "ui.player.speaker_label"));
+      issues.push(issue("ui_speaker_label_outside_panel", `姓名容器与对话框距离过远（speaker_label）：${breakpoint} 下可能不可见或遮挡其他控件。请回编辑器调整姓名容器位置。`, "warning", "ui.player.speaker_label"));
     }
     if (speakerRect && dialogTextRect && rectOverlapRatio(speakerRect, dialogTextRect) > 0.02) {
-      issues.push(issue("ui_dialog_speaker_overlap", `\u5bf9\u8bdd\u4eba\u540d\u724c\u4e0e\u6b63\u6587\u533a\u57df\u91cd\u53e0\uff08speaker_label / dialog_text\uff09\uff1a${breakpoint} \u4e0b\u8fd9\u4e24\u4e2a\u533a\u57df\u5728\u7f16\u8f91\u5668\u91cc\u5df2\u7ecf\u4e92\u76f8\u538b\u4f4f\u4e86\u3002\u8fd0\u884c\u7aef\u4f1a\u4e25\u683c\u6309\u7f16\u8f91\u5668\u5bfc\u51fa\u7ed3\u679c\u6e32\u67d3\uff0c\u6240\u4ee5\u8bf7\u56de\u7f16\u8f91\u5668\u628a\u5b83\u4eec\u5206\u5f00\u3002`, "warning", "ui.player.speaker_label/ui.player.dialog_text"));
+      issues.push(issue("ui_dialog_speaker_overlap", `姓名容器与正文区域重叠（speaker_label / dialog_text）：${breakpoint} 下这两个区域在编辑器里已经互相压住了。运行端会严格按编辑器导出结果渲染，所以请回编辑器把它们分开。`, "warning", "ui.player.speaker_label/ui.player.dialog_text"));
     }
     if (continueRect && continueRect.height < 4) {
       issues.push(issue("ui_continue_indicator_too_short", `继续提示区域高度偏小（continue_indicator）：${breakpoint} 下提示文字可能被裁切。`, "warning", "ui.player.continue_indicator"));
@@ -888,7 +1845,7 @@ export function validateUISkinHealth(layout: UISkinLayout, options: UISkinHealth
 }
 
 export function getDefaultUISkinLayout(): UISkinLayout {
-  return {
+  return finalizeUnifiedLayout({
     ui_layout_version: UI_LAYOUT_VERSION,
     name: "AgentVN Default Runtime Skin",
     target_runtime: "0.1.0",
@@ -912,8 +1869,8 @@ export function getDefaultUISkinLayout(): UISkinLayout {
       colorSliderThumb: "#eaffff",
       colorDialog: "#060a14",
       colorDialogText: "#f6f8ff",
-      colorSpeakerPlate: "#192234",
-      colorSpeakerText: "#cde1ff",
+      colorSpeakerPlate: "#202735",
+      colorSpeakerText: "#c4ccd6",
       colorChoice: "#82b6ff",
       colorChoiceText: "#07111f",
       colorQuickMenu: "#0d121f",
@@ -933,13 +1890,13 @@ export function getDefaultUISkinLayout(): UISkinLayout {
         components: [
           { component_id: "title_hero", component_type: "main_menu_hero", required: true, rect: { x: 6, y: 26, width: 58, height: 42 }, mobileRect: { x: 7, y: 12, width: 86, height: 34 } },
           createDefaultCustomButtonContainer(),
-          { component_id: "title_continue_button", component_type: "main_menu_continue_button", label: "继续游戏按钮", required: true, rect: { x: 78, y: 28, width: 18, height: 7 }, mobileRect: { x: 78, y: 28, width: 18, height: 7 }, style: { backgroundColor: "#82b6ff", color: "#07111f", borderRadius: 10, fontWeight: 760, shadow: "soft" }, zIndex: 20 },
-          { component_id: "title_start_button", component_type: "main_menu_start_button", label: "开始/重新开始按钮", required: true, rect: { x: 78, y: 36, width: 18, height: 7 }, mobileRect: { x: 78, y: 36, width: 18, height: 7 }, style: { backgroundColor: "#82b6ff", color: "#07111f", borderRadius: 10, fontWeight: 760, shadow: "soft" }, zIndex: 21 },
-          { component_id: "title_save_load_button", component_type: "main_menu_save_load_button", label: "存档/读档按钮", required: true, rect: { x: 78, y: 44, width: 18, height: 7 }, mobileRect: { x: 78, y: 44, width: 18, height: 7 }, style: { backgroundColor: "#192234", color: "#f6f8ff", borderColor: "#d8e2ff", borderRadius: 10 }, zIndex: 22 },
-          { component_id: "title_library_button", component_type: "main_menu_library_button", label: "卡带库按钮", required: true, rect: { x: 78, y: 52, width: 18, height: 7 }, mobileRect: { x: 78, y: 52, width: 18, height: 7 }, style: { backgroundColor: "#192234", color: "#f6f8ff", borderColor: "#d8e2ff", borderRadius: 10 }, zIndex: 23 },
-          { component_id: "title_gallery_button", component_type: "main_menu_gallery_button", label: "画廊按钮", required: true, rect: { x: 78, y: 60, width: 18, height: 7 }, mobileRect: { x: 78, y: 60, width: 18, height: 7 }, style: { backgroundColor: "#192234", color: "#f6f8ff", borderColor: "#d8e2ff", borderRadius: 10 }, zIndex: 24 },
-          { component_id: "title_settings_button", component_type: "main_menu_settings_button", label: "设置按钮", required: true, rect: { x: 78, y: 68, width: 18, height: 7 }, mobileRect: { x: 78, y: 68, width: 18, height: 7 }, style: { backgroundColor: "#192234", color: "#f6f8ff", borderColor: "#d8e2ff", borderRadius: 10 }, zIndex: 25 },
-          { component_id: "title_about_button", component_type: "main_menu_about_button", label: "关于按钮", required: true, rect: { x: 78, y: 76, width: 18, height: 7 }, mobileRect: { x: 78, y: 76, width: 18, height: 7 }, style: { backgroundColor: "#192234", color: "#f6f8ff", borderColor: "#d8e2ff", borderRadius: 10 }, zIndex: 26 },
+          createDefaultTitleActionMask(),
+          { component_id: "title_continue_button", component_type: "main_menu_continue_button", label: "继续游戏", required: true, rect: { x: 78, y: 28, width: 18, height: 7 }, mobileRect: { x: 72, y: 28, width: 25, height: 7 }, style: { ...DEFAULT_TITLE_TEXT_BUTTON_STYLE }, zIndex: 20 },
+          { component_id: "title_start_button", component_type: "main_menu_start_button", label: "开始游戏", required: true, rect: { x: 78, y: 36, width: 18, height: 7 }, mobileRect: { x: 72, y: 36, width: 25, height: 7 }, style: { ...DEFAULT_TITLE_TEXT_BUTTON_STYLE }, zIndex: 21 },
+          { component_id: "title_save_load_button", component_type: "main_menu_save_load_button", label: "存档", required: true, rect: { x: 78, y: 44, width: 18, height: 7 }, mobileRect: { x: 72, y: 44, width: 25, height: 7 }, style: { ...DEFAULT_TITLE_TEXT_BUTTON_STYLE }, zIndex: 22 },
+          { component_id: "title_gallery_button", component_type: "main_menu_gallery_button", label: "画廊", required: true, rect: { x: 78, y: 52, width: 18, height: 7 }, mobileRect: { x: 72, y: 52, width: 25, height: 7 }, style: { ...DEFAULT_TITLE_TEXT_BUTTON_STYLE }, zIndex: 23 },
+          { component_id: "title_settings_button", component_type: "main_menu_settings_button", label: "设置", required: true, rect: { x: 78, y: 60, width: 18, height: 7 }, mobileRect: { x: 72, y: 60, width: 25, height: 7 }, style: { ...DEFAULT_TITLE_TEXT_BUTTON_STYLE }, zIndex: 24 },
+          { component_id: "title_about_button", component_type: "main_menu_about_button", label: "关于", required: true, rect: { x: 78, y: 68, width: 18, height: 7 }, mobileRect: { x: 72, y: 68, width: 25, height: 7 }, style: { ...DEFAULT_TITLE_TEXT_BUTTON_STYLE }, zIndex: 25 },
         ],
       },
       {
@@ -969,10 +1926,10 @@ export function getDefaultUISkinLayout(): UISkinLayout {
           {
             component_id: "speaker_label",
             component_type: "speaker_label",
-            label: "说话人名牌",
-            rect: { x: 8, y: 71, width: 20, height: 5.5 },
-            mobileRect: { x: 6, y: 63, width: 24, height: 7 },
-            style: { backgroundColor: "#192234", color: "#cde1ff", borderRadius: 999, padding: 7, fontSize: 18, fontWeight: 760, shadow: "soft" },
+            label: "姓名容器",
+            rect: { ...SAFE_DIALOG_PLAYER_RECTS.speaker_label.rect },
+            mobileRect: { ...SAFE_DIALOG_PLAYER_RECTS.speaker_label.mobileRect },
+            style: { backgroundColor: "#202735", color: "#c4ccd6", borderColor: "#465164", borderWidth: 1, borderRadius: 6, padding: 7, fontSize: 18, fontWeight: 760, shadow: "soft" },
             zIndex: 34,
           },
           {
@@ -993,8 +1950,29 @@ export function getDefaultUISkinLayout(): UISkinLayout {
             style: { color: "#f6f8ff", fontSize: 12, textAlign: "right", opacity: 0.84 },
             zIndex: 36,
           },
+          {
+            component_id: "choice_option",
+            component_type: "choice_option",
+            label: "选项按钮",
+            required: true,
+            style: {
+              backgroundColor: "#82b6ff",
+              color: "#07111f",
+              borderColor: "#d8e2ff",
+              borderWidth: 1,
+              borderRadius: 10,
+              opacity: 1,
+              padding: 12,
+              fontSize: 20,
+              fontWeight: 700,
+              textAlign: "center",
+              shadow: "soft",
+            },
+            zIndex: 41,
+          },
           { component_id: "choice_list", component_type: "choice_list", label: "选项列表", required: true, rect: { x: 50, y: 44, width: 34, height: 32, anchor: "center" }, mobileRect: { x: 50, y: 40, width: 58, height: 34, anchor: "center" }, zIndex: 40 },
-          { component_id: "quick_menu", component_type: "quick_menu", label: "快捷菜单", required: true, rect: { x: 98, y: 2, width: 48, height: 8, anchor: "top_right" }, mobileRect: { x: 98, y: 2, width: 58, height: 12, anchor: "top_right" }, zIndex: 50 },
+          { component_id: "quick_menu", component_type: "quick_menu", label: "快捷菜单", required: true, rect: { ...currentDefaultQuickMenuRect }, mobileRect: { ...currentDefaultQuickMenuMobileRect }, style: { ...QUICK_MENU_DEFAULT_SURFACE_STYLE }, zIndex: 50 },
+          ...createDefaultQuickMenuButtons(),
         ],
       },
       { screen_id: "game_menu", components: [{ component_id: "game_menu_nav", component_type: "game_menu_nav", required: true, rect: { x: 5, y: 12, width: 90, height: 12 } }] },
@@ -1004,5 +1982,5 @@ export function getDefaultUISkinLayout(): UISkinLayout {
       { screen_id: "gallery", components: [{ component_id: "gallery_grid", component_type: "gallery_grid", required: true, rect: { x: 5, y: 18, width: 90, height: 72 }, style: { columns: 4, gap: 14 } }] },
       { screen_id: "about", components: [{ component_id: "about_panel", component_type: "about_panel", required: true, rect: { x: 5, y: 18, width: 58, height: 48 }, mobileRect: { x: 5, y: 18, width: 90, height: 58 } }] },
     ],
-  };
+  });
 }

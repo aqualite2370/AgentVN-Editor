@@ -11,6 +11,7 @@ from pydantic import BaseModel, ValidationError
 from app.core.errors import AIProviderError
 from app.ai.structured_normalization import normalize_structured_payload
 from app.models.memory import MemoryUpdate
+from app.models.assistant_creation import AssistantComponentDraftBatch
 from app.models.novel_import import (
     AdaptSceneResponse,
     NovelAiBranchSuggestionResponse,
@@ -50,6 +51,15 @@ class AgentVNToolRegistry:
 
     def __init__(self) -> None:
         self._tools: tuple[AgentVNTool, ...] = (
+            AgentVNTool(
+                name="submit_assistant_component_draft",
+                description=(
+                    "Submit up to 16 bounded AgentVN component drafts and/or up to 8 label/geometry proposals "
+                    "for explicitly authorized existing layout elements for local validation and human review. "
+                    "This tool does not write to a project or execute markup."
+                ),
+                response_model=AssistantComponentDraftBatch,
+            ),
             AgentVNTool(
                 name="create_scene_beat",
                 description=(

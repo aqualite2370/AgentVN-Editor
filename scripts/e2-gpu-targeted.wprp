@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<WindowsPerformanceRecorder Version="1.0" Author="AgentVN" Team="AgentVN" Comments="Short E2 GPU scheduling diagnostic; no stack walking.">
+  <Profiles>
+    <SystemCollector Id="SystemCollector" Name="NT Kernel Logger">
+      <BufferSize Value="256" />
+      <Buffers Value="256" />
+    </SystemCollector>
+    <EventCollector Id="EventCollector" Name="WPR Event Collector">
+      <BufferSize Value="256" />
+      <Buffers Value="256" />
+    </EventCollector>
+    <SystemProvider Id="SystemProvider">
+      <Keywords>
+        <Keyword Value="ProcessThread" />
+        <Keyword Value="CSwitch" />
+        <Keyword Value="ReadyThread" />
+      </Keywords>
+    </SystemProvider>
+    <EventProvider Id="WPR_Event_Collector_802ec45a-1e99-4b83-9920-87c98277ba9d" Name="802ec45a-1e99-4b83-9920-87c98277ba9d" NonPagedMemory="true" Level="5" Strict="true">
+      <Keywords>
+        <Keyword Value="0x08008005" />
+      </Keywords>
+      <CaptureStateOnStart Timeout="30">
+        <Keyword Value="0x08008005" />
+      </CaptureStateOnStart>
+    </EventProvider>
+    <Profile Id="E2Gpu.Verbose.File" Name="E2Gpu" Description="Targeted GPU scheduling and context-switch capture for the AgentVN E2 cold layout diagnostic." LoggingMode="File" DetailLevel="Verbose">
+      <Collectors>
+        <SystemCollectorId Value="SystemCollector">
+          <SystemProviderId Value="SystemProvider" />
+        </SystemCollectorId>
+        <EventCollectorId Value="EventCollector">
+          <EventProviders>
+            <EventProviderId Value="WPR_Event_Collector_802ec45a-1e99-4b83-9920-87c98277ba9d" />
+          </EventProviders>
+        </EventCollectorId>
+      </Collectors>
+    </Profile>
+  </Profiles>
+</WindowsPerformanceRecorder>

@@ -1,0 +1,56 @@
+{
+  "schema_version": "1.1.0",
+  "project_id": "installed-preview-isolated-20261018-01",
+  "title": "安装版独立预览验收_20261018",
+  "author": "AgentVN QA",
+  "created_at": "2026-10-18T02:00:00+08:00",
+  "updated_at": "2026-10-18T02:00:00+08:00",
+  "memory_mode": "hybrid",
+  "viewport": { "x": 0, "y": 0, "zoom": 1 },
+  "asset_manifest": [],
+  "editor_settings": {},
+  "nodes": [
+    {
+      "id": "start",
+      "type": "startNode",
+      "position": { "x": 40, "y": 180 },
+      "data": {
+        "nodeKind": "start",
+        "label": "入口",
+        "description": "仅用于隔离安装版预览验收。",
+        "memoryMode": "hybrid",
+        "aiSettings": { "authorGoal": "", "autoExtractMemory": false, "autoApplyMemory": false },
+        "previewState": { "currentCommandIndex": 0, "isPlaying": false },
+        "editorMeta": { "collapsedInspectorSections": [], "source": "manual" }
+      }
+    },
+    {
+      "id": "preview-scene",
+      "type": "sceneNode",
+      "position": { "x": 350, "y": 180 },
+      "data": {
+        "nodeKind": "scene",
+        "label": "独立预览场景",
+        "description": "",
+        "memoryMode": "hybrid",
+        "aiSettings": { "authorGoal": "", "autoExtractMemory": false, "autoApplyMemory": false },
+        "previewState": { "currentCommandIndex": 0, "isPlaying": false },
+        "editorMeta": { "collapsedInspectorSections": [], "source": "manual" },
+        "scene": {
+          "scene_id": "installed_preview_isolated",
+          "title": "独立预览场景",
+          "summary": "不依赖用户素材、AI 或最终工程。",
+          "chapter": 1,
+          "tags": ["qa"],
+          "commands": [
+            { "type": "narration", "text": "安装版独立预览第一句_20261018" },
+            { "type": "narration", "text": "安装版独立预览第二句_20261018" }
+          ]
+        }
+      }
+    }
+  ],
+  "edges": [
+    { "id": "preview-entry-edge", "source": "start", "target": "preview-scene", "sourceHandle": "default" }
+  ]
+}

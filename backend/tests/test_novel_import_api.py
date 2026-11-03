@@ -15,6 +15,7 @@ from app.models.novel_import import (
     CharacterCandidate,
     ConflictPoint,
     NovelAiChapterScenePlan,
+    NovelAiAdaptSceneRequest,
     NovelAiBranchSuggestionResponse,
     NovelAiChunkAnalysis,
     NovelAiChunkEntityIndex,
@@ -40,7 +41,11 @@ def _provider_selection() -> dict[str, object]:
 
 
 def test_novel_adaptation_prompt_covers_every_editor_event_type() -> None:
-    prompt_source = inspect.getsource(NovelImportService._adapt_scene_beat_user_prompt)
+    prompt_source = NovelImportService._adapt_scene_beat_user_prompt(NovelAiAdaptSceneRequest(
+        scene_candidate=_scene_plan().scenes[0],
+        known_characters=[], previous_scene_summary="", outline_summary=_outline().summary,
+        import_options={}, memory_mode="none", provider_selection=_provider_selection(),
+    ))
     expected = {
         "dialog",
         "narration",
@@ -1161,7 +1166,10 @@ def test_novel_import_ai_adapt_scene_normalizes_short_character_reference(monkey
     payload = response.json()
     commands = payload["adapted_scene"]["scene_beat"]["commands"]
     assert commands[0]["character_id"] == "阿尔汉姆·哈斯德尔"
-    assert commands[1]["character_id"] == "阿尔汉姆·哈斯德尔"
+    # Imported AI text may normalize speakers but cannot invent author-managed
+    # sprite assets. The synthetic sprite was not present in the source beat.
+    assert len(commands) == 1
+    assert not any(command["type"] == "sprite" for command in commands)
     assert any("normalized" in warning for warning in payload["warnings"])
 
 

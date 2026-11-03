@@ -16,7 +16,7 @@ export function collectAssetReferencesFromCommand(command: GameCommand, source =
   if (command.type === "background") return [{ asset_id: command.background_id, asset_type: "background", source }];
   if (command.type === "show_image") return [{ asset_id: command.image_id, asset_type: "ui", source }];
   if (command.type === "video") return [{ asset_id: command.video_id, asset_type: "video", source }];
-  if (command.type === "sprite") return [{ asset_id: command.sprite_id, asset_type: "sprite", source }];
+  if (command.type === "sprite") return command.visible === false ? [] : [{ asset_id: command.sprite_id, asset_type: "sprite", source }];
   if (command.type === "dialog") {
     return [
       command.portrait ? { asset_id: command.portrait, asset_type: "portrait" as const, source } : undefined,
@@ -31,8 +31,9 @@ export function collectAssetReferencesFromCommand(command: GameCommand, source =
       ...dialogStyleAssetReference(command.dialog_style, `${source}.dialog_style`),
     ].filter(Boolean) as AssetReference[];
   }
-  if (command.type === "bgm" && command.bgm_id) return [{ asset_id: command.bgm_id, asset_type: "bgm", source }];
+  if (command.type === "bgm" && command.action !== "stop" && command.bgm_id) return [{ asset_id: command.bgm_id, asset_type: "bgm", source }];
   if (command.type === "sfx") return [{ asset_id: command.sfx_id, asset_type: "sfx", source }];
+  if (command.type === "gallery_anchor" && command.asset_id) return [{ asset_id: command.asset_id, asset_type: "ui", source }];
   if (command.type === "animation") return [];
   return [];
 }
@@ -61,6 +62,14 @@ export function collectAssetReferencesFromScript(script: RuntimeScript): AssetRe
       });
     }
   }
+  script.opening_audio?.forEach((track, index) => {
+    if (!track.asset_id) return;
+    unique.set(track.asset_id, {
+      asset_id: track.asset_id,
+      asset_type: track.asset_type,
+      source: `opening_audio.${index}.asset_id`,
+    });
+  });
   for (const [index, character] of (script.characters ?? []).entries()) {
     for (const ref of dialogStyleAssetReference(character.dialog_style, `characters.${index}.dialog_style`)) {
       unique.set(ref.asset_id, ref);
@@ -85,6 +94,8 @@ export function inferMimeTypeFromFilename(filename: string): string {
   if (lower.endsWith(".ogg")) return "audio/ogg";
   if (lower.endsWith(".mp3")) return "audio/mpeg";
   if (lower.endsWith(".wav")) return "audio/wav";
+  if (lower.endsWith(".flac")) return "audio/flac";
+  if (lower.endsWith(".m4a")) return "audio/mp4";
   if (lower.endsWith(".mp4")) return "video/mp4";
   if (lower.endsWith(".json")) return "application/json";
   if (lower.endsWith(".woff2")) return "font/woff2";

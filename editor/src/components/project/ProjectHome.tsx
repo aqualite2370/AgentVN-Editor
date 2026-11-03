@@ -3,13 +3,13 @@ import { MessageCircle } from "lucide-react";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { ProjectSummary } from "../../api/types";
 import type { EditorProjectFile } from "../../types/nodes";
+import { version as editorVersion } from "../../../src-tauri/tauri.conf.json";
 
 export interface RecentProjectRecord extends ProjectSummary {
   project?: EditorProjectFile;
 }
 
 const QQ_GROUP_QR_IMAGE = "/agentvn-qq-qrcode.jpg";
-const QQ_GROUP_VERSION = "1.7";
 const QR_DIALOG_EXIT_MS = 220;
 
 function formatProjectTime(value: string): string {
@@ -18,12 +18,31 @@ function formatProjectTime(value: string): string {
   return date.toLocaleString();
 }
 
-function projectStatus(record: RecentProjectRecord): string {
+function formatProjectSize(sizeBytes: number | undefined, source?: RecentProjectRecord["size_source"]): string {
+  if (source === "unknown" || !Number.isFinite(sizeBytes) || (sizeBytes ?? 0) <= 0) return "未保存";
+  const bytes = sizeBytes ?? 0;
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unitIndex = -1;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  const precision = value >= 100 ? 0 : value >= 10 ? 1 : 2;
+  return `${value.toFixed(precision)} ${units[unitIndex]}`;
+}
+
+function projectNodeStatus(record: RecentProjectRecord): string {
   const sceneCount = record.project
     ? record.project.nodes.filter((node) => node.data.nodeKind === "scene").length
     : record.node_count;
   if (sceneCount === 0) return "新项目";
   return `${sceneCount} 个节点`;
+}
+
+function projectStatus(record: RecentProjectRecord): string {
+  return `${projectNodeStatus(record)} · ${formatProjectSize(record.size_bytes, record.size_source)}`;
 }
 
 export function ProjectHome({
@@ -34,6 +53,7 @@ export function ProjectHome({
   onOpenProject,
   onDeleteProject,
   onImportProject,
+  onSelectProjectFile,
   statusMessage,
   isHydrating = false,
 }: {
@@ -44,10 +64,15 @@ export function ProjectHome({
   onOpenProject: (record: RecentProjectRecord) => void;
   onDeleteProject: (record: RecentProjectRecord) => void;
   onImportProject: (file: File) => void;
+  onSelectProjectFile?: () => void;
   statusMessage?: string;
   isHydrating?: boolean;
 }) {
   const hasDraft = Boolean(currentDraft);
+  // Resume loads the saved project by ID. Its catalog name is authoritative;
+  // keep the local fallback draft itself untouched, including unsaved content.
+  const draftTitle = recentProjects.find((record) => record.project_id === currentDraft?.project_id)?.title
+    ?? currentDraft?.title;
   const draftTime = currentDraft ? formatProjectTime(currentDraft.updated_at) : undefined;
   const [pendingDelete, setPendingDelete] = useState<RecentProjectRecord>();
   const [isQrDialogOpen, setIsQrDialogOpen] = useState(false);
@@ -106,22 +131,56 @@ export function ProjectHome({
     setPendingDelete(undefined);
   }
 
+  function renderImportAction(className: string, iconSize: number) {
+    if (onSelectProjectFile) {
+      return (
+        <button
+          type="button"
+          className={className}
+          data-help-key="home.importProject"
+          onClick={onSelectProjectFile}
+          disabled={isHydrating}
+        >
+          <FileInput size={iconSize} />
+          <span>导入项目</span>
+        </button>
+      );
+    }
+    return (
+      <label className={className} data-help-key="home.importProject" aria-disabled={isHydrating}>
+        <FileInput size={iconSize} />
+        <span>导入项目</span>
+        <input data-help-key="editor.control"
+          type="file"
+          accept=".vnproj,.json"
+          disabled={isHydrating}
+          onChange={(event) => {
+            if (isHydrating) return;
+            const file = event.target.files?.[0];
+            if (file) onImportProject(file);
+            event.currentTarget.value = "";
+          }}
+        />
+      </label>
+    );
+  }
+
   return (
     <main className="project-home">
       <header className="project-home-header">
         <div>
-          <span className="project-home-kicker">AgentVN 创作端</span>
           <h1>创作启动台</h1>
         </div>
-        <p>{isHydrating ? "正在同步本机草稿与后端项目状态..." : hasDraft ? `上次自动保存于 ${draftTime}` : "选择项目，或开始一部新的视觉小说。"}</p>
+        <p>{isHydrating ? "正在恢复项目..." : hasDraft ? `上次自动保存于 ${draftTime}` : "选择项目，或开始一部新的视觉小说。"}</p>
       </header>
 
       <section className="project-home-layout" aria-label="项目入口">
         <section className="project-command-panel" aria-label="创建或打开项目">
           <div className="command-panel-copy">
-            <span className="project-home-kicker">准备就绪</span>
-            <h2>{isHydrating ? "正在同步项目" : hasDraft ? "继续上次编辑" : "新建项目"}</h2>
-            <p>{isHydrating ? "请稍等片刻，避免在草稿载入前覆盖当前蓝图。" : hasDraft ? currentDraft?.title || "未命名视觉小说" : "从一个干净工程开始，搭建节点、角色与导出流程。"}</p>
+            <h2>{isHydrating ? "正在恢复项目" : hasDraft ? "继续上次编辑" : "新建项目"}</h2>
+            {(isHydrating || hasDraft) && (
+              <p>{isHydrating ? "请稍候，项目就绪后即可继续编辑。" : draftTitle || "未命名视觉小说"}</p>
+            )}
           </div>
 
           <div className="project-action-stack">
@@ -143,26 +202,12 @@ export function ProjectHome({
               </button>
             )}
 
-            <label className="home-action home-action-file project-import-button" data-help-key="home.importProject" aria-disabled={isHydrating}>
-              <FileInput size={18} />
-              <span>导入项目</span>
-              <input
-                type="file"
-                accept=".vnproj,.json"
-                disabled={isHydrating}
-                onChange={(event) => {
-                  if (isHydrating) return;
-                  const file = event.target.files?.[0];
-                  if (file) onImportProject(file);
-                  event.currentTarget.value = "";
-                }}
-              />
-            </label>
+            {renderImportAction("home-action home-action-file project-import-button", 18)}
             <button
               type="button"
               className="home-action home-action-qq"
               data-help-key="home.qqGroup"
-              aria-label={`查看 QQ 群聊 135397938 二维码，当前版本 ${QQ_GROUP_VERSION}`}
+              aria-label={`查看 QQ 群聊 135397938 二维码，当前版本 ${editorVersion}`}
               aria-haspopup="dialog"
               aria-expanded={isQrDialogOpen && !isQrDialogClosing}
               onClick={openQrDialog}
@@ -170,10 +215,10 @@ export function ProjectHome({
               <MessageCircle size={18} />
               <span className="qq-group-copy">
                 <span>QQ群聊：135397938</span>
-                <small>当前版本[{QQ_GROUP_VERSION}]</small>
+                <small>当前版本[{editorVersion}]</small>
               </span>
               <span className="qq-group-hover-card" aria-hidden="true">
-                加入群聊分享/反馈您的使用感受~ 并获取最新的 AgentVN 咨询！
+                加入群聊，获取版本更新或反馈问题。
               </span>
             </button>
           </div>
@@ -184,7 +229,6 @@ export function ProjectHome({
         <section className="recent-projects-panel" aria-label="最近项目">
           <header>
             <div>
-              <span className="project-home-kicker">最近项目</span>
               <h2>最近项目</h2>
             </div>
             <span>{recentProjects.length} 个项目</span>
@@ -194,27 +238,12 @@ export function ProjectHome({
             <div className="project-empty-state">
               <Sparkles size={22} />
               <strong>尚无最近项目</strong>
-              <p>新建一个项目，或导入已有的 project.vnproj。</p>
               <div className="project-empty-actions">
                 <button type="button" className="home-action home-action-secondary" data-help-key="home.createProject" onClick={onCreateProject} disabled={isHydrating}>
                   <Plus size={17} />
                   <span>新建项目</span>
                 </button>
-                <label className="home-action home-action-ghost project-import-button" aria-disabled={isHydrating}>
-                  <FileInput size={17} />
-                  <span>导入项目</span>
-                  <input
-                    type="file"
-                    accept=".vnproj,.json"
-                    disabled={isHydrating}
-                    onChange={(event) => {
-                      if (isHydrating) return;
-                      const file = event.target.files?.[0];
-                      if (file) onImportProject(file);
-                      event.currentTarget.value = "";
-                    }}
-                  />
-                </label>
+                {renderImportAction("home-action home-action-ghost project-import-button", 17)}
               </div>
             </div>
           ) : (
@@ -284,7 +313,6 @@ export function ProjectHome({
               <X size={17} aria-hidden="true" />
             </button>
             <div className="qq-qrcode-copy">
-              <span className="project-home-kicker">QQ 群聊</span>
               <h3 id="qq-qrcode-title">AgentVN 视觉小说交流群</h3>
               <p id="qq-qrcode-description">扫描二维码加入群聊，获取版本更新与使用反馈支持。</p>
             </div>
@@ -319,7 +347,6 @@ export function ProjectHome({
               <Trash2 size={22} />
             </div>
             <div>
-              <span className="project-home-kicker">删除项目</span>
               <h3 id="project-delete-title">删除这个项目？</h3>
             </div>
             <p id="project-delete-description">

@@ -23,7 +23,10 @@ export class AppErrorBoundary extends Component<{ children: ReactNode }, AppErro
         <section>
           <strong>页面加载失败</strong>
           <p>编辑器遇到界面错误，但没有清空整个页面。请刷新页面或返回项目主页后重试。</p>
-          <small>{this.state.error.message}</small>
+          <details>
+            <summary>错误详情</summary>
+            <small>{this.state.error.message}</small>
+          </details>
           <button type="button" data-help-key="app.reload" onClick={() => window.location.reload()}>刷新页面</button>
         </section>
       </main>

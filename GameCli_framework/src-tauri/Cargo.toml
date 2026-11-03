@@ -1,6 +1,6 @@
 [package]
 name = "agentvn-player"
-version = "1.7.0"
+version = "1.9.1"
 description = "AgentVN Player"
 authors = ["AquaLite"]
 edition = "2021"
@@ -21,8 +21,14 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+
 [profile.release.package.agentvn-player]
 # Tauri codegen places fixed frontend assets in this crate. Avoid LLVM's
 # multi-copy optimization spike when a standalone game carries a large vncart.
 opt-level = 0
 codegen-units = 256
+
+[patch.crates-io]
+tauri-plugin-fs = { path = "../vendor/tauri-plugin-fs" }

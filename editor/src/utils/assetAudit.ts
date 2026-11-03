@@ -1,8 +1,9 @@
 import type { AssetRef, AssetType, PendingVisualAsset } from "../types/assets";
-import type { DialogCommand, GameCommand, SpriteCommand } from "../types/commands";
+import type { GameCommand } from "../types/commands";
 import type { EditorNode } from "../types/nodes";
 import type { SceneBeat } from "../types/scene";
 import { assetTypeMatchesExpected } from "../../../shared/cartridge/assetTaxonomy";
+import { collectCommandAssetFields } from "./editorAssetReferences";
 
 export const DEFAULT_VISUAL_PLACEHOLDER_BACKGROUND_ID = "agentvn_placeholder_background";
 
@@ -122,22 +123,33 @@ function hashText(value: string): string {
   return (hash >>> 0).toString(16);
 }
 
-function safeAssetId(prefix: string, value: string): string {
-  const ascii = value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .slice(0, 56);
-  return `${prefix}_${ascii || hashText(value || prefix)}`;
-}
-
 function assetMap(assets: AssetRef[] = []): Map<string, AssetRef> {
   return new Map(assets.map((asset) => [asset.asset_id, asset]));
 }
 
 function isUsableAsset(asset: AssetRef | undefined, expectedType: AssetType): boolean {
-  return Boolean(asset && assetTypeMatchesExpected(asset.asset_type, expectedType) && !asset.metadata.placeholder);
+  return Boolean(asset && assetTypeMatchesExpected(asset.asset_type, expectedType) && !asset.metadata.placeholder && hasFileSource(asset));
+}
+
+function hasFileSource(asset: AssetRef): boolean {
+  const m = asset.metadata;
+  return Boolean(m.bytes?.byteLength || [m.data_url, m.blob_url, m.project_path, m.path, m.filePath, m.url, m.backend_asset_path]
+    .some(value => typeof value === "string" && value.trim()));
+}
+
+export const assetFieldLabels: Record<string, string> = {
+  background_id: "背景图", sprite_id: "角色图像", portrait: "对白头像", voice: "对白语音",
+  bgm_id: "背景音乐", sfx_id: "音效", video_id: "过场视频", image_id: "展示图片",
+  font_asset_id: "字体", "dialog_style.background_asset_id": "对白框底图", asset_id: "画廊图片",
+};
+
+function missingReason(assetId: string, asset: AssetRef | undefined, type: AssetType, allowedTypes: AssetType[] = [type]): string | undefined {
+  if (!assetId) return "此命令需要选择素材，但该字段尚未配置。请定位后选择素材；若不需要此效果，请删除对应命令。";
+  if (!asset) return `引用「${assetId}」在素材库中不存在。请导入对应文件后重新选择，或改为已有素材。`;
+  if (!allowedTypes.some(expected => assetTypeMatchesExpected(asset.asset_type, expected))) return `「${assetId}」素材类型为 ${asset.asset_type}，此处需要 ${allowedTypes.join(" / ")}。请选择类型兼容的素材。`;
+  if (asset.metadata.placeholder) return `「${assetId}」仍是占位素材。请在素材库替换文件，或在此字段选择最终素材。`;
+  if (!hasFileSource(asset)) return `「${assetId}」仅有登记信息，没有文件来源。请重新导入或替换文件。`;
+  return undefined;
 }
 
 function makePending(
@@ -181,15 +193,6 @@ function commandCharacters(commands: GameCommand[]): string[] {
   return [...ids];
 }
 
-function firstCharacterCommand(commands: GameCommand[], characterId: string): { command: DialogCommand | SpriteCommand; index: number; field: string } | undefined {
-  const index = commands.findIndex((command) => (
-    (command.type === "dialog" || command.type === "sprite") && command.character_id.trim() === characterId
-  ));
-  const command = commands[index];
-  if (!command || (command.type !== "dialog" && command.type !== "sprite")) return undefined;
-  return { command, index, field: command.type === "dialog" ? "portrait" : "sprite_id" };
-}
-
 function hasScenePerformance(commands: GameCommand[]): boolean {
   return commands.some((command) =>
     command.type === "animation" ||
@@ -214,165 +217,93 @@ export function buildPendingVisualAssetsForScene(
   const node_id = options.nodeId;
   const node_label = options.nodeLabel;
   const commands = scene.commands;
-  const backgrounds = commands
-    .map((command, index) => ({ command, index }))
-    .filter((item): item is { command: Extract<GameCommand, { type: "background" }>; index: number } => item.command.type === "background");
-
-  if (backgrounds.length === 0) {
-    pending.push(makePending(scene, {
-      node_id,
-      node_label,
-      kind: "background",
-      asset_type: "background",
-      asset_id: DEFAULT_VISUAL_PLACEHOLDER_BACKGROUND_ID,
-      command_type: "background",
-      command_index: -1,
-      field: "background_id",
-      label: "缺少场景背景",
-      reason: "当前没有背景指令，AgentVN 将插入明确的占位背景图。",
-      placeholder: true,
-    }));
-  } else {
-    for (const { command, index } of backgrounds) {
-      const assetId = command.background_id?.trim();
-      if (!assetId || assetId === DEFAULT_VISUAL_PLACEHOLDER_BACKGROUND_ID || !isUsableAsset(assets.get(assetId), "background")) {
-        pending.push(makePending(scene, {
-          node_id,
-          node_label,
-          kind: "background",
-          asset_type: "background",
-          asset_id: assetId || DEFAULT_VISUAL_PLACEHOLDER_BACKGROUND_ID,
-          command_type: command.type,
-          command_index: index,
-          field: "background_id",
-          label: assetId === DEFAULT_VISUAL_PLACEHOLDER_BACKGROUND_ID ? "占位背景图" : "需要补充背景图",
-          reason: assetId === DEFAULT_VISUAL_PLACEHOLDER_BACKGROUND_ID
-            ? "当前场景还在使用默认占位图，请替换为最终背景图，例如 station_evening.png。"
-            : "场景引用了背景图，但素材库中没有登记可发布的对应文件。",
-          placeholder: assetId === DEFAULT_VISUAL_PLACEHOLDER_BACKGROUND_ID,
-        }));
-      }
-    }
-  }
-
-  for (const characterId of commandCharacters(commands)) {
-    const spriteCommands = commands
-      .map((command, index) => ({ command, index }))
-      .filter((item): item is { command: SpriteCommand; index: number } => item.command.type === "sprite" && item.command.character_id.trim() === characterId);
-    if (spriteCommands.length === 0) {
-      const anchor = firstCharacterCommand(commands, characterId);
+  commands.forEach((command, index) => {
+    for (const ref of collectCommandAssetFields(command)) {
+      const asset = assets.get(ref.asset_id);
+      const reason = missingReason(ref.asset_id, asset, ref.asset_type, ref.allowedTypes);
+      if (!reason) continue;
+      const type = ref.asset_type;
       pending.push(makePending(scene, {
-        node_id,
-        node_label,
-        kind: "sprite",
-        asset_type: "sprite",
-        asset_id: safeAssetId("sprite", characterId),
-        character_id: characterId,
-        command_type: anchor?.command.type,
-        command_index: anchor?.index,
-        field: anchor?.field,
-        label: "需要补充角色图像",
-        reason: "这个角色已经出现在场景里，但还没有可显示在舞台上的角色图像。",
+        node_id, node_label, command_type: command.type, command_index: index,
+        field: ref.field, asset_id: ref.asset_id || undefined, asset_type: type,
+        character_id: command.type === "dialog" || command.type === "sprite" ? command.character_id : undefined,
+        kind: type === "background" || type === "sprite" || type === "portrait" ? type
+          : type === "bgm" || type === "sfx" || type === "voice" ? "audio" : "resource",
+        label: `需要补充${assetFieldLabels[ref.field] ?? "素材"}`,
+        reason, placeholder: Boolean(asset?.metadata.placeholder),
       }));
-    } else {
-      for (const { command, index } of spriteCommands) {
-        const assetId = command.sprite_id?.trim();
-        if (!assetId || !isUsableAsset(assets.get(assetId), "sprite")) {
-          pending.push(makePending(scene, {
-            node_id,
-            node_label,
-            kind: "sprite",
-            asset_type: "sprite",
-            asset_id: assetId || safeAssetId("sprite", characterId),
-            character_id: characterId,
-            command_type: command.type,
-            command_index: index,
-            field: "sprite_id",
-            label: "角色图像缺失",
-            reason: "立绘事件引用的角色图像没有在素材库中登记为可发布素材。",
-          }));
-        }
-      }
     }
+  });
 
-    const dialogCommands = commands
-      .map((command, index) => ({ command, index }))
-      .filter((item): item is { command: DialogCommand; index: number } => item.command.type === "dialog" && item.command.character_id.trim() === characterId);
-    if (dialogCommands.length > 0) {
-      const portraitIds = [...new Set(dialogCommands.map(({ command }) => command.portrait?.trim()).filter((id): id is string => Boolean(id)))];
-      if (portraitIds.length === 0) {
-        const firstDialog = dialogCommands[0];
+  // No reference means no mandatory dependency: scenes may inherit a background and
+  // speaking characters may intentionally be offstage or have no dialog portrait.
+  if (options.includeOptional) {
+    if (!commands.some(command => command.type === "background")) pending.push(makePending(scene, {
+      node_id, node_label, kind: "background", asset_type: "background", command_type: "background",
+      field: "background_id", label: "可选：添加场景背景",
+      reason: "此场景没有背景切换命令，可以沿用前一场景画面。若需要独立背景，可在事件工作台添加。", optional: true,
+    }));
+    for (const characterId of commandCharacters(commands)) {
+      const index = commands.findIndex(command => command.type === "dialog" && command.character_id === characterId);
+      if (index < 0) continue;
+      if (!commands.some(command => command.type === "sprite" && command.visible !== false && command.character_id === characterId))
         pending.push(makePending(scene, {
-          node_id,
-          node_label,
-          kind: "portrait",
-          asset_type: "portrait",
-          asset_id: safeAssetId("portrait", characterId),
-          character_id: characterId,
-          command_type: firstDialog.command.type,
-          command_index: firstDialog.index,
-          field: "portrait",
-          label: "需要补充对白头像",
-          reason: "这个角色有对白，但还没有指定用于对白框的角色头像。",
+          node_id, node_label, character_id: characterId, kind: "sprite", asset_type: "sprite", command_type: "sprite",
+          field: "sprite_id", label: "可选：添加角色图像", reason: `角色「${characterId}」有对白但未设置出场立绘；画外对白不需要立绘。`, optional: true,
         }));
-      } else {
-        for (const { command, index } of dialogCommands) {
-          const assetId = command.portrait?.trim();
-          if (!assetId) continue;
-          if (!isUsableAsset(assets.get(assetId), "portrait")) {
-            pending.push(makePending(scene, {
-              node_id,
-              node_label,
-              kind: "portrait",
-              asset_type: "portrait",
-              asset_id: assetId,
-              character_id: characterId,
-              command_type: command.type,
-              command_index: index,
-              field: "portrait",
-              label: "对白头像缺失",
-              reason: "对白引用的头像没有在素材库中登记为可发布素材。",
-            }));
-          }
-        }
-      }
+      if (!commands.some(command => command.type === "dialog" && command.character_id === characterId && command.portrait?.trim()))
+        pending.push(makePending(scene, {
+          node_id, node_label, character_id: characterId, kind: "portrait", asset_type: "portrait", command_type: "dialog",
+          command_index: index, field: "portrait", label: "可选：添加对白头像",
+          reason: `角色「${characterId}」的对白未配置头像；可保持无头像，或定位到对白后选择。`, optional: true,
+        }));
     }
   }
 
   for (const suggestion of options.assetSuggestions ?? []) {
-    if (suggestion.source_scene_id !== scene.scene_id) continue;
+    if (!options.includeOptional || suggestion.source_scene_id !== scene.scene_id) continue;
     if (suggestion.asset_type !== "background" && suggestion.asset_type !== "sprite" && suggestion.asset_type !== "portrait") continue;
     const type = suggestion.asset_type as "background" | "sprite" | "portrait";
     if (isUsableAsset(assets.get(suggestion.suggested_asset_id), type)) continue;
+    if (pending.some(item => item.asset_id === suggestion.suggested_asset_id)) continue;
     pending.push(makePending(scene, {
       node_id,
       node_label,
       kind: type,
       asset_type: type,
       asset_id: suggestion.suggested_asset_id,
+      command_type: type === "portrait" ? "dialog" : type,
+      field: type === "background" ? "background_id" : type === "sprite" ? "sprite_id" : "portrait",
       label: suggestion.description || "建议补充画面素材",
       reason: "小说导入生成了素材建议，但还需要绑定最终文件。",
+      optional: true,
     }));
   }
 
   if (options.includeOptional) {
-    if (!commands.some((command) => command.type === "bgm" && command.bgm_id)) {
+    if (!commands.some((command) => command.type === "bgm")) {
       pending.push(makePending(scene, {
         node_id,
         node_label,
         kind: "audio",
         asset_type: "bgm",
+        command_type: "bgm",
+        field: "bgm_id",
         label: "可选：添加场景音乐",
         reason: "当前场景还没有背景音乐，可以添加 ambient_rain_loop.mp3 一类的音乐素材。",
         optional: true,
       }));
     }
-    if (!commands.some((command) => command.type === "dialog" && command.voice)) {
+    if (commands.some(command => command.type === "dialog") && !commands.some((command) => command.type === "dialog" && command.voice)) {
+      const index = commands.findIndex(command => command.type === "dialog");
       pending.push(makePending(scene, {
         node_id,
         node_label,
         kind: "audio",
         asset_type: "voice",
+        command_type: "dialog",
+        command_index: index,
+        field: "voice",
         label: "可选：添加对白语音",
         reason: "对白还没有绑定语音文件，例如 alice_line_001.ogg。",
         optional: true,
@@ -384,6 +315,8 @@ export function buildPendingVisualAssetsForScene(
         node_label,
         kind: "audio",
         asset_type: "sfx",
+        command_type: "sfx",
+        field: "sfx_id",
         label: "可选：添加音效",
         reason: "当前场景还没有音效，可以添加 door_knock.wav 一类的效果音。",
         optional: true,
@@ -395,6 +328,7 @@ export function buildPendingVisualAssetsForScene(
         node_label,
         kind: "performance",
         asset_type: "other",
+        command_type: "camera",
         label: "可选：添加演出效果",
         reason: "当前场景还没有镜头、转场或角色入场等演出效果。",
         optional: true,

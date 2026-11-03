@@ -594,6 +594,15 @@ export function isStructuredCameraCommand(value: unknown): value is StructuredCa
   return command?.type === "camera" && Boolean(recordValue(command.motion));
 }
 
+export function normalizeCameraCommandFields(command: CameraCommand): CameraCommand {
+  if (!isStructuredCameraCommand(command)) return command;
+  if (command.motion.kind !== "reframe" && command.motion.kind !== "sequence") return command;
+  if (command.motion.unsafe_overscan === true) return command;
+  const motion = { ...command.motion } as typeof command.motion & { unsafe_overscan?: unknown };
+  delete motion.unsafe_overscan;
+  return { ...command, motion } as CameraCommand;
+}
+
 export function isLegacyCameraCommand(value: unknown): value is LegacyCameraCommand {
   const command = recordValue(value);
   return command?.type === "camera"

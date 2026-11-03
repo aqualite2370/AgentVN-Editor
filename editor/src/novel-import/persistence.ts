@@ -119,6 +119,11 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+function combinedModelNames(names: Array<string | undefined>): string | undefined {
+  const known = [...new Set(names.filter((name): name is string => Boolean(name)))];
+  return known.length ? known.join(" + ") : undefined;
+}
+
 export function bookRecordFromDocument(document: SourceDocument, previous?: PersistentBookImportRecord): PersistentBookImportRecord {
   const fileHash = document.file_hash || String(document.metadata.file_hash || document.document_id);
   const originalPath = document.original_path || document.file_name;
@@ -396,12 +401,14 @@ export function deriveNovelPersistenceState(input: {
       tokenUsage: usage,
       generatedAt: analysis ? previousResult?.generatedAt ?? nowIso() : previousResult?.generatedAt,
       promptVersion: novelPromptVersion,
-      modelName: input.modelName ?? previousResult?.modelName,
+      modelName: analysis?.modelName ?? (!analysis ? partial?.modelName : undefined)
+        ?? (previousResult ? previousResult.modelName : input.modelName),
       retryCount: previousResult?.retryCount ?? 0,
       errorMessage: status === "failed" || status === "timeout_suspected" ? previousResult?.errorMessage : undefined,
     };
     tasks[taskId(jobId, "chunk", chunk.chunk_id)] = {
       ...taskBase(jobId, bookId, "chunk", chunk.chunk_id, input.modelName, previous.tasks[taskId(jobId, "chunk", chunk.chunk_id)]),
+      modelName: chunkResults[chunk.chunk_id].modelName,
       status,
       tokenUsage: usage,
       completedAt: analysis ? previous.tasks[taskId(jobId, "chunk", chunk.chunk_id)]?.completedAt ?? nowIso() : undefined,
@@ -426,6 +433,7 @@ export function deriveNovelPersistenceState(input: {
     tokenUsage = addTokenUsage(tokenUsage, usage);
     tasks[taskId(jobId, "scene", scene.scene_candidate_id)] = {
       ...taskBase(jobId, bookId, "scene", scene.scene_candidate_id, input.modelName, previousTask),
+      modelName: adapted?.modelName ?? (previousTask ? previousTask.modelName : input.modelName),
       status,
       tokenUsage: usage,
       completedAt: adapted ? previousTask?.completedAt ?? nowIso() : previousTask?.completedAt,
@@ -452,6 +460,11 @@ export function deriveNovelPersistenceState(input: {
       chunkIds.reduce((total, chunkId) => addTokenUsage(total, chunkResults[chunkId]?.tokenUsage), emptyTokenUsage()),
       estimateTokenUsage("", resultText),
     );
+    const sourcesChanged = adaptedScenes.some(scene => scene.modelName
+      && scene.modelName !== previous.sessionSnapshot?.adapted_scenes
+        .find(old => old.source_scene_candidate_id === scene.source_scene_candidate_id)?.modelName)
+      || chunkIds.some(chunkId => chunkResults[chunkId]?.modelName !== previous.chunkResults[chunkId]?.modelName);
+    const keepRecordedSource = previousResult && previousResult.resultText === resultText && !sourcesChanged;
     chapterResults[chapter.chapter_id] = {
       chapterId: chapter.chapter_id,
       bookId,
@@ -470,7 +483,11 @@ export function deriveNovelPersistenceState(input: {
       tokenUsage: usage,
       generatedAt: resultText ? previousResult?.generatedAt ?? nowIso() : previousResult?.generatedAt,
       promptVersion: novelPromptVersion,
-      modelName: input.modelName ?? previousResult?.modelName,
+      modelName: keepRecordedSource ? previousResult.modelName : combinedModelNames([
+        ...adaptedScenes.map(scene => scene.modelName
+          ?? previous.tasks[taskId(jobId, "scene", scene.source_scene_candidate_id)]?.modelName),
+        ...chunkIds.map(chunkId => chunkResults[chunkId]?.modelName),
+      ]) ?? (previousResult ? previousResult.modelName : input.modelName),
       retryCount: previousResult?.retryCount ?? 0,
       errorMessage: status === "failed" || status === "timeout_suspected" ? previousResult?.errorMessage : undefined,
     };
@@ -484,6 +501,8 @@ export function deriveNovelPersistenceState(input: {
     const processingTasksByChunkId = new Map(input.processing.tasks.map((task) => [task.chunkId, task]));
     for (const chunk of input.processing.chunks) {
       const task = processingTasksByChunkId.get(chunk.chunkId);
+      const processingJob = input.processing.jobs.find(job => job.jobId === task?.jobId
+        || (!task && job.bookId === chunk.bookId && job.selectedChapterIds.includes(chunk.chapterId)));
       const resultText = input.processing.chunkResults[chunk.chunkId] ?? previous.chunkResults[chunk.chunkId]?.resultText ?? "";
       const usage: TokenUsageRecord = {
         prompt_tokens: task?.inputTokens ?? chunk.estimatedTokens,
@@ -515,7 +534,7 @@ export function deriveNovelPersistenceState(input: {
         tokenUsage: usage,
         generatedAt: task?.finishedAt ?? previous.chunkResults[chunk.chunkId]?.generatedAt,
         promptVersion: input.processing.promptVersion || novelPromptVersion,
-        modelName: input.modelName ?? previous.chunkResults[chunk.chunkId]?.modelName,
+        modelName: processingJob?.modelName ?? previous.chunkResults[chunk.chunkId]?.modelName,
         retryCount: task?.retryCount ?? chunk.retryCount,
         errorMessage: task?.errorMessage ?? previous.chunkResults[chunk.chunkId]?.errorMessage,
       };
@@ -536,7 +555,8 @@ export function deriveNovelPersistenceState(input: {
         targetId: task.chunkId,
         status: mapProcessingStatus(task.status),
         promptVersion: input.processing.promptVersion || novelPromptVersion,
-        modelName: input.modelName ?? previous.tasks[task.agentTaskId]?.modelName,
+        modelName: input.processing.jobs.find(job => job.jobId === task.jobId)?.modelName
+          ?? previous.tasks[task.agentTaskId]?.modelName,
         agentParams: { agentIndex: task.agentIndex, chapterId: task.chapterId },
         retryCount: task.retryCount,
         tokenUsage: usage,
@@ -567,7 +587,7 @@ export function deriveNovelPersistenceState(input: {
         failed: processingJob.failedChunks,
         skipped: processingJob.skippedChunks,
         promptVersion: processingJob.promptVersion || input.processing.promptVersion || novelPromptVersion,
-        modelName: input.modelName ?? previous.jobs[processingJob.jobId]?.modelName,
+        modelName: processingJob.modelName ?? previous.jobs[processingJob.jobId]?.modelName,
         agentParams: {
           selectedChapterIds: processingJob.selectedChapterIds,
           maxConcurrency: processingJob.maxConcurrency,
@@ -609,7 +629,8 @@ export function deriveNovelPersistenceState(input: {
         tokenUsage: usage,
         generatedAt: resultText ? previous.chapterResults[chapter.chapter_id]?.generatedAt ?? nowIso() : previous.chapterResults[chapter.chapter_id]?.generatedAt,
         promptVersion: input.processing.promptVersion || novelPromptVersion,
-        modelName: input.modelName ?? previous.chapterResults[chapter.chapter_id]?.modelName,
+        modelName: input.processing.jobs.find(job => job.selectedChapterIds.includes(chapter.chapter_id))?.modelName
+          ?? chapterResults[chapter.chapter_id]?.modelName,
         retryCount: chapterChunks.reduce((sum, chunk) => sum + chunk.retryCount, 0),
         errorMessage: failedChunkIds.length > 0 ? `${failedChunkIds.length} chunk(s) failed or unfinished.` : undefined,
       };
@@ -632,7 +653,7 @@ export function deriveNovelPersistenceState(input: {
     failed,
     skipped,
     promptVersion: novelPromptVersion,
-    modelName: input.modelName ?? existingJob?.modelName,
+    modelName: existingJob?.modelName ?? input.session.modelName ?? (existingJob ? undefined : input.modelName),
     agentParams: { importOptions: input.session.import_options },
     tokenUsage,
     retryCount: existingJob?.retryCount ?? 0,
@@ -695,7 +716,7 @@ function taskBase(
     targetId,
     status: previous?.status ?? "pending",
     promptVersion: novelPromptVersion,
-    modelName: modelName ?? previous?.modelName,
+    modelName: previous ? previous.modelName : modelName,
     agentParams: previous?.agentParams ?? {},
     retryCount: previous?.retryCount ?? 0,
     tokenUsage: previous?.tokenUsage ?? emptyTokenUsage(),

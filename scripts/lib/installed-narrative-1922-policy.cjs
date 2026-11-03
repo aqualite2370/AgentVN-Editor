@@ -1,0 +1,32 @@
+"use strict";
+const fs = require("node:fs"), path = require("node:path"), assert = require("node:assert/strict");
+const { sha } = require("./installed-runtime-session.cjs");
+const { validateNarrativeFixture } = require("./installed-narrative-1922-fixture.cjs");
+const read = f => JSON.parse(fs.readFileSync(f, "utf8").replace(/^\uFEFF/, ""));
+function validateNarrativePreparation(prep) {
+  assert.equal(prep.status, "PASS");
+  assert.equal(path.dirname(path.resolve(prep.sessionRoot)), "F:\\AgentVN\\QA\\Native-Runtime-State-20261020-01");
+  assert.match(path.basename(prep.sessionRoot), /^installed-narrative-1922-\d{2}$/);
+  assert.equal(prep.defaultStorage, "CODEX_EXPLICIT_PHYSICAL_ROAMING_LIBRARY_LOCAL_JUNCTION");
+  for (const f of [prep.executable, prep.installation, prep.exported]) assert.equal(sha(f.path), f.sha256);
+  const installed = read(prep.installation.path), exported = read(prep.exported.path);
+  assert.equal(installed.status, "PASS"); assert.equal(installed.version, "1.9.22");
+  assert.equal(installed.metadataRestoration, "PASS");
+  assert.equal(path.resolve(prep.executable.path), path.join(installed.installRoot, "agentvn-player.exe"));
+  assert.equal(prep.executable.sha256, "a6930452f451e1ef194b46ac4c4718479d66a33667277cb0ee52db0c2203db59");
+  assert.equal(exported.scope, "ACTUAL_1922_INSTALLED_EDITOR_NARRATIVE_BOUNDARY_UI_EXPORT");
+  assert.equal(exported.status, "PASS"); assert(exported.finishedAt && !exported.cleanupError);
+  assert.equal(exported.installation.sha256, prep.installation.sha256);
+  assert.equal(exported.steps.length, 3); assert(exported.steps.every(s => s.status === "PASS"));
+  assert.equal(exported.cartridges.length, 2); assert.deepEqual(prep.cartridges, exported.cartridges);
+  assert.deepEqual(prep.fixture, exported.fixture);
+  for (const c of prep.cartridges) assert.equal(sha(c.path), c.sha256);
+  assert.equal(sha(prep.fixture.input), prep.fixture.inputSha256);
+  validateNarrativeFixture(read(prep.fixture.input), prep.fixture, fs.readFileSync(prep.fixture.voice.path));
+  assert.equal(sha(exported.restoration.path), exported.restoration.sha256);
+  assert.equal(read(exported.restoration.path).status, "PASS");
+  assert(exported.cleanups.length && exported.cleanups.every(c => c.status === "PASS"));
+  assert.equal(exported.modelRequests, 0); assert.equal(exported.productChanges, 0);
+  return { version: installed.version, scope: exported.scope, storage: prep.defaultStorage };
+}
+module.exports = { validateNarrativePreparation };

@@ -3,6 +3,14 @@ import type { CharacterSpriteAnimationConfig } from "../../../shared/animation/c
 import { validateCharacterAnimationConfig } from "../../../shared/animation/characterAnimation";
 import { MAX_SPRITE_SCALE, MIN_SPRITE_SCALE } from "../../../shared/cartridge/spriteScale";
 import { MAX_SPRITE_LAYER, MIN_SPRITE_LAYER, isValidSpriteLayer } from "../../../shared/cartridge/spriteLayer";
+import {
+  MAX_SPRITE_OFFSET_X,
+  MAX_SPRITE_OFFSET_Y,
+  MIN_SPRITE_OFFSET_X,
+  MIN_SPRITE_OFFSET_Y,
+  isValidSpriteOffsetX,
+  isValidSpriteOffsetY,
+} from "../../../shared/cartridge/spritePlacement";
 import { sceneReferenceLabel } from "./displayNames";
 
 export interface ValidationIssue {
@@ -22,12 +30,17 @@ interface ValidationRuntimeChoice {
 
 interface ValidationRuntimeCommand {
   type: string;
+  anchor_id?: string;
+  title?: string;
+  asset_id?: string;
   character_id?: string;
   target?: string;
   target_scene_id?: string;
   else_target_scene_id?: string | null;
   animation_config?: CharacterSpriteAnimationConfig | null;
   scale?: number | null;
+  offset_x?: number | null;
+  offset_y?: number | null;
   layer?: number | null;
   choices?: ValidationRuntimeChoice[];
 }
@@ -115,6 +128,27 @@ export function validateSingleStartNode(nodes: EditorNode[]): ValidationIssue[] 
   }];
 }
 
+export function validateStartConnections(nodes: EditorNode[], edges: EditorEdge[]): ValidationIssue[] {
+  const start = nodes.find((node) => node.data.nodeKind === "start");
+  if (!start) return [];
+  const outgoing = edges.filter((edge) => (
+    edge.source === start.id
+    && (!edge.sourceHandle || edge.sourceHandle === "default")
+  ));
+  const distinctOutgoing = [...new Map(outgoing.map((edge) => [
+    `${edge.target}|${edge.sourceHandle || "default"}|${edge.targetHandle || "default"}`,
+    edge,
+  ])).values()];
+  if (distinctOutgoing.length === 1) return [];
+  return [{
+    code: "start_connection",
+    message: `入口节点必须恰好连接一个默认后续：当前有 ${distinctOutgoing.length} 个不同目标。原因：多个入口目标会让重新开始受连线数组顺序影响。影响：玩家可能随机从不同章节开始。解决方案：删除多余入口连线，只保留指向第一章的那一条。`,
+    severity: "error",
+    nodeId: start.id,
+    edgeId: distinctOutgoing[0]?.id,
+  }];
+}
+
 export function validateNodeConnections(nodes: EditorNode[], edges: EditorEdge[]): ValidationIssue[] {
   const ids = new Set(nodes.map((node) => node.id));
   return edges
@@ -163,15 +197,19 @@ export function validateDefaultHandleFanOut(nodes: EditorNode[], edges: EditorEd
     defaultEdgesBySource.set(edge.source, [...(defaultEdgesBySource.get(edge.source) ?? []), edge]);
   }
   for (const [sourceId, defaultEdges] of defaultEdgesBySource) {
-    if (defaultEdges.length <= 1) continue;
+    const distinctDefaultEdges = [...new Map(defaultEdges.map((edge) => [
+      `${edge.target}|${edge.sourceHandle || "default"}|${edge.targetHandle || "default"}`,
+      edge,
+    ])).values()];
+    if (distinctDefaultEdges.length <= 1) continue;
     const sourceLabel = nodeReferenceLabel(nodesById.get(sourceId), sourceId);
-    const targetLabels = defaultEdges.map((edge) => nodeReferenceLabel(nodesById.get(edge.target), edge.target)).join("、");
+    const targetLabels = distinctDefaultEdges.map((edge) => nodeReferenceLabel(nodesById.get(edge.target), edge.target)).join("、");
     issues.push({
       code: "multiple_default_successors",
       message: `${sourceLabel} 的默认后续连接了多个节点（default handle）：当前连接到 ${targetLabels}。原因：默认后续只能表达一条非选项分支。影响：GameCLI 播放时无法让玩家选择，旧逻辑通常只会播放第一条线。解决方案：请保留一条默认后续；如果需要分支，请在场景里添加“选项分支”事件并从选项连接目标场景。`,
-      severity: "warning",
+      severity: nodesById.get(sourceId)?.data.nodeKind === "start" ? "error" : "warning",
       nodeId: sourceId,
-      edgeId: defaultEdges[0].id,
+      edgeId: distinctDefaultEdges[0].id,
     });
   }
   return issues;
@@ -180,6 +218,7 @@ export function validateDefaultHandleFanOut(nodes: EditorNode[], edges: EditorEd
 export function validateProject(project: EditorProjectFile): ValidationIssue[] {
   return [
     ...validateSingleStartNode(project.nodes),
+    ...validateStartConnections(project.nodes, project.edges),
     ...validateNodeConnections(project.nodes, project.edges),
     ...validateBrokenChoiceHandles(project.nodes, project.edges),
     ...validateDefaultHandleFanOut(project.nodes, project.edges),
@@ -219,7 +258,24 @@ export function validateScript(script: ValidationRuntimeScript): ValidationIssue
       });
     }
     for (const command of scene.commands) {
+      if (command.type === "gallery_anchor") {
+        if (!command.anchor_id?.trim()) issues.push({ code: "gallery_anchor_id_missing", message: `${currentSceneLabel} 的画廊锚点缺少 anchor_id。` });
+        if (!command.title?.trim()) issues.push({ code: "gallery_anchor_title_missing", message: `${currentSceneLabel} 的画廊锚点名称不能为空。` });
+        if (!command.asset_id?.trim()) issues.push({ code: "gallery_anchor_asset_missing", message: `${currentSceneLabel} 的画廊锚点必须指定展示素材。` });
+      }
       if (command.type === "sprite") {
+        if (command.offset_x !== null && command.offset_x !== undefined && !isValidSpriteOffsetX(command.offset_x)) {
+          issues.push({
+            code: "sprite_offset_x_range",
+            message: `${currentSceneLabel} 的立绘 X 偏移必须在 ${MIN_SPRITE_OFFSET_X}% 到 ${MAX_SPRITE_OFFSET_X}% 之间。`,
+          });
+        }
+        if (command.offset_y !== null && command.offset_y !== undefined && !isValidSpriteOffsetY(command.offset_y)) {
+          issues.push({
+            code: "sprite_offset_y_range",
+            message: `${currentSceneLabel} 的立绘 Y 偏移必须在 ${MIN_SPRITE_OFFSET_Y}% 到 ${MAX_SPRITE_OFFSET_Y}% 之间。`,
+          });
+        }
         if (
           command.layer !== null
           && command.layer !== undefined

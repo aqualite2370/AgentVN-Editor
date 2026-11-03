@@ -84,6 +84,7 @@ import type {
 import { defaultImportOptions } from "../novel-import/types";
 import { useEditorStore } from "./editorStore";
 import { useProjectStore } from "./projectStore";
+import { createEndNode } from "../utils/nodeFactory";
 import type { EditorEdge, EditorNode, GraphImportMode } from "../types/nodes";
 import type { SceneBeat } from "../types/scene";
 import {
@@ -129,6 +130,8 @@ export interface NovelGraphImportResult {
   importLineId?: string;
 }
 
+const novelResultImports = new Map<string, Promise<NovelGraphImportResult | undefined>>();
+
 type NovelSplitDiagnosticStatus = "idle" | "started" | "completed" | "failed";
 
 interface NovelSplitDiagnostic {
@@ -140,6 +143,7 @@ interface NovelSplitDiagnostic {
 }
 
 interface NovelImportStore {
+  ownershipGeneration: number;
   session: NovelImportSession;
   pendingImport?: NovelPendingImport;
   importJob?: ProgressiveImportJob;
@@ -243,11 +247,14 @@ const modelStreamMaxSegments = 120;
 const eagerDocumentEditChunkLimit = 60_000;
 
 const novelProcessingStorageKey = "agentvn.novelProcessing.v1";
+let novelStoreProjectId = useProjectStore.getState().projectId;
+const processingKey = (projectId: string) => `${novelProcessingStorageKey}.${encodeURIComponent(projectId)}`;
+const persistenceKey = (projectId: string) => `agentvn.novelProcessing.persistence.${encodeURIComponent(projectId)}`;
 
-function loadNovelProcessingState(): NovelProcessingState {
+function loadNovelProcessingState(projectId = novelStoreProjectId): NovelProcessingState {
   if (typeof window === "undefined") return createEmptyNovelProcessingState();
   try {
-    const raw = window.localStorage.getItem(novelProcessingStorageKey);
+    const raw = window.localStorage.getItem(processingKey(projectId));
     if (!raw) return createEmptyNovelProcessingState();
     const parsed = JSON.parse(raw) as Partial<NovelProcessingState>;
     return createEmptyNovelProcessingState({
@@ -262,10 +269,10 @@ function loadNovelProcessingState(): NovelProcessingState {
   }
 }
 
-function persistNovelProcessingState(processing: NovelProcessingState): void {
+function persistNovelProcessingState(processing: NovelProcessingState, projectId = novelStoreProjectId): void {
   if (typeof window === "undefined") return;
   try {
-    window.localStorage.setItem(novelProcessingStorageKey, JSON.stringify({ ...processing, updatedAt: new Date().toISOString() }));
+    window.localStorage.setItem(processingKey(projectId), JSON.stringify({ ...processing, updatedAt: new Date().toISOString() }));
   } catch (error) {
     reportFrontendError("editor.novel-import", error, {
       operation: "persist-processing-state",
@@ -458,7 +465,8 @@ function syncProcessingChapters(processing: NovelProcessingState, chapters: Chap
 function clearNovelProcessingState(): void {
   if (typeof window === "undefined") return;
   try {
-    window.localStorage.removeItem(novelProcessingStorageKey);
+    window.localStorage.removeItem(processingKey(novelStoreProjectId));
+    window.localStorage.removeItem(persistenceKey(novelStoreProjectId));
   } catch (error) {
     reportFrontendError("editor.novel-import", error, {
       operation: "clear-processing-state",
@@ -1152,16 +1160,25 @@ function isOutlineCheckpointStage(stage: string): stage is "mainline" | "structu
   return stage === "mainline" || stage === "structure" || stage === "index";
 }
 
-function applyScanCheckpoint(chunk: TextChunk, checkpoint: AiCheckpointEvent): void {
+function applyScanCheckpoint(
+  owner: NovelTaskOwnership,
+  chunk: TextChunk,
+  checkpoint: AiCheckpointEvent,
+  modelName: string,
+): void {
+  if (!isNovelTaskOwnershipCurrent(owner)) return;
   if (!isScanCheckpointStage(checkpoint.stage)) {
-    useNovelImportStore.setState((state) => ({ warnings: [...state.warnings, `未知扫描检查点：${checkpoint.stage}`] }));
+    useNovelImportStore.setState((state) => isNovelTaskOwnershipCurrent(owner)
+      ? ({ warnings: [...state.warnings, `未知扫描检查点：${checkpoint.stage}`] })
+      : {});
     return;
   }
   useNovelImportStore.setState((state) => {
+    if (!isNovelTaskOwnershipCurrent(owner)) return {};
     const current = partialMatchesChunk(state.session.scan_partials[chunk.chunk_id], chunk)
       ? state.session.scan_partials[chunk.chunk_id]
       : withChunkMetadata(chunk, {});
-    const next = { ...current };
+    const next = { ...current, modelName };
     if (checkpoint.stage === "summary") next.summary = checkpoint.payload as NovelAiChunkPartial["summary"];
     if (checkpoint.stage === "entities") next.entities = checkpoint.payload as NovelAiChunkPartial["entities"];
     if (checkpoint.stage === "timeline") next.timeline = checkpoint.payload as NovelAiChunkPartial["timeline"];
@@ -1172,12 +1189,16 @@ function applyScanCheckpoint(chunk: TextChunk, checkpoint: AiCheckpointEvent): v
   });
 }
 
-function applyOutlineCheckpoint(checkpoint: AiCheckpointEvent): void {
+function applyOutlineCheckpoint(owner: NovelTaskOwnership, checkpoint: AiCheckpointEvent): void {
+  if (!isNovelTaskOwnershipCurrent(owner)) return;
   if (!isOutlineCheckpointStage(checkpoint.stage)) {
-    useNovelImportStore.setState((state) => ({ warnings: [...state.warnings, `未知大纲检查点：${checkpoint.stage}`] }));
+    useNovelImportStore.setState((state) => isNovelTaskOwnershipCurrent(owner)
+      ? ({ warnings: [...state.warnings, `未知大纲检查点：${checkpoint.stage}`] })
+      : {});
     return;
   }
   useNovelImportStore.setState((state) => {
+    if (!isNovelTaskOwnershipCurrent(owner)) return {};
     const next = { ...state.session.outline_partials };
     if (checkpoint.stage === "mainline") next.mainline = checkpoint.payload as NovelAiOutlinePartial["mainline"];
     if (checkpoint.stage === "structure") next.structure = checkpoint.payload as NovelAiOutlinePartial["structure"];
@@ -1779,7 +1800,9 @@ function materializeBranchSuggestions(input: {
   useEditorStore.setState((editor) => {
     const nodes = [...editor.nodes];
     const edges = [...editor.edges];
-    const nodesBySceneId = new Map(nodes.filter((node) => node.data.scene).map((node) => [node.data.scene!.scene_id, node]));
+    const nodesBySceneId = new Map(nodes
+      .filter((node) => node.data.scene && node.data.editorMeta?.importLineId === input.importLineId)
+      .map((node) => [node.data.scene!.scene_id, node]));
     const nextNodes: EditorNode[] = [];
     const nextEdges: EditorEdge[] = [];
 
@@ -1789,8 +1812,15 @@ function materializeBranchSuggestions(input: {
       const alreadyMaterialized = nodes.some((node) => node.data.editorMeta?.importLineId === input.importLineId && node.data.editorMeta?.debugNotes === `branch_source:${sourceNode.id}`);
       if (alreadyMaterialized) continue;
 
-      const defaultEdge = edges.find((edge) => edge.source === sourceNode.id && (!edge.sourceHandle || edge.sourceHandle === "default"));
+      const defaultEdges = edges.filter((edge) => edge.source === sourceNode.id && (!edge.sourceHandle || edge.sourceHandle === "default"));
+      // An ambiguous or broken authored continuation needs review, not a fabricated ending.
+      if (defaultEdges.length > 1) continue;
+      const defaultEdge = defaultEdges[0];
       const nextNode = defaultEdge ? nodes.find((node) => node.id === defaultEdge.target) : undefined;
+      if (defaultEdge && !nextNode) continue;
+      // Explicit in-scene control flow owns its destinations.
+      if (sourceNode.data.scene!.commands.some((command) =>
+        command.type === "jump" || command.type === "conditional_jump" || command.type === "choice")) continue;
       const choiceId = `choice_import_${nanoid(8)}`;
       const x = sourceNode.position.x + 340;
       const y = sourceNode.position.y + 40;
@@ -1829,8 +1859,28 @@ function materializeBranchSuggestions(input: {
       nextNodes.push(choiceNode);
       createdNodeIds.push(choiceNode.id);
       nextEdges.push({ id: `novel_branch_edge_${input.importLineId}_${sourceNode.id}_choice`, source: sourceNode.id, target: choiceNode.id, sourceHandle: "default" });
-      if (nextNode) {
-        nextEdges.push({ id: `novel_branch_edge_${input.importLineId}_${choiceNode.id}_mainline`, source: choiceNode.id, target: nextNode.id, sourceHandle: "mainline" });
+      let mainlineTarget = nextNode;
+      if (!mainlineTarget) {
+        const endingNode = createEndNode({ x: x + 340, y }, input.memoryMode);
+        endingNode.data.label = "原文结束";
+        endingNode.data.description = "已导入原文的终点；推测分支仍需作者审阅与续写。";
+        endingNode.data.ending!.ending_title = "原文结束";
+        endingNode.data.editorMeta = {
+          ...endingNode.data.editorMeta,
+          source: "imported",
+          importLineId: input.importLineId,
+          debugNotes: `branch_mainline_end:${sourceNode.id}`,
+        };
+        nextNodes.push(endingNode);
+        createdNodeIds.push(endingNode.id);
+        mainlineTarget = endingNode;
+      }
+      nextEdges.push({ id: `novel_branch_edge_${input.importLineId}_${choiceNode.id}_mainline`, source: choiceNode.id, target: mainlineTarget.id, sourceHandle: "mainline" });
+      // The explicit end node now owns termination, so the source must reach the choice.
+      if (sourceNode.data.scene!.is_ending) {
+        const sourceIndex = nodes.findIndex((node) => node.id === sourceNode.id);
+        nodes[sourceIndex] = { ...sourceNode, data: { ...sourceNode.data,
+          scene: { ...sourceNode.data.scene!, is_ending: false } } };
       }
       suggestions.forEach((suggestion, index) => {
         const branchNodeId = `node_import_branch_${nanoid(8)}`;
@@ -1895,6 +1945,7 @@ export function getNovelImportModelStatus(): NovelImportModelStatus {
 }
 
 export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
+  ownershipGeneration: 0,
   session: createEmptySession(),
   pendingImport: undefined,
   modelStream: createEmptyModelStream(),
@@ -1910,9 +1961,22 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
 
   toggleModelStream: () => set((state) => ({ modelStream: { ...state.modelStream, open: !state.modelStream.open } })),
   hydratePersistence: (persistence) => {
+    flushNovelPersistenceSync();
+    if (novelPersistenceSyncTimer !== undefined) window.clearTimeout(novelPersistenceSyncTimer);
+    novelPersistenceSyncTimer = undefined;
+    novelStoreProjectId = useProjectStore.getState().projectId;
+    const suppliedPersistence = persistence;
+    if (!persistence && typeof window !== "undefined") {
+      try {
+        const raw = window.localStorage.getItem(persistenceKey(novelStoreProjectId));
+        if (raw) persistence = JSON.parse(raw) as NovelPersistenceState;
+      } catch (error) {
+        reportFrontendError("editor.novel-import", error, { operation: "restore-project-task-cache", projectId: novelStoreProjectId });
+      }
+    }
+    set((current) => ({ ownershipGeneration: current.ownershipGeneration + 1 }));
     if (!persistence) {
       clearModelStreamDeltaQueue();
-      clearNovelProcessingState();
       const emptyPersistence = createEmptyNovelPersistenceState();
       set({
         session: createEmptySession(),
@@ -1925,7 +1989,7 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
         warnings: [],
         splitDiagnostic: { status: "idle" },
         jobCreation: { status: "idle" },
-        processing: createEmptyNovelProcessingState(),
+        processing: loadNovelProcessingState(),
         persistence: emptyPersistence,
         scanRetries: 0,
         isProcessing: false,
@@ -1936,6 +2000,23 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
     const processing = restored.processingSnapshot
       ? createEmptyNovelProcessingState(restored.processingSnapshot)
       : createEmptyNovelProcessingState();
+    // Only migrate the legacy global cache when the supplied project's saved
+    // job identities prove its owner. Unattributed data remains recoverable.
+    if (suppliedPersistence && typeof window !== "undefined") {
+      try {
+        const legacyRaw = window.localStorage.getItem(novelProcessingStorageKey);
+        if (legacyRaw) {
+          const legacy = JSON.parse(legacyRaw) as Partial<NovelProcessingState>;
+          const known = new Set(processing.jobs.map(job => job.jobId));
+          if (legacy.jobs?.length && legacy.jobs.every(job => known.has(job.jobId))) {
+            persistNovelProcessingState(processing);
+            window.localStorage.removeItem(novelProcessingStorageKey);
+          }
+        }
+      } catch (error) {
+        reportFrontendError("editor.novel-import", error, { operation: "validate-legacy-task-cache", projectId: novelStoreProjectId });
+      }
+    }
     const importJob = restored.importJobSnapshot?.status === "running"
       ? { ...restored.importJobSnapshot, status: "paused" as const, pauseRequested: false, cancelRequested: false }
       : restored.importJobSnapshot;
@@ -1989,6 +2070,7 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
   })),
 
   resetSession: () => {
+    set((current) => ({ ownershipGeneration: current.ownershipGeneration + 1 }));
     clearModelStreamDeltaQueue();
     clearNovelProcessingState();
     set({
@@ -2427,6 +2509,7 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
   }),
   createNovelProcessingJob: async (options) => {
     const state = get();
+    const ownership = captureNovelTaskOwnership("creating");
     if (state.jobCreation.status === "creating") return;
     const document = state.session.document;
     const existingChapters = state.session.chapters.length > 0 ? state.session.chapters : state.processing.chapterSnapshots;
@@ -2476,7 +2559,7 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
     const providerSelection = getNovelProviderSelectionPayload();
     if (!providerSelection) {
       set({ jobCreation: { status: "failed", message: "请先在“模型/连接”中配置文本生成模型。" } });
-      set({ errors: [...state.errors, "请先在“模型/连接”中配置文本生成模型，subagent 批处理需要真实后端模型。"] });
+      set({ errors: [...state.errors, "请先在“模型/连接”中配置文本生成模型，subagent 批处理需要后端模型。"] });
       return;
     }
     set({
@@ -2509,7 +2592,7 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
         nextContextHint: chunk.overlapAfter.slice(0, 800),
       };
     });
-    set({ warnings: [...state.warnings, `正在创建真实后端 subagent job：${rawChunks.length} 个 chunk，最大并发 ${config.maxConcurrency}。`] });
+    set({ warnings: [...state.warnings, `正在创建后端 subagent job：${rawChunks.length} 个 chunk，最大并发 ${config.maxConcurrency}。`] });
     try {
       set({
         jobCreation: {
@@ -2529,6 +2612,7 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
         maxRetries: config.maxRetryCount,
         providerSelection,
       });
+      if (!isNovelTaskOwnershipCurrent(ownership)) return;
       const localJob = createNovelProcessJob({
         bookId,
         selectedChapterIds,
@@ -2538,7 +2622,8 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
         outputFormat: state.processing.outputFormat,
         promptVersion: state.processing.promptVersion,
       });
-      const job = { ...localJob, jobId: apiJob.jobId };
+      const job = { ...localJob, jobId: apiJob.jobId,
+        modelName: `${providerSelection.connection_id} / ${providerSelection.model_id}` };
       const chunks = initializeChunkDispatch(rawChunks, job);
       const tasks = createAgentTasksForJob({ job, chunks });
       const nextState = get();
@@ -2568,6 +2653,9 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
         processing,
       });
       if (localPanelSnapshot) persistNovelProcessTaskSnapshot(projectId, localPanelSnapshot);
+      // Publishing activeJobId hands refresh ownership to the mounted task
+      // controller. Reading panel/events here races its first refresh and can
+      // commit an older snapshot after a newer status or user operation.
       set({
         processing,
         jobCreation: {
@@ -2576,30 +2664,17 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
           jobId: apiJob.jobId,
           chunkCount: rawChunks.length,
         },
-      });
-      const panelJob = await backendClient.getNovelProcessJob(apiJob.jobId);
-      const events = await backendClient.getJobEvents(apiJob.jobId, 50);
-      persistNovelProcessTaskSnapshot(projectId, { projectId, job: panelJob, events });
-      const syncedProcessing = syncNovelProcessingFromPanelJob(processing, panelJob);
-      if (syncedProcessing !== processing) persistNovelProcessingState(syncedProcessing);
-      set({
-        processing: syncedProcessing,
-        jobCreation: {
-          status: "created",
-          message: `任务 ${apiJob.jobId} 已创建，${rawChunks.length} 个 chunk 已进入任务工作台。`,
-          jobId: apiJob.jobId,
-          chunkCount: rawChunks.length,
-        },
-        warnings: [...nextState.warnings, `真实后端 subagent job 已启动：${apiJob.jobId}，最大并发 ${config.maxConcurrency}。`],
+        warnings: [...nextState.warnings, `后端 subagent job 已启动：${apiJob.jobId}，最大并发 ${config.maxConcurrency}。`],
       });
     } catch (error) {
-      reportFrontendError("editor.novel-import", error, { operation: "create-processing-job" });
+      reportFrontendError("editor.novel-import", error, { operation: "create-processing-job", ...ownership });
+      if (!isNovelTaskOwnershipCurrent(ownership)) return;
       const detail = error instanceof Error ? error.message : String(error);
       if (get().jobCreation.status === "created") {
         set((current) => ({ warnings: [...current.warnings, `任务已创建，但任务面板快照暂未读取成功：${detail}`] }));
         return;
       }
-      const message = `创建真实后端 subagent job 失败：${detail}`;
+      const message = `创建后端 subagent job 失败：${detail}`;
       set((current) => ({
         errors: [...current.errors, message],
         jobCreation: { status: "failed", message },
@@ -2652,9 +2727,15 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
     return { processing };
   }),
   importNovelProcessJobResults: async (jobId) => {
+    const ownership = captureNovelTaskOwnership(jobId);
+    const requestKey = JSON.stringify(ownership);
+    const existingRequest = novelResultImports.get(requestKey);
+    if (existingRequest) return existingRequest;
+    const pending = (async () => {
     const providerSelection = getNovelProviderSelectionPayload();
     try {
       const results = await backendClient.getNovelProcessJobResults(jobId);
+      if (!isNovelTaskOwnershipCurrent(ownership)) return undefined;
       if (hasLegacyProcessJobImport(jobId)) {
         return findExistingProcessJobImport(jobId);
       }
@@ -2666,7 +2747,7 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
       if (scenes.length === 0) {
         const existingImport = findExistingProcessJobImport(jobId);
         if (existingImport) return existingImport;
-        set((current) => ({ errors: [...current.errors, "真实 subagent job 暂无完整章节场景可写入；失败章节需先重试对应切片。"] }));
+        set((current) => ({ errors: [...current.errors, "subagent job 暂无完整章节场景可写入；失败章节需先重试对应切片。"] }));
         return undefined;
       }
       const usedSceneIds = collectUsedSceneIds(get().session.adapted_scenes);
@@ -2686,6 +2767,7 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
         return unique.scene;
       });
       const polished = await polishProcessScenes(uniqueScenes, providerSelection);
+      if (!isNovelTaskOwnershipCurrent(ownership)) return undefined;
       const processCharacterCandidates = results.completedResults.flatMap((result) => result.characterCandidates ?? []);
       const mergedProcessCharacters = mergeCharacterCandidateList([
         ...get().session.characters,
@@ -2708,6 +2790,7 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
         });
       });
       const currentState = get();
+      if (!isNovelTaskOwnershipCurrent(ownership)) return undefined;
       const existingImport = findExistingProcessJobImport(jobId);
       const graphImportMode = existingImport?.mode ?? resolveNovelGraphImportMode();
       const layout = buildLayout(currentState.session.session_id);
@@ -2772,13 +2855,21 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
       }));
       return importResult;
     } catch (error) {
-      reportFrontendError("editor.novel-import", error, { operation: "import-processing-results" });
+      reportFrontendError("editor.novel-import", error, { operation: "import-processing-results", ...ownership });
+      if (!isNovelTaskOwnershipCurrent(ownership)) return undefined;
       const detail = error instanceof Error ? error.message : String(error);
-      set((current) => ({ errors: [...current.errors, `写入真实 subagent job 结果失败：${detail}`] }));
+      set((current) => ({ errors: [...current.errors, `写入 subagent job 结果失败：${detail}`] }));
       return undefined;
     }
+    })();
+    novelResultImports.set(requestKey, pending);
+    const release = () => {
+      if (novelResultImports.get(requestKey) === pending) novelResultImports.delete(requestKey);
+    };
+    void pending.then(release, release);
+    return pending;
   },
-  splitScenes: () => set({ errors: ["默认小说导入流程已改为真实大模型场景规划，请先确认 AI 大纲。"] }),
+  splitScenes: () => set({ errors: ["默认小说导入流程已改为大模型场景规划，请先确认 AI 大纲。"] }),
   extractCharacters: () => set({ errors: ["角色识别已由 AI 全文扫描生成，请在大纲确认页复核。"] }),
 
   updateChapter: (chapter) => get().updateOutlineChapter(chapter),
@@ -2865,6 +2956,9 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
       return;
     }
 
+    set((current) => ({ ownershipGeneration: current.ownershipGeneration + 1 }));
+    const ownership = captureNovelTaskOwnership(`analysis:${nanoid(10)}`);
+
     if (state.session.ai_outline && state.session.ai_stage !== "scan") {
       set((current) => ({
         session: touch({ ...current.session, ai_stage: "outline", status: "outline_ready" }),
@@ -2904,7 +2998,7 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
         cancellable: false,
       }),
       modelStream: { open: true, title: `当前模型：${modelLabel}`, status: "正在确认后端小说 AI 接口版本", responseText: "", traces: [], requestId: `version_${nanoid(8)}` },
-      session: touch({ ...state.session, chunks, ai_chunk_analyses: existingAnalyses, scan_partials: existingScanPartials, validation_reports: [], quality_report: undefined, quality_risk_accepted: false, ai_outline: undefined, chapters: [], scenes: [], characters: [], character_candidates_review: [], asset_suggestions: [], branch_suggestions: [], conflict_points: [], ai_stage: "scan", status: "ai_scanning" }),
+      session: touch({ ...state.session, modelName: modelLabel, chunks, ai_chunk_analyses: existingAnalyses, scan_partials: existingScanPartials, validation_reports: [], quality_report: undefined, quality_risk_accepted: false, ai_outline: undefined, chapters: [], scenes: [], characters: [], character_candidates_review: [], asset_suggestions: [], branch_suggestions: [], conflict_points: [], ai_stage: "scan", status: "ai_scanning" }),
     });
 
     const analyses: NovelAiChunkAnalysis[] = [...existingAnalyses];
@@ -2913,8 +3007,12 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
     try {
       const versionCheckStartedAt = Date.now();
       await verifyNovelAiRoutes();
-      set((current) => ({ progress: markProgressResponse(current.progress, versionCheckStartedAt) }));
+      if (!isNovelTaskOwnershipCurrent(ownership)) return;
+      set((current) => isNovelTaskOwnershipCurrent(ownership)
+        ? ({ progress: markProgressResponse(current.progress, versionCheckStartedAt) })
+        : {});
       for (let index = 0; index < chunks.length; index += 1) {
+        if (!isNovelTaskOwnershipCurrent(ownership)) return;
         const chunk = chunks[index];
         if (analyses.some((analysis) => analysis.chunk_id === chunk.chunk_id)) {
           continue;
@@ -2957,13 +3055,23 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
           partial_timeline: partial.timeline,
           provider_selection: providerSelection,
         }, {
-          onDelta: (delta) => queueModelStreamDelta(set, streamRequestId, delta),
-          onStatus: (status) => set((current) => current.modelStream.requestId === streamRequestId ? ({ modelStream: { ...current.modelStream, status }, progress: markProgressHeartbeat(current.progress) }) : {}),
-          onTrace: (trace) => set((current) => current.modelStream.requestId === streamRequestId ? ({ modelStream: { ...current.modelStream, traces: [...current.modelStream.traces.slice(-14), trace] }, progress: markProgressHeartbeat(current.progress) }) : {}),
-          onCheckpoint: (checkpoint) => applyScanCheckpoint(chunk, checkpoint),
+          onDelta: (delta) => {
+            if (isNovelTaskOwnershipCurrent(ownership)) queueModelStreamDelta(set, streamRequestId, delta);
+          },
+          onStatus: (status) => set((current) => isNovelTaskOwnershipCurrent(ownership)
+            && current.modelStream.requestId === streamRequestId
+            ? ({ modelStream: { ...current.modelStream, status }, progress: markProgressHeartbeat(current.progress) })
+            : {}),
+          onTrace: (trace) => set((current) => isNovelTaskOwnershipCurrent(ownership)
+            && current.modelStream.requestId === streamRequestId
+            ? ({ modelStream: { ...current.modelStream, traces: [...current.modelStream.traces.slice(-14), trace] }, progress: markProgressHeartbeat(current.progress) })
+            : {}),
+          onCheckpoint: (checkpoint) => applyScanCheckpoint(ownership, chunk, checkpoint, modelLabel),
           onFinal: (payload) => {
+            if (!isNovelTaskOwnershipCurrent(ownership)) return;
             flushModelStreamDeltaQueue(set, streamRequestId);
-            set((current) => current.modelStream.requestId === streamRequestId ? ({
+            set((current) => isNovelTaskOwnershipCurrent(ownership)
+              && current.modelStream.requestId === streamRequestId ? ({
               progress: markProgressResponse(current.progress, scanStartedAt),
               modelStream: {
                 ...current.modelStream,
@@ -2973,8 +3081,10 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
             }) : {});
           },
           onError: (message) => {
+            if (!isNovelTaskOwnershipCurrent(ownership)) return;
             flushModelStreamDeltaQueue(set, streamRequestId);
-            set((current) => current.modelStream.requestId === streamRequestId ? ({
+            set((current) => isNovelTaskOwnershipCurrent(ownership)
+              && current.modelStream.requestId === streamRequestId ? ({
               progress: markProgressHeartbeat(current.progress),
               modelStream: {
                 ...current.modelStream,
@@ -2984,6 +3094,7 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
             }) : {});
           },
         });
+        if (!isNovelTaskOwnershipCurrent(ownership)) return;
         appendInspectableResult({
           phase: "scan",
           title: `全文扫描 · 文本块 ${index + 1}/${chunks.length}`,
@@ -2994,10 +3105,11 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
           payload: analysis,
           warnings: analysis.warnings,
         });
-        analyses.push(analysis);
+        analyses.push({ ...analysis, modelName: modelLabel });
         rollingSummary = `${rollingSummary}\n${analysis.summary}`.slice(-2400);
         set((current) => ({ session: touch({ ...current.session, ai_chunk_analyses: [...analyses] }) }));
       }
+      if (!isNovelTaskOwnershipCurrent(ownership)) return;
       const outlineStreamRequestId = `outline_${document.document_id}_${nanoid(8)}`;
       clearModelStreamDeltaQueue();
       set({
@@ -3013,24 +3125,36 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
       });
       activeDetail = `正在合成全书大纲，已完成扫描批次 ${analyses.length}/${chunks.length}`;
       const outlineStartedAt = Date.now();
+      if (!isNovelTaskOwnershipCurrent(ownership)) return;
+      const outlineState = get();
       const outline = await aiBuildNovelOutlineStream({
         document_id: document.document_id,
         title: document.title,
         total_chars: document.total_chars,
         analyses,
-        allow_branch_suggestions: get().session.import_options.allow_branch_suggestions,
-        partial_mainline: get().session.outline_partials.mainline,
-        partial_structure: get().session.outline_partials.structure,
-        partial_index: get().session.outline_partials.index,
+        allow_branch_suggestions: outlineState.session.import_options.allow_branch_suggestions,
+        partial_mainline: outlineState.session.outline_partials.mainline,
+        partial_structure: outlineState.session.outline_partials.structure,
+        partial_index: outlineState.session.outline_partials.index,
         provider_selection: providerSelection,
       }, {
-        onDelta: (delta) => queueModelStreamDelta(set, outlineStreamRequestId, delta),
-        onStatus: (status) => set((current) => current.modelStream.requestId === outlineStreamRequestId ? ({ modelStream: { ...current.modelStream, status }, progress: markProgressHeartbeat(current.progress) }) : {}),
-        onTrace: (trace) => set((current) => current.modelStream.requestId === outlineStreamRequestId ? ({ modelStream: { ...current.modelStream, traces: [...current.modelStream.traces.slice(-14), trace] }, progress: markProgressHeartbeat(current.progress) }) : {}),
-        onCheckpoint: applyOutlineCheckpoint,
+        onDelta: (delta) => {
+          if (isNovelTaskOwnershipCurrent(ownership)) queueModelStreamDelta(set, outlineStreamRequestId, delta);
+        },
+        onStatus: (status) => set((current) => isNovelTaskOwnershipCurrent(ownership)
+          && current.modelStream.requestId === outlineStreamRequestId
+          ? ({ modelStream: { ...current.modelStream, status }, progress: markProgressHeartbeat(current.progress) })
+          : {}),
+        onTrace: (trace) => set((current) => isNovelTaskOwnershipCurrent(ownership)
+          && current.modelStream.requestId === outlineStreamRequestId
+          ? ({ modelStream: { ...current.modelStream, traces: [...current.modelStream.traces.slice(-14), trace] }, progress: markProgressHeartbeat(current.progress) })
+          : {}),
+        onCheckpoint: (checkpoint) => applyOutlineCheckpoint(ownership, checkpoint),
         onFinal: (payload) => {
+          if (!isNovelTaskOwnershipCurrent(ownership)) return;
           flushModelStreamDeltaQueue(set, outlineStreamRequestId);
-          set((current) => current.modelStream.requestId === outlineStreamRequestId ? ({
+          set((current) => isNovelTaskOwnershipCurrent(ownership)
+            && current.modelStream.requestId === outlineStreamRequestId ? ({
             progress: markProgressResponse(current.progress, outlineStartedAt),
             modelStream: {
               ...current.modelStream,
@@ -3039,6 +3163,7 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
           }) : {});
         },
       });
+      if (!isNovelTaskOwnershipCurrent(ownership)) return;
       appendInspectableResult({
         phase: "outline",
         title: "大纲合成 · 全书结构",
@@ -3049,6 +3174,7 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
         warnings: outline.warnings,
       });
       set((current) => {
+        if (!isNovelTaskOwnershipCurrent(ownership)) return {};
         const processing = syncProcessingChapters(current.processing, outline.chapters);
         const outlineSession = {
           ...current.session,
@@ -3076,6 +3202,10 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
         };
       });
     } catch (error) {
+      if (!isNovelTaskOwnershipCurrent(ownership)) {
+        reportFrontendError("editor.novel-import", error, { operation: "ai-analysis-stale-response", ...ownership });
+        return;
+      }
       const summary = reportNovelImportError({
         phase: "AI 全文扫描",
         modelLabel,
@@ -3191,6 +3321,7 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
       ? state.importJob
       : undefined;
     const layout = buildLayout(state.session.session_id, existingJob);
+    const ownership = captureNovelTaskOwnership(layout.importLineId);
     const graphImportMode = resolveNovelGraphImportMode(existingJob);
     const outline = outlineText(state.session);
     const chapters = [...state.session.chapters].sort((a, b) => a.index - b.index);
@@ -3203,6 +3334,7 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
     );
     for (const chapterId of sceneChapterIds) plannedChapterIds.add(chapterId);
     let lastInsertedNodeId = existingJob?.lastInsertedNodeId;
+    let activeSceneCandidateId: string | undefined;
     let activeDetail = "正在准备小说导入蓝图生成";
 
     set({
@@ -3227,6 +3359,7 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
         total: Math.max(1, scenes.length),
         generatedCount: existingJob?.generatedCount ?? 0,
         failedSceneIds: existingJob?.failedSceneIds ?? [],
+        retryCount: existingJob?.retryCount ?? 0,
         skippedSceneIds: existingJob?.skippedSceneIds ?? [],
         lastInsertedNodeId,
         cancelRequested: false,
@@ -3234,7 +3367,7 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
         skipRequested: false,
         startedAt: existingJob?.startedAt ?? startedAt,
       },
-      session: touch({ ...state.session, planned_chapter_ids: [...plannedChapterIds], validation_reports: existingJob ? state.session.validation_reports : [], ai_stage: scenes.length > 0 ? "generate" : "planning", status: scenes.length > 0 ? "blueprint_generating" : "scene_planning" }),
+      session: touch({ ...state.session, modelName: modelLabel, planned_chapter_ids: [...plannedChapterIds], validation_reports: existingJob ? state.session.validation_reports : [], ai_stage: scenes.length > 0 ? "generate" : "planning", status: scenes.length > 0 ? "blueprint_generating" : "scene_planning" }),
     });
 
     try {
@@ -3306,6 +3439,7 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
               }) : {});
             },
           });
+          if (!isNovelTaskOwnershipCurrent(ownership)) return;
           set((current) => ({ progress: markProgressResponse(current.progress, planningStartedAt) }));
           const nextScenes = response.scenes.map((scene, offset) => ({ ...scene, index: planned.length + offset, chapter_id: chapter.chapter_id }));
           planned.push(...nextScenes);
@@ -3408,6 +3542,7 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
           },
         });
         const blueprintStartedAt = Date.now();
+        activeSceneCandidateId = scene.scene_candidate_id;
         const response = await aiAdaptNovelSceneStream({
           scene_candidate: scene,
           known_characters: get().session.characters,
@@ -3439,10 +3574,11 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
                 status: "场景改编失败",
                 responseText: appendModelTranscript(current.modelStream.responseText, `场景改编 ${index + 1}/${scenes.length} 错误`, message),
               },
-              progress: markProgressHeartbeat(current.progress),
+              progress: markProgressResponse(current.progress, blueprintStartedAt),
             }) : {});
           },
         });
+        if (!isNovelTaskOwnershipCurrent(ownership)) return;
         const blueprintResponseMs = Date.now() - blueprintStartedAt;
         const sessionBeforeCharacterMerge = get().session;
         const reviewedCharacters = splitReviewedCharacters(
@@ -3504,6 +3640,7 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
         }
         const adapted: AdaptedScene = {
           ...validation.adaptedScene,
+          modelName: modelLabel,
           scene_beat: backgroundResult.scene,
           warnings: backgroundResult.inserted
             ? [...validation.adaptedScene.warnings, "Inserted an explicit default visual placeholder background; replace it with a final background asset before release."]
@@ -3539,6 +3676,7 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
           },
         }, { mode: graphImportMode });
         const edge = importedNovelLineEdges(layout, [node], graphImportMode, lastInsertedNodeId, index)[0];
+        if (!isNovelTaskOwnershipCurrent(ownership)) return;
         useEditorStore.getState().recordGraphHistory();
         useEditorStore.setState((editor) => {
           const base = graphBaseForImportMode(graphImportMode, editor.nodes, editor.edges);
@@ -3600,7 +3738,8 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
             status: "imported_to_graph",
             ai_stage: "generate",
           }),
-          importJob: current.importJob ? { ...current.importJob, generatedCount: index + 1, lastInsertedNodeId } : undefined,
+          importJob: current.importJob ? { ...current.importJob, generatedCount: index + 1, lastInsertedNodeId,
+            failedSceneIds: current.importJob.failedSceneIds.filter(id => id !== scene.scene_candidate_id) } : undefined,
           progress: createProgressState({
             phase: "blueprint",
             current: index + 1,
@@ -3611,6 +3750,7 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
             cancellable: true,
           }, current.progress),
         }));
+        activeSceneCandidateId = undefined;
       }
       if (get().session.import_options.allow_branch_suggestions) {
         const resolvedBranches = resolveBranchSuggestions({
@@ -3641,6 +3781,10 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
         warnings: current.warnings.includes(finalImportNotice) ? current.warnings : [...current.warnings, finalImportNotice],
       }));
     } catch (error) {
+      if (!isNovelTaskOwnershipCurrent(ownership)) {
+        reportFrontendError("editor.novel-import", error, { operation: "blueprint-generation", ...ownership });
+        return;
+      }
       const summary = reportNovelImportError({
         phase: "蓝图生成",
         modelLabel,
@@ -3652,21 +3796,48 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
       });
       set((current) => ({
         errors: [...current.errors, summary],
-        progress: undefined,
+        progress: current.progress ? { ...current.progress, updatedAt: Date.now(),
+          cancellable: false, detail: summary } : undefined,
         isProcessing: false,
-        importJob: current.importJob ? { ...current.importJob, status: "paused" } : undefined,
+        importJob: current.importJob ? { ...current.importJob, status: "paused",
+          failedSceneIds: activeSceneCandidateId
+            ? [...new Set([...current.importJob.failedSceneIds, activeSceneCandidateId])]
+            : current.importJob.failedSceneIds } : undefined,
       }));
     }
   },
 
   pauseBlueprintGeneration: () => set((state) => state.importJob ? { importJob: { ...state.importJob, pauseRequested: true } } : {}),
   resumeBlueprintGeneration: async () => {
-    set((state) => state.importJob ? { importJob: { ...state.importJob, status: "running", pauseRequested: false } } : {});
+    if (get().isProcessing) return;
+    // Keep paused/cancelled identity until generateBlueprintLine captures it.
+    set((state) => state.importJob ? { importJob: { ...state.importJob, pauseRequested: false,
+      retryCount: (state.importJob.retryCount ?? 0) + (state.errors.length > 0 ? 1 : 0) } } : {});
     await get().generateBlueprintLine();
   },
   skipCurrentScene: () => set((state) => state.importJob ? { importJob: { ...state.importJob, skipRequested: true } } : {}),
   cancelBlueprintGeneration: () => set((state) => state.importJob ? { importJob: { ...state.importJob, cancelRequested: true } } : {}),
 }));
+
+export interface NovelTaskOwnership {
+  projectId: string;
+  sessionId: string;
+  jobId: string;
+  generation: number;
+}
+
+export function captureNovelTaskOwnership(jobId: string): NovelTaskOwnership {
+  const state = useNovelImportStore.getState();
+  return { projectId: useProjectStore.getState().projectId, sessionId: state.session.session_id,
+    jobId, generation: state.ownershipGeneration };
+}
+
+export function isNovelTaskOwnershipCurrent(owner: NovelTaskOwnership): boolean {
+  const state = useNovelImportStore.getState();
+  return useProjectStore.getState().projectId === owner.projectId
+    && novelStoreProjectId === owner.projectId
+    && state.session.session_id === owner.sessionId && state.ownershipGeneration === owner.generation;
+}
 
 let novelPersistenceSyncTimer: number | undefined;
 let syncingNovelPersistence = false;
@@ -3693,7 +3864,7 @@ function buildPersistenceForCurrentState(state: NovelImportStore): NovelPersiste
       inspectableResults: state.inspectableResults,
       errors: state.errors,
       warnings: state.warnings,
-      modelName: getNovelImportModelStatus().label,
+      modelName: state.session.modelName,
     });
   }
   return {
@@ -3709,17 +3880,25 @@ function buildPersistenceForCurrentState(state: NovelImportStore): NovelPersiste
   };
 }
 
-function flushNovelPersistenceSync(): void {
+function flushNovelPersistenceSync(projectId = novelStoreProjectId): void {
   if (syncingNovelPersistence) return;
   const state = useNovelImportStore.getState();
   const next = buildPersistenceForCurrentState(state);
-  const snapshot = JSON.stringify(next);
+  const snapshot = JSON.stringify({ projectId, next });
   if (snapshot === lastNovelPersistenceSnapshot) return;
   lastNovelPersistenceSnapshot = snapshot;
   syncingNovelPersistence = true;
   useNovelImportStore.setState({ persistence: next });
-  useProjectStore.getState().setNovelPersistence(hasNovelPersistenceContent(state) ? next : undefined);
-  persistNovelProcessingState(state.processing);
+  if (useProjectStore.getState().projectId === projectId)
+    useProjectStore.getState().setNovelPersistence(hasNovelPersistenceContent(state) ? next : undefined);
+  persistNovelProcessingState(state.processing, projectId);
+  if (typeof window !== "undefined") {
+    try {
+      window.localStorage.setItem(persistenceKey(projectId), JSON.stringify(next));
+    } catch (error) {
+      reportFrontendError("editor.novel-import", error, { operation: "persist-project-task-cache", projectId });
+    }
+  }
   syncingNovelPersistence = false;
 }
 
@@ -3730,13 +3909,19 @@ function scheduleNovelPersistenceSync(): void {
     return;
   }
   if (novelPersistenceSyncTimer !== undefined) window.clearTimeout(novelPersistenceSyncTimer);
+  const owner = captureNovelTaskOwnership("");
   novelPersistenceSyncTimer = window.setTimeout(() => {
     novelPersistenceSyncTimer = undefined;
+    if (!isNovelTaskOwnershipCurrent(owner)) return;
     flushNovelPersistenceSync();
   }, 350);
 }
 
 useNovelImportStore.subscribe(() => scheduleNovelPersistenceSync());
+useProjectStore.subscribe((current, previous) => {
+  if (current.projectId === previous.projectId) return;
+  useNovelImportStore.getState().hydratePersistence(current.settings.novelPersistence);
+});
 
 if (typeof window !== "undefined") {
   (window as Window & { __AGENTVN_NOVEL_IMPORT_STORE__?: typeof useNovelImportStore }).__AGENTVN_NOVEL_IMPORT_STORE__ = useNovelImportStore;

@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agentvn-editor"
-version = "1.7.0"
+version = "1.9.41"
 dependencies = [
  "hex",
  "serde",
@@ -19,6 +19,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "windows-sys 0.61.2",
  "zip",
 ]
 

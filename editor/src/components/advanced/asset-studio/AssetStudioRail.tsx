@@ -19,6 +19,7 @@ import { assetStudioOperationLabels } from "../../../asset-studio/defaults";
 import type { ImageGenerationJob, ImageGenerationRecipeV1 } from "../../../asset-studio/types";
 import type { GeneratedAssetCandidate } from "../../../asset-generation/session";
 import { RichSelect } from "../../common/RichSelect";
+import { GlassSelectionGroup } from "../../common/GlassSelectionGroup";
 
 type RailTab = "queue" | "results" | "history";
 
@@ -136,21 +137,21 @@ export function AssetStudioRail({
 
   return (
     <aside className="asset-studio-rail" aria-label="生成队列与历史">
-      <div className="asset-studio-rail-tabs" role="tablist" aria-label="生产信息">
-        <button type="button" data-help-key="asset.railQueue" role="tab" aria-selected={tab === "queue"} className={tab === "queue" ? "is-active" : ""} onClick={() => onTabChange("queue")}>
+      <GlassSelectionGroup className="asset-studio-rail-tabs" role="tablist" ariaLabel="生产信息" selectedKey={tab} scrollAxis="x">
+        <button type="button" data-help-key="asset.railQueue" role="tab" aria-selected={tab === "queue"} className={tab === "queue" ? "is-active" : ""} data-glass-selected={tab === "queue"} onClick={() => onTabChange("queue")}>
           <ListOrdered size={16} aria-hidden="true" />
           队列
           {activeJobs.length > 0 && <span>{activeJobs.length}</span>}
         </button>
-        <button type="button" data-help-key="asset.railResults" role="tab" aria-selected={tab === "results"} className={tab === "results" ? "is-active" : ""} onClick={() => onTabChange("results")}>
+        <button type="button" data-help-key="asset.railResults" role="tab" aria-selected={tab === "results"} className={tab === "results" ? "is-active" : ""} data-glass-selected={tab === "results"} onClick={() => onTabChange("results")}>
           <Images size={16} aria-hidden="true" />
           本批结果
         </button>
-        <button type="button" data-help-key="asset.railHistory" role="tab" aria-selected={tab === "history"} className={tab === "history" ? "is-active" : ""} onClick={() => onTabChange("history")}>
+        <button type="button" data-help-key="asset.railHistory" role="tab" aria-selected={tab === "history"} className={tab === "history" ? "is-active" : ""} data-glass-selected={tab === "history"} onClick={() => onTabChange("history")}>
           <History size={16} aria-hidden="true" />
           历史
         </button>
-      </div>
+      </GlassSelectionGroup>
 
       <div className="asset-studio-rail-body">
         {tab === "queue" && (
@@ -165,7 +166,6 @@ export function AssetStudioRail({
               <div className="asset-studio-rail-empty">
                 <ListOrdered size={24} aria-hidden="true" />
                 <strong>队列空闲</strong>
-                <span>新任务会在这里显示阶段与进度。</span>
               </div>
             ) : activeJobs.map((job) => (
               <article

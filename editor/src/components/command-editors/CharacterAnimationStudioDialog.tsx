@@ -7,7 +7,6 @@ import {
   Plus,
   RotateCcw,
   SlidersHorizontal,
-  Sparkles,
   Trash2,
   X,
 } from "lucide-react";
@@ -471,10 +470,10 @@ export function CharacterAnimationStudioDialog({
         kind: "tween",
         phase: "exit",
         duration_ms: 460,
-        easing: "ease-in",
+        easing: "ease-out",
         display_name: "退场淡出",
         keyframes: normalizeKeyframes([
-          { offset: 0, opacity: 1, x: 0, y: 0, scale: 1, easing: "ease-in" },
+          { offset: 0, opacity: 1, x: 0, y: 0, scale: 1, easing: "ease-out" },
           { offset: 1, opacity: 0, x: 42, y: 0, scale: 0.98 },
         ]),
       });
@@ -546,12 +545,7 @@ export function CharacterAnimationStudioDialog({
       >
         <header className="character-animation-studio-header">
           <div>
-            <span className="studio-kicker">
-              <Sparkles size={14} />
-              Adobe 式补间 V1
-            </span>
             <h3 id="character-animation-studio-title">{title}</h3>
-            <p>{targetLabel} 的入场、退场和强调动作可以在这里用关键帧直接调整。</p>
           </div>
           <button type="button" className="studio-icon-button" aria-label="关闭动效工作室" data-help-key="animation.studioCancel" onClick={onClose}>
             <X size={17} />

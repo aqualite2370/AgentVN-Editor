@@ -71,7 +71,7 @@ const nonStoryTags = new Set(["choice", "condition", "modifier", "animation", "e
 const defaultGameIds = new Set(["agentvn_game", "project_local", "verify_game", "agentvn_sample", "sample_game", "untitled"]);
 
 const issueSolutions: Record<string, string> = {
-  entry_scene_missing: "在流程图中把入口节点连接到一个存在的场景，或在项目入口设置中改为现有 scene_id。",
+  entry_scene_missing: "在流程图中把入口节点连接到一个现有场景。",
   scene_id_missing: "打开对应场景卡片，为场景填写稳定且唯一的 scene_id 后重新检查。",
   scene_id_duplicate: "保留其中一个 scene_id，给其余重复场景改成不同的稳定编号。",
   choice_target_missing: "从该选项的连线手柄连接到目标场景，或在选项编辑器里选择一个目标场景。",
@@ -95,6 +95,7 @@ const issueSolutions: Record<string, string> = {
   asset_reference_placeholder: "用最终素材替换该 placeholder，或在素材库中重新生成并确认不是占位资源。",
   loading_animation_video_missing: "为载入动画选择一个已导入的视频素材，或把载入动画模式改回默认模式。",
   loading_animation_images_missing: "为载入动画导入并选择至少一张图片帧，或把载入动画模式改回默认模式。",
+  opening_audio_asset_invalid: "请在素材库中重新选择有效的 BGM、SFX 或 Voice 音频；确认素材类型和 MIME 为 audio/*，并在导出前重新运行预检。",
   scene_background_missing_final: "为该场景补充最终背景素材，或把 background_id 改为素材库中已有的背景。",
   character_sprite_missing: "为该角色导入立绘素材，并在立绘命令中选择正确的 sprite_id。",
   character_portrait_missing: "为该角色导入头像素材，并在对白命令中选择正确的 portrait。",
@@ -255,7 +256,7 @@ function validateEntryScene(script: RuntimeScript): PreflightIssue[] {
       "structure",
       "blocker",
       "entry_scene_missing",
-      `入口场景不存在：当前 entry_scene_id 为 ${script.entry_scene_id || "空值"}，导出后玩家端无法开始播放。请把入口节点连接到一个存在的场景。`,
+      "入口节点尚未连接到有效场景，玩家将无法开始剧情。请把入口节点连接到开场场景。",
       script.entry_scene_id || undefined,
     ),
   ];
@@ -500,6 +501,24 @@ function validateAssetReferences(script: RuntimeScript, assets: AssetRef[], node
       issues.push(issue("assets", "blocker", "loading_animation_images_missing", "载入动画选择了多图模式，但还没有导入图片帧。", "loading_animation"));
     }
   }
+  for (const [index, track] of (script.opening_audio ?? []).entries()) {
+    const asset = assetsById.get(track.asset_id.trim());
+    if (
+      !track.asset_id.trim()
+      || !["bgm", "sfx", "voice"].includes(track.asset_type)
+      || !asset
+      || asset.asset_type !== track.asset_type
+      || !asset.metadata.mime_type?.startsWith("audio/")
+    ) {
+      issues.push(issue(
+        "assets",
+        "blocker",
+        "opening_audio_asset_invalid",
+        `开屏音频第 ${index + 1} 项没有对应的可播放 ${track.asset_type || "audio"} 素材，请重新从素材库选择。`,
+        `opening_audio.${index}`,
+      ));
+    }
+  }
   return issues;
 }
 
@@ -728,10 +747,10 @@ function buildGroups(checks: PreflightCheck[]): PreflightGroup[] {
 export function runExportPreflight(input: ExportPreflightInput): PreflightReport {
   const checks = [
     check("entry_scene", "structure", "入口场景存在", validateEntryScene(input.script)),
-    check("scene_id_unique", "structure", "scene_id 唯一", validateSceneIds(input.nodes)),
+    check("scene_id_unique", "structure", "场景编号唯一", validateSceneIds(input.nodes)),
     check("choice_targets", "structure", "选项目标有效", validateChoiceTargets(input.script, input.nodes, input.edges)),
-    check("asset_references", "assets", "素材引用可追踪", validateAssetReferences(input.script, input.assets, input.nodes)),
-    check("visual_assets", "assets", "视觉资产待补", validateVisualAssetReadiness(input.nodes, input.assets)),
+    check("asset_references", "assets", "素材引用完整", validateAssetReferences(input.script, input.assets, input.nodes)),
+    check("visual_assets", "assets", "视觉素材待补", validateVisualAssetReadiness(input.nodes, input.assets)),
     check("audio_performance_options", "assets", "音频/演出可选项", validateOptionalAudioPerformance(input.nodes, input.assets)),
     check("character_references", "structure", "角色引用存在", validateCharacterReferences(input.script)),
     check("scene_backgrounds", "quality", "场景背景", validateSceneBackgrounds(input.script)),
@@ -739,7 +758,7 @@ export function runExportPreflight(input: ExportPreflightInput): PreflightReport
     check("branch_reachability", "quality", "分支可达性", validateBranchReachability(input.script)),
     check("scene_length", "quality", "场景内容长度", validateSceneLength(input.script)),
     check("opening_performance", "quality", "开局演出精美度", validateOpeningPerformance(input.script)),
-    check("metadata", "metadata", "发布元数据", validateMetadata(input.metadata)),
+    check("metadata", "metadata", "作品信息", validateMetadata(input.metadata)),
   ];
   const allIssues = checks.flatMap((item) => item.issues);
   const blockers = allIssues.filter((item) => item.severity === "blocker");

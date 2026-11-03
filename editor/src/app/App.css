@@ -5,6 +5,7 @@
 .app-root {
   position: relative;
   min-height: 100vh;
+  min-height: 100dvh;
   background: var(--bg);
   overflow: hidden;
 }
@@ -12,6 +13,7 @@
 .app-error-boundary {
   display: grid;
   min-height: 100vh;
+  min-height: 100dvh;
   place-items: center;
   padding: 24px;
   background: var(--bg);
@@ -44,12 +46,15 @@
   --app-view-exit-duration: calc(480ms * var(--motion-scale));
   position: relative;
   min-height: 100vh;
+  min-height: 100dvh;
   overflow: hidden;
   background: var(--bg);
 }
 
 .app-view {
   min-height: 100vh;
+  min-height: 100dvh;
+  min-height: 100dvh;
 }
 
 .app-view.is-active {
@@ -58,13 +63,21 @@
 }
 
 .app-view.is-entering,
-.app-view.is-exiting {
+.app-view.is-exiting,
+.app-view.is-entry-pending {
   position: absolute;
   inset: 0;
   width: 100%;
   min-height: 100vh;
+  min-height: 100dvh;
   pointer-events: none;
   will-change: opacity, transform;
+}
+
+.app-view.is-entry-pending {
+  z-index: 2;
+  opacity: 1;
+  transform: none;
 }
 
 .app-view.is-entering {
@@ -558,6 +571,16 @@
 .app-transition-stage.is-switching .app-view *::before,
 .app-transition-stage.is-switching .app-view *::after {
   transition-property: background-color, border-color, color, box-shadow;
+}
+
+.app-transition-stage.is-switching .app-view.is-entering,
+.app-transition-stage.is-switching .app-view.is-exiting {
+  pointer-events: none;
+}
+
+.app-transition-stage:not(.is-switching) .app-view.is-active {
+  opacity: 1;
+  transform: none;
 }
 
 .app-transition-stage.is-switching .project-home::before,
@@ -1254,9 +1277,9 @@
 @media (prefers-reduced-motion: reduce) {
   .app-transition-stage.is-enter-cartridge,
   .app-transition-stage.is-exit-cartridge {
-    --app-view-enter-duration: 260ms;
-    --app-view-exit-duration: 220ms;
-    --cartridge-transition-duration: 260ms;
+    --app-view-enter-duration: 520ms;
+    --app-view-exit-duration: 440ms;
+    --cartridge-transition-duration: 520ms;
   }
 
   .app-view.is-entering,
@@ -1282,7 +1305,7 @@
   .app-transition-stage.is-exit-cartridge .project-home-header,
   .app-transition-stage.is-exit-cartridge .project-command-panel,
   .app-transition-stage.is-exit-cartridge .recent-projects-panel {
-    animation-duration: 260ms;
+    animation-duration: 520ms;
     animation-delay: 0ms;
     transform: none;
     filter: none;
@@ -1306,7 +1329,7 @@
   .cartridge-core,
   .cartridge-scanline,
   .cartridge-status {
-    animation-duration: 220ms;
+    animation-duration: 440ms;
     animation-delay: 0ms;
     transform: none;
     filter: none;
@@ -1350,9 +1373,9 @@
   .project-entry-dot,
   .project-entry-core,
   .project-entry-ripple {
-    animation-duration: 260ms !important;
+    animation-duration: 520ms !important;
     animation-delay: 0ms !important;
-    transition-duration: 260ms !important;
+    transition-duration: 520ms !important;
   }
 
   .project-entry-loading-overlay:not(.is-closing) .project-entry-orbit,
@@ -1379,7 +1402,9 @@
   --home-panel-strong: color-mix(in srgb, var(--card-bg) 94%, transparent);
   position: relative;
   min-height: 100vh;
+  min-height: 100dvh;
   height: 100vh;
+  height: 100dvh;
   box-sizing: border-box;
   padding: clamp(24px, 4vw, 58px);
   display: grid;
@@ -1439,14 +1464,6 @@
   color: var(--muted);
   line-height: 1.65;
   text-align: right;
-}
-
-.project-home-kicker {
-  color: var(--home-accent);
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
 }
 
 .project-home h1,
@@ -2260,8 +2277,7 @@
 }
 
 @keyframes project-entry-overlay-out {
-  0%,
-  68% {
+  0% {
     opacity: 1;
   }
   100% {
@@ -2415,7 +2431,6 @@ body:has(.project-entry-loading-overlay)::-webkit-scrollbar {
 }
 
 .app-transition-stage.is-project-entry-loading .app-view-home.is-exiting,
-.app-transition-stage.is-project-entry-loading .app-view-editor.is-entering,
 .app-transition-stage.is-project-entry-loading .editor-shell,
 .app-transition-stage.is-project-entry-loading .editor-toolbar,
 .app-transition-stage.is-project-entry-loading .flow-surface,
@@ -2424,11 +2439,6 @@ body:has(.project-entry-loading-overlay)::-webkit-scrollbar {
 .app-transition-stage.is-project-entry-loading .preview-panel,
 .app-transition-stage.is-project-entry-loading .panel-resizer {
   animation: none !important;
-}
-
-.app-transition-stage.is-project-entry-loading .app-view-editor.is-entering {
-  opacity: 1;
-  transform: none;
 }
 
 .project-entry-loading-overlay {
@@ -2948,6 +2958,7 @@ body:has(.project-entry-loading-overlay)::-webkit-scrollbar {
   position: relative;
   width: min(560px, 100%);
   max-height: calc(100vh - 48px);
+  max-height: calc(100dvh - 48px);
   display: grid;
   gap: 16px;
   padding: clamp(16px, 2.2vw, 24px);
@@ -3270,6 +3281,35 @@ body:has(.project-entry-loading-overlay)::-webkit-scrollbar {
   50% {
     opacity: 1;
     transform: scale(1.08);
+  }
+}
+
+/* On stacked or short launchers the content, not the viewport's remaining
+   grid track, owns panel height. One page scroll keeps every entry reachable;
+   the desktop two-column launcher remains fixed when it has enough space. */
+@media (max-width: 960px), (max-height: 760px) {
+  .project-home {
+    grid-template-rows: auto minmax(min-content, auto);
+    overflow-y: auto;
+  }
+
+  .project-home-layout {
+    height: auto;
+  }
+
+  .project-command-panel {
+    min-height: 0;
+    grid-template-rows: auto auto auto;
+  }
+
+  .recent-projects-panel {
+    min-height: 260px;
+    grid-template-rows: auto minmax(180px, auto);
+  }
+
+  .recent-project-list {
+    min-height: 180px;
+    max-height: max(180px, calc(100dvh - 260px));
   }
 }
 

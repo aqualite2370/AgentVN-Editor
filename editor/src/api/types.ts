@@ -118,6 +118,96 @@ export interface AssistantChatResponse {
   citations: AssistantCitationResponse[];
 }
 
+export interface AssistantComponentDraftValue {
+  name: string;
+  description: string;
+  html: string;
+  css: string;
+  screen_id?: "title" | "player" | "game_menu" | "save_load" | "preferences" | "history" | "gallery" | "about" | "help";
+}
+
+export interface AssistantComponentDraftBatchResponse {
+  components?: AssistantComponentDraftValue[];
+  edits?: AssistantElementEditProposalValue[];
+}
+
+export interface AssistantElementEditProposalValue {
+  target_id: string;
+  screen_id: "title" | "player" | "game_menu" | "save_load" | "preferences" | "history" | "gallery" | "about" | "help";
+  label?: string;
+  rect?: Partial<{ x: number; y: number; width: number; height: number }>;
+}
+
+export interface AssistantAuthorizedComponentPayload {
+  id: string;
+  name: string;
+  description: string;
+  html: string;
+  css: string;
+  assets: Array<{ id: string; filename: string; mime_type: string }>;
+}
+
+export interface AssistantAuthorizedElementTargetPayload {
+  target_id: string;
+  screen_id: "title" | "player" | "game_menu" | "save_load" | "preferences" | "history" | "gallery" | "about" | "help";
+  component_type: string;
+  label?: string;
+  rect?: { x: number; y: number; width: number; height: number };
+}
+
+export interface AssistantComponentDraftRequest {
+  user_request: string;
+  agent_tools?: boolean;
+  messages: AssistantChatMessage[];
+  current_draft?: AssistantComponentDraftValue | null;
+  authorized_components?: AssistantAuthorizedComponentPayload[];
+  authorized_assets?: Array<{ id: string; filename: string; mime_type: string }>;
+  authorized_targets?: AssistantAuthorizedElementTargetPayload[];
+  provider_selection?: ProviderSelectionPayload;
+}
+
+export type AssistantComponentDraftResponse =
+  | AssistantComponentDraftValue
+  | AssistantComponentDraftBatchResponse;
+
+export type AssistantCreationProcessStatus =
+  | "queued"
+  | "running"
+  | "cancelling"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface AssistantCreationProcess {
+  id: string;
+  projectId: string;
+  projectTitle: string;
+  conversationId: string;
+  status: AssistantCreationProcessStatus;
+  submittedAt: number;
+  startedAt?: number;
+  finishedAt?: number;
+  errorCode?: string;
+  errorMessage?: string;
+  result?: AssistantComponentDraftResponse;
+  toolEvents?: Array<{ tool: string; status: string; time: number }>;
+  localToolRequest?: {
+    id: string;
+    action: "validate_assistant_draft" | "preview_assistant_draft";
+    draft: AssistantComponentDraftResponse;
+    createdAt: number;
+  };
+}
+
+export interface AssistantCreationLocalToolResult {
+  ok: boolean;
+  status: "validated" | "rendered" | "invalid" | "unavailable" | "error";
+  issues: string[];
+  component_count: number;
+  preview?: Array<{ screen: string; width: number; height: number; components: number;
+    images: number; missing_images: number; overflow: boolean; clipped: boolean }>;
+}
+
 export interface SharedProjectGraphState {
   nodes: EditorProjectFile["nodes"];
   edges: EditorProjectFile["edges"];
@@ -129,6 +219,7 @@ export interface SharedProviderState {
   provider_connections: ProviderConnection[];
   provider_models: ProviderModel[];
   provider_selections: ProviderSelectionState;
+  /** Write-only in shared state. Reads return {}; explicit credential hydration is non-cacheable. */
   provider_secrets: Record<string, string>;
 }
 
@@ -153,6 +244,8 @@ export interface ProjectSummary {
   updated_at: string;
   node_count: number;
   edge_count: number;
+  size_bytes?: number;
+  size_source?: "storage" | "container" | "unknown";
   schema_version?: string;
   has_detail?: boolean;
 }

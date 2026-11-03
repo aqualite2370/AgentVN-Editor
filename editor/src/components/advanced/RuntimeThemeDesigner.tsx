@@ -11,6 +11,8 @@ import {
 } from "../../../../shared/cartridge/uiThemePresets";
 import {
   getDefaultUISkinLayout,
+  isBuiltinTitleButton,
+  resolveTitleButtonStyle,
   validateUISkinHealth,
   validateUISkinLayout,
   type UILayoutComponentStyle,
@@ -21,6 +23,7 @@ import {
 import { useProjectStore } from "../../store/projectStore";
 import { RichSelect, type RichSelectOption } from "../common/RichSelect";
 import { RangeControl } from "../common/RangeControl";
+import { GlassSelectionGroup } from "../common/GlassSelectionGroup";
 
 type PreviewScreen = "title" | "player" | "settings" | "save";
 type ThemeScope = "tokens" | "slider" | UILayoutComponentType;
@@ -67,8 +70,8 @@ const baseColorTokenControls: Array<{ key: keyof UILayoutTokens; label: string; 
   { key: "colorControlText", label: "控件文字", fallback: "#f6f8ff" },
   { key: "colorDialog", label: "对白框", fallback: "#060a14" },
   { key: "colorDialogText", label: "对白文字", fallback: "#f6f8ff" },
-  { key: "colorSpeakerPlate", label: "人物名牌", fallback: "#192234" },
-  { key: "colorSpeakerText", label: "名牌文字", fallback: "#cde1ff" },
+  { key: "colorSpeakerPlate", label: "姓名容器背景", fallback: "#202735" },
+  { key: "colorSpeakerText", label: "姓名容器文字", fallback: "#c4ccd6" },
   { key: "colorChoice", label: "选项背景", fallback: "#82b6ff" },
   { key: "colorChoiceText", label: "选项文字", fallback: "#07111f" },
   { key: "colorQuickMenu", label: "快捷菜单", fallback: "#0d121f" },
@@ -88,16 +91,15 @@ const scopeOptions: Array<{ id: ThemeScope; label: string }> = [
   { id: "tokens", label: "全局主题" },
   { id: "slider", label: "滑杆配色" },
   { id: "dialog_panel", label: "对白框" },
-  { id: "speaker_label", label: "人物名牌" },
+  { id: "speaker_label", label: "姓名容器" },
   { id: "dialog_text", label: "对白正文" },
   { id: "choice_list", label: "选项列表" },
   { id: "quick_menu", label: "快捷菜单" },
   { id: "main_menu_continue_button", label: "继续游戏按钮" },
   { id: "main_menu_start_button", label: "开始/重新开始按钮" },
   { id: "main_menu_save_load_button", label: "存档/读档按钮" },
-  { id: "main_menu_library_button", label: "卡带库按钮" },
   { id: "main_menu_gallery_button", label: "画廊按钮" },
-  { id: "main_menu_settings_button", label: "设置按钮" },
+  { id: "main_menu_settings_button", label: "选项按钮" },
   { id: "main_menu_about_button", label: "关于按钮" },
   { id: "menu_button", label: "菜单按钮" },
   { id: "settings_group", label: "设置组" },
@@ -288,6 +290,13 @@ function previewStyle(tokens: UILayoutTokens): CSSProperties {
 
 function ThemeMiniPreview({ skin, screen = "player", compact = false }: { skin: UISkinLayout; screen?: PreviewScreen; compact?: boolean }) {
   const tokens = skin.tokens ?? {};
+  const titleButtonStyle = (type: UILayoutComponentType): CSSProperties => {
+    const component = skin.screens.find((item) => item.screen_id === "title")?.components.find((item) => item.component_type === type);
+    const style = component ? resolveTitleButtonStyle(component) : undefined;
+    return { backgroundColor: style?.backgroundColor ?? "transparent", color: style?.color ?? "#f6f8ff",
+      borderColor: style?.borderColor ?? "transparent", borderWidth: style?.borderWidth ?? 0,
+      borderRadius: style?.borderRadius ?? 0, boxShadow: "none" };
+  };
   const choiceStyle = firstComponentStyle(skin, "choice_list");
   const style = {
     ...previewStyle(tokens),
@@ -303,8 +312,8 @@ function ThemeMiniPreview({ skin, screen = "player", compact = false }: { skin: 
         {(screen === "title" || compact) && (
           <div className="runtime-theme-preview-title">
             <strong>AgentVN</strong>
-            <span className="runtime-theme-preview-button">开始游戏</span>
-            <span className="runtime-theme-preview-button">设置</span>
+            <span className="runtime-theme-preview-button" style={titleButtonStyle("main_menu_start_button")}>开始游戏</span>
+            <span className="runtime-theme-preview-button" style={titleButtonStyle("main_menu_settings_button")}>设置</span>
           </div>
         )}
         {(screen === "player" || compact) && (
@@ -316,7 +325,7 @@ function ThemeMiniPreview({ skin, screen = "player", compact = false }: { skin: 
             </div>
             <div className="runtime-theme-preview-dialog">
               <span className="runtime-theme-preview-speaker">角色名</span>
-              <p>这里是主题预览对白。控件颜色、字体和名牌会随当前方案实时变化。</p>
+              <p>雨声渐渐停了。</p>
             </div>
             <div className="runtime-theme-preview-choices">
               <span className="runtime-theme-preview-choice">继续前进</span>
@@ -468,6 +477,7 @@ export function RuntimeThemeDesigner() {
 
   function updateStyle(patch: Partial<UILayoutComponentStyle>) {
     if (selectedScope === "tokens" || selectedScope === "slider") return;
+    if (isBuiltinTitleButton({ component_type: selectedScope })) return;
     setDraft((current) => {
       const tokenPatch = stylePatchToRuntimeTokens(selectedScope, patch);
       if (tokenPatch) {
@@ -479,6 +489,7 @@ export function RuntimeThemeDesigner() {
   }
 
   function resetScope() {
+    if (selectedScope !== "tokens" && selectedScope !== "slider" && isBuiltinTitleButton({ component_type: selectedScope })) return;
     if (selectedScope === "tokens") {
       setDraft((current) => applyRuntimeThemeTokens(current, { ...getDefaultUISkinLayout().tokens }));
       return;
@@ -504,7 +515,7 @@ export function RuntimeThemeDesigner() {
 
   function restoreDefaultTheme() {
     setSelectedPresetId(defaultRuntimeThemePresetId);
-    setDraft(getDefaultUISkinLayout());
+    setDraft((current) => applyRuntimeThemeTokens(current, getDefaultUISkinLayout().tokens));
   }
 
   function saveTheme() {
@@ -519,13 +530,14 @@ export function RuntimeThemeDesigner() {
     <section className="runtime-theme-designer">
       <header className="runtime-theme-header">
         <div>
-          <span className="panel-kicker">工具/设置 &gt; 客户端主题</span>
           <h3>客户端主题</h3>
           <p>{isDirty ? "主题有未保存修改，保存后会写入导出的 ui/layout.json；玩家客户端只读取这里导出的配色。" : "当前主题已保存。"}</p>
         </div>
         <div className="row-actions">
-          <button type="button" className={previewScreen === "player" ? "is-active" : ""} data-help-key="theme.previewScreen" onClick={() => setPreviewScreen("player")}><Monitor size={16} />对白</button>
-          <button type="button" className={previewScreen === "settings" ? "is-active" : ""} data-help-key="theme.previewScreen" onClick={() => setPreviewScreen("settings")}><Smartphone size={16} />设置</button>
+          <GlassSelectionGroup className="runtime-theme-header-preview-switch" role="group" ariaLabel="顶部预览屏幕" selectedKey={previewScreen}>
+            <button type="button" className={previewScreen === "player" ? "is-active" : ""} data-glass-selected={previewScreen === "player"} aria-pressed={previewScreen === "player"} data-help-key="theme.previewScreen" onClick={() => setPreviewScreen("player")}><Monitor size={16} />对白</button>
+            <button type="button" className={previewScreen === "settings" ? "is-active" : ""} data-glass-selected={previewScreen === "settings"} aria-pressed={previewScreen === "settings"} data-help-key="theme.previewScreen" onClick={() => setPreviewScreen("settings")}><Smartphone size={16} />设置</button>
+          </GlassSelectionGroup>
           <button type="button" data-help-key="theme.restoreDefault" onClick={restoreDefaultTheme}><RotateCcw size={16} />恢复默认</button>
           <button type="button" data-help-key="theme.save" disabled={!canSaveTheme} onClick={saveTheme}><Save size={16} />保存主题</button>
         </div>
@@ -573,13 +585,13 @@ export function RuntimeThemeDesigner() {
         </aside>
 
         <main className="runtime-theme-preview-panel">
-          <div className="runtime-theme-preview-toolbar">
+          <GlassSelectionGroup className="runtime-theme-preview-toolbar" selectedKey={previewScreen}>
             {previewScreens.map((screen) => (
-              <button key={screen.id} type="button" className={previewScreen === screen.id ? "is-active" : ""} data-help-key="theme.previewScreen" onClick={() => setPreviewScreen(screen.id)}>
+              <button key={screen.id} type="button" className={previewScreen === screen.id ? "is-active" : ""} data-glass-selected={previewScreen === screen.id} data-help-key="theme.previewScreen" onClick={() => setPreviewScreen(screen.id)}>
                 {screen.label}
               </button>
             ))}
-          </div>
+          </GlassSelectionGroup>
           <ThemeMiniPreview skin={draft} screen={previewScreen} />
         </main>
 
@@ -588,7 +600,6 @@ export function RuntimeThemeDesigner() {
             <Type size={17} />
             <div>
               <strong>自定义</strong>
-              <small>选择全局主题或具体控件，调整玩家客户端的背景、文字、控件和边框配色。</small>
             </div>
           </header>
 
@@ -602,7 +613,9 @@ export function RuntimeThemeDesigner() {
             />
           </label>
 
-          {selectedScope === "tokens" ? (
+          {selectedScope !== "tokens" && selectedScope !== "slider" && isBuiltinTitleButton({ component_type: selectedScope }) ? (
+            <p className="inline-note" data-testid="title-button-layout-only-note">标题按钮默认纯文字。请到“选项 → 游戏客户端 → 标题主页”设置按钮外观；此处的主题不会覆盖客户端布局中的明确设置。</p>
+          ) : selectedScope === "tokens" ? (
             <>
               <details className="runtime-theme-fieldset" open>
                 <summary>基础与控件颜色</summary>
@@ -689,7 +702,7 @@ export function RuntimeThemeDesigner() {
           )}
 
           <div className="runtime-theme-inspector-actions">
-            <button type="button" data-help-key="theme.resetScope" onClick={resetScope}><RotateCcw size={16} />重置当前控件</button>
+            <button type="button" data-help-key="theme.resetScope" disabled={selectedScope !== "tokens" && selectedScope !== "slider" && isBuiltinTitleButton({ component_type: selectedScope })} onClick={resetScope}><RotateCcw size={16} />重置当前控件</button>
           </div>
         </aside>
       </div>

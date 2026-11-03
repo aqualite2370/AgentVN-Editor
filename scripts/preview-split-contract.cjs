@@ -1,0 +1,11 @@
+const fs = require("fs");
+const path = require("path");
+const root = path.resolve(__dirname, "..");
+const source = fs.readFileSync(path.join(root, "editor/src/components/editor/VisualNovelEditor.tsx"), "utf8");
+const css = fs.readFileSync(path.join(root, "editor/src/styles/layout.css"), "utf8");
+if (!source.includes("const previewSplitDefault = 0.4")) throw new Error("默认预览比例不是 40%");
+if (!css.includes("--preview-split-ratio: 40%")) throw new Error("CSS 默认预览比例不是 40%");
+if (!source.includes('localStorage.getItem(previewSplitStorageKey)')) throw new Error("未读取已保存比例");
+if (!source.includes("previewSplitMinimum = 0.35") || !source.includes("previewSplitMaximum = 0.65")) throw new Error("比例边界错误");
+if (!css.includes(".preview-splitter,\n.panel-resizer")) throw new Error("两个分隔条未共享视觉 token");
+console.log("preview split contract: PASS");

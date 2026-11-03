@@ -2,7 +2,7 @@ export const CARTRIDGE_FORMAT_VERSION = "1.0.0";
 export const MANIFEST_VERSION = "1.0.0";
 export const GALLERY_VERSION = "1.0.0";
 export const CHECKSUM_VERSION = "1.0.0";
-export const SUPPORTED_RUNTIME_VERSION = "0.4.0";
+export const SUPPORTED_RUNTIME_VERSION = "0.27.0";
 
 export const CARTRIDGE_LIMITS = {
   maxPackageSizeMB: 2048,

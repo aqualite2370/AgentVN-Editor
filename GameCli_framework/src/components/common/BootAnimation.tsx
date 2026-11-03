@@ -38,6 +38,12 @@ export function BootCircleLoader({ complete = false, onComplete }: BootCircleLoa
   }, []);
 
   useEffect(() => {
+    if (!complete || resolvedRef.current) return;
+    const timer = window.setTimeout(resolveAtCycleBoundary, 1800);
+    return () => window.clearTimeout(timer);
+  }, [complete, resolveAtCycleBoundary]);
+
+  useEffect(() => {
     if (!complete || !onComplete) return;
     const media = window.matchMedia("(prefers-reduced-motion: reduce)");
     if (!media.matches) return;
@@ -61,12 +67,19 @@ export function BootCircleLoader({ complete = false, onComplete }: BootCircleLoa
 interface BootAnimationProps extends BootCircleLoaderProps {
   animation?: LoadingAnimationConfig;
   assetUrls?: Record<string, string>;
+  presentation?: "card" | "fullscreen";
+  onCycleComplete?: () => void;
+  onError?: (message: string) => void;
 }
 
-export function BootAnimation({ animation, assetUrls = {}, complete = false, onComplete }: BootAnimationProps) {
+export function BootAnimation({ animation, assetUrls = {}, complete = false, onComplete, onCycleComplete, onError, presentation = "card" }: BootAnimationProps) {
   const [frameIndex, setFrameIndex] = useState(0);
   const [mediaAspectRatio, setMediaAspectRatio] = useState<number>();
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const errorRef = useRef(onError);
+  errorRef.current = onError;
   const customCompleteRef = useRef<number>();
+  const customCycleRef = useRef(false);
   const imageIds = animation?.kind === "image_sequence" ? animation.image_asset_ids.filter(Boolean) : [];
   const imageUrls = useMemo(() => imageIds.map((assetId) => toRuntimeAssetUrl(assetUrls[assetId])).filter((url): url is string => Boolean(url)), [assetUrls, imageIds]);
   const videoUrl = animation?.kind === "video" ? toRuntimeAssetUrl(assetUrls[animation.video_asset_id]) : undefined;
@@ -74,7 +87,26 @@ export function BootAnimation({ animation, assetUrls = {}, complete = false, onC
   const hasCustomAnimation = Boolean(videoUrl || imageUrls.length > 0);
 
   useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !videoUrl) return;
+    let disposed = false;
+    // React StrictMode replays effects. Reattach the source and resume after
+    // its cleanup rather than leaving the replayed element paused/source-less.
+    if (video.getAttribute("src") !== videoUrl) video.src = videoUrl;
+    void video.play().catch(() => {
+      if (!disposed) errorRef.current?.("开屏视频无法解码或播放，请检查视频素材格式后重新导出。");
+    });
+    return () => {
+      disposed = true;
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+    };
+  }, [videoUrl]);
+
+  useEffect(() => {
     setFrameIndex(0);
+    customCycleRef.current = false;
   }, [animation]);
 
   useEffect(() => {
@@ -82,8 +114,8 @@ export function BootAnimation({ animation, assetUrls = {}, complete = false, onC
   }, [animation, frameIndex, videoUrl, imageUrls.length]);
 
   useEffect(() => {
-    if (!hasCustomAnimation || !complete || !onComplete) return;
-    customCompleteRef.current = window.setTimeout(onComplete, bootLoaderSettleMs);
+    if (!hasCustomAnimation || !complete) return;
+    customCompleteRef.current = window.setTimeout(() => onComplete?.(), bootLoaderSettleMs);
     return () => {
       if (customCompleteRef.current) window.clearTimeout(customCompleteRef.current);
     };
@@ -97,22 +129,42 @@ export function BootAnimation({ animation, assetUrls = {}, complete = false, onC
     return () => window.clearInterval(interval);
   }, [frameDurationMs, hasCustomAnimation, imageUrls.length]);
 
+  useEffect(() => {
+    if (!hasCustomAnimation || imageUrls.length === 0 || customCycleRef.current) return;
+    const timer = window.setTimeout(() => {
+      if (customCycleRef.current) return;
+      customCycleRef.current = true;
+      onCycleComplete?.();
+    }, imageUrls.length * frameDurationMs);
+    return () => window.clearTimeout(timer);
+  }, [frameDurationMs, hasCustomAnimation, imageUrls.length, onCycleComplete]);
+
   const customAnimationStyle = (mediaAspectRatio && Number.isFinite(mediaAspectRatio)
     ? { "--boot-animation-aspect-ratio": String(mediaAspectRatio) }
     : undefined) as CSSProperties | undefined;
+  const mediaClassName = `custom-loading-animation${presentation === "fullscreen" ? " is-fullscreen" : ""}${complete ? " is-complete" : ""}`;
 
   if (videoUrl) {
     return (
-      <div className={`custom-loading-animation${complete ? " is-complete" : ""}`} style={customAnimationStyle} aria-hidden="true">
+      <div className={mediaClassName} style={customAnimationStyle} aria-hidden="true">
         <video
+          ref={videoRef}
           src={videoUrl}
           autoPlay
           muted
-          loop
+          loop={false}
           playsInline
           onLoadedMetadata={(event) => {
             const { videoWidth, videoHeight } = event.currentTarget;
             if (videoWidth > 0 && videoHeight > 0) setMediaAspectRatio(videoWidth / videoHeight);
+          }}
+          onEnded={() => {
+            if (customCycleRef.current) return;
+            customCycleRef.current = true;
+            onCycleComplete?.();
+          }}
+          onError={() => {
+            onError?.("开屏视频无法解码或播放，请检查视频素材格式后重新导出。");
           }}
         />
       </div>
@@ -121,7 +173,7 @@ export function BootAnimation({ animation, assetUrls = {}, complete = false, onC
 
   if (imageUrls.length > 0) {
     return (
-      <div className={`custom-loading-animation${complete ? " is-complete" : ""}`} style={customAnimationStyle} aria-hidden="true">
+      <div className={mediaClassName} style={customAnimationStyle} aria-hidden="true">
         <img
           src={imageUrls[frameIndex % imageUrls.length]}
           alt=""
@@ -129,6 +181,7 @@ export function BootAnimation({ animation, assetUrls = {}, complete = false, onC
             const { naturalWidth, naturalHeight } = event.currentTarget;
             if (naturalWidth > 0 && naturalHeight > 0) setMediaAspectRatio(naturalWidth / naturalHeight);
           }}
+          onError={() => onError?.("开屏图片无法加载，请检查图片素材是否仍存在并重新导出。")}
         />
       </div>
     );

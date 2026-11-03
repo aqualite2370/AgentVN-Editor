@@ -8,7 +8,7 @@ export async function parseVnCart(file: File): Promise<CartridgePackage> {
   return {
     manifest: cartridge.manifest as unknown as GameManifest,
     script: cartridge.script as unknown as RuntimeScript,
-    gallery: cartridge.gallery.items.map((item) => ({ item_id: item.item_id, title: item.title, asset_id: item.asset_id, unlocked: false })),
+    gallery: cartridge.gallery.items.map((item) => ({ item_id: item.item_id, title: item.title, description: item.description, asset_id: item.asset_id, anchor_id: item.anchor_id ?? item.item_id, scene_id: item.scene_id, command_index: item.command_index, unlocked: false })),
     uiSkin: cartridge.uiSkin,
     assetUrls: cartridge.assetBlobUrls,
     uiAssetUrls: cartridge.uiAssetBlobUrls,

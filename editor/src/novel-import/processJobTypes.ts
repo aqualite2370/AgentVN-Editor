@@ -46,6 +46,7 @@ export interface NovelProcessPhaseProgress {
   updatedAt?: string | null;
   etaMs?: number | null;
   blockingReason?: string | null;
+  progressBasis?: string;
 }
 
 export interface NovelProcessQualityIssue {

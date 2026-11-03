@@ -3,8 +3,8 @@ export const runtimeAnimationSettledClass = "runtime-animation-settled";
 const textSurfaceAnimationNames = new Set([
   "dialog-rise",
   "choice-fade-in",
+  "choice-fade-in-reduced",
   "runtime-hint-pop",
-  "game-entry-fade",
   "runtime-screen-enter",
 ]);
 

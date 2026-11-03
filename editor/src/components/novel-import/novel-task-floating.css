@@ -1,0 +1,154 @@
+/* One explicit stack: workspaces (<=1250), task surfaces, modal confirmations. */
+.novel-task-mini-entry {
+  position: fixed;
+  inset: 0 auto auto 0;
+  z-index: 1260 !important;
+  width: min(140px, calc(100dvw - 24px));
+  min-width: 0;
+  height: 88px;
+  min-height: 0;
+  display: block;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  border-radius: 12px;
+  animation: none;
+  transition: none;
+}
+.novel-task-mini-entry[data-ready=false],.novel-task-mini-entry[data-suppressed=true],
+.novel-task-mini-entry[data-card-hidden=true] { visibility: hidden; }
+.novel-task-mini-entry:hover,.novel-task-mini-entry:focus-visible {
+  border: 0;
+  box-shadow: none;
+}
+.novel-task-card-material {
+  position: relative;
+  height: 100%;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-rows: 24px 34px 4px;
+  gap: 4px;
+  padding: 8px 7px;
+  border: 1px solid var(--task-line);
+  border-radius: 12px;
+  background: linear-gradient(160deg, color-mix(in srgb,var(--task-accent) 9%,var(--surface-2)),var(--surface));
+  color: var(--ink);
+  box-shadow: 0 12px 32px color-mix(in srgb,var(--shadow-color,#000) 36%,transparent);
+}
+.novel-task-card-grip,.novel-task-card-open,.novel-task-card-reset,.novel-task-card-close {
+  min-height: 0;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  box-shadow: none;
+  color: var(--ink);
+  transition: transform calc(120ms * var(--motion-scale,1)) var(--ease-ui-out),
+    opacity calc(120ms * var(--motion-scale,1)) var(--ease-ui-out);
+}
+.novel-task-card-grip {
+  display: flex;
+  gap: 3px;
+  justify-content: flex-start;
+  margin-right: 26px;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.novel-task-card-grip strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.novel-task-card-grip svg { flex-shrink: 0; color: var(--muted); }
+.is-dragging .novel-task-card-grip { cursor: grabbing; }
+.novel-task-card-open { display: grid; grid-template-columns: 14px minmax(0,1fr); column-gap: 4px; font-size: 12px; text-align: left; margin-right: 22px; }
+.novel-task-card-open > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.novel-task-card-open svg { color: var(--task-accent); }
+.novel-task-card-open small { grid-column: 1 / -1; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.novel-task-card-progress { overflow: hidden; border-radius: 4px; background: var(--line); }
+.novel-task-card-progress span { display: block; height: 4px; background: var(--task-accent); transform-origin: left; }
+.novel-task-card-reset,.novel-task-card-close { position: absolute; right: 5px; width: 22px; height: 22px; color: var(--muted); }
+.novel-task-card-reset { top: 40px; }
+.novel-task-card-close { top: 9px; }
+.novel-task-position-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.novel-task-position-error {
+  position: absolute;
+  inset: auto 0 calc(100% + 8px);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--task-line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 12px;
+}
+.novel-task-position-error span { min-width: 0; overflow-wrap: anywhere; }
+.novel-task-position-error button { flex-shrink: 0; min-height: 28px; padding: 3px 8px; }
+.novel-task-card-open:active,.novel-task-card-reset:active,.novel-task-card-close:active { transform: scale(.97); opacity: .86; }
+@media (hover:hover) and (pointer:fine) {
+  .novel-task-card-open:hover,.novel-task-card-reset:hover,.novel-task-card-close:hover { color: var(--ink-strong); }
+}
+.novel-task-layer { z-index: 1261 !important; }
+.novel-task-layer .novel-task-workbench {
+  inset: 12px 12px 12px auto;
+  width: min(1080px, calc(100% - 24px));
+  height: calc(100% - 24px);
+  max-height: calc(100% - 24px);
+  min-height: 0;
+  border: 1px solid var(--task-line);
+  border-radius: 12px;
+  animation: none;
+}
+.novel-task-layer .novel-task-backdrop {
+  background: color-mix(in srgb, var(--bg) 16%, transparent);
+  -webkit-backdrop-filter: blur(2.5px) saturate(.88);
+  backdrop-filter: blur(2.5px) saturate(.88);
+  animation: none;
+  transition: none;
+}
+.novel-task-layer.is-closing .novel-task-backdrop { animation: none; }
+.novel-task-layer .novel-task-header { padding: 10px 12px; gap: 8px; }
+.novel-task-layer .novel-task-title-block h2 { white-space: nowrap; }
+.novel-task-layer .novel-task-body { min-width: 0; min-height: 0; }
+.novel-task-layer .novel-task-actions { padding: 8px 12px; }
+.novel-task-layer .novel-task-actions > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.novel-task-layer .novel-task-actions button { width: auto; min-height: 36px; padding-inline: 10px; }
+.novel-task-layer .novel-task-action-message { white-space: normal; overflow-wrap: anywhere; }
+.novel-task-layer .novel-token-panel { will-change: auto; }
+.novel-task-layer .novel-token-view-content {
+  height: 176px;
+  min-height: 0;
+  overflow: auto;
+  animation: none;
+}
+.novel-task-layer .novel-task-segmented button {
+  transition: transform calc(120ms * var(--motion-scale,1)) var(--ease-ui-out) !important;
+  --control-focus-enter-duration: 120ms;
+  --control-focus-leave-duration: 120ms;
+}
+@media (max-height:480px) {
+  .novel-task-layer .novel-task-header { grid-template-columns: minmax(0,1fr) auto; padding: 6px 10px; }
+  .novel-task-layer .novel-task-title-block .panel-kicker,
+  .novel-task-layer .novel-task-title-block small { display: none; }
+  .novel-task-layer .novel-task-title-block h2 { font-size: 16px; }
+  .novel-task-layer .novel-task-body { padding: 8px; }
+  .novel-task-layer .novel-token-view-content { height: 130px; }
+}
+body .operation-result-backdrop { z-index: 2400; }
+@media (prefers-reduced-motion:reduce) {
+  .novel-task-card-open,.novel-task-card-reset,.novel-task-card-close { transition: opacity 80ms var(--ease-ui-out); transform: none !important; }
+  .novel-task-layer .novel-task-backdrop { transition: none; }
+}

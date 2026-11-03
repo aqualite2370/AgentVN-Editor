@@ -13,8 +13,15 @@ import type { RuntimeAnimationEffect, SpriteState } from "../../types/settings";
 import { spriteEffectFor, spriteEffectTargetsCharacter, useRuntimeAnimation } from "./runtimeAnimation";
 import { sanitizeSpriteLayer, spriteLayerZIndex } from "../../../../shared/cartridge/spriteLayer";
 import { DEFAULT_SPRITE_SCALE, sanitizeSpriteScale } from "../../../../shared/cartridge/spriteScale";
+import { sanitizeSpriteOffsetX, sanitizeSpriteOffsetY } from "../../../../shared/cartridge/spritePlacement";
 import type { SpeakerFocusConfig } from "../../../../shared/cartridge/types";
 import { DEFAULT_SPEAKER_FOCUS } from "../../../../shared/cartridge/speakerFocus";
+import {
+  orderedVisibleSprites,
+  resolveSpriteSlotIndices,
+  resolveSpriteSlotLayout,
+  type SpriteStageSize,
+} from "../../engine/spriteStageLayout";
 
 type SpriteTransitionPhase = "entering" | "present" | "exiting";
 
@@ -30,13 +37,6 @@ const spriteExitHoldMs = 620;
 function classForPosition(position?: string | null): string {
   if (position === "left" || position === "right" || position === "center") return position;
   return "center";
-}
-
-function spritePositionRank(position?: string | null): number {
-  if (position === "left") return 0;
-  if (position === "center") return 1;
-  if (position === "right") return 2;
-  return 3;
 }
 
 function spriteSignature(sprite: SpriteState): string {
@@ -73,6 +73,8 @@ interface SpriteVisualFrame {
   characterId: string;
   spriteId: string;
   position?: string | null;
+  offsetX?: number | null;
+  offsetY?: number | null;
   scale?: number | null;
 }
 
@@ -92,6 +94,8 @@ type SpriteSwitchStyle = CSSProperties & {
 
 type SpriteFrameStyle = CSSProperties & {
   "--sprite-base-scale": string;
+  "--sprite-offset-x-px": string;
+  "--sprite-offset-y-px": string;
 };
 
 function currentSpriteVisual(sprite: SpriteState): SpriteVisualFrame {
@@ -99,6 +103,8 @@ function currentSpriteVisual(sprite: SpriteState): SpriteVisualFrame {
     characterId: sprite.character_id,
     spriteId: sprite.sprite_id,
     position: sprite.position,
+    offsetX: sprite.offset_x,
+    offsetY: sprite.offset_y,
     scale: sprite.scale,
   };
 }
@@ -110,6 +116,8 @@ function previousSpriteVisual(sprite: SpriteState): SpriteVisualFrame | undefine
     characterId: sprite.character_id,
     spriteId: replacement.previous_sprite_id,
     position: replacement.previous_position,
+    offsetX: replacement.previous_offset_x,
+    offsetY: replacement.previous_offset_y,
     scale: replacement.previous_scale,
   };
 }
@@ -119,6 +127,8 @@ function spriteVisualSignature(visual: SpriteVisualFrame): string {
     visual.characterId,
     visual.spriteId,
     classForPosition(visual.position),
+    sanitizeSpriteOffsetX(visual.offsetX),
+    sanitizeSpriteOffsetY(visual.offsetY),
     sanitizeSpriteScale(visual.scale, DEFAULT_SPRITE_SCALE),
   ].join("|");
 }
@@ -150,16 +160,22 @@ function SpriteReplacementFrame({
   visual,
   role,
   transitionKind,
+  stageSize,
   onAnimationEnd,
 }: {
   visual: SpriteVisualFrame;
   role: "previous" | "current";
   transitionKind?: NonNullable<SpriteState["replacement"]>["transition"]["kind"];
+  stageSize: SpriteStageSize;
   onAnimationEnd?: (event: AnimationEvent<HTMLDivElement>) => void;
 }) {
   const url = assetResolver.resolveSprite(visual.spriteId);
+  const offsetX = sanitizeSpriteOffsetX(visual.offsetX);
+  const offsetY = sanitizeSpriteOffsetY(visual.offsetY);
   const style: SpriteFrameStyle = {
     "--sprite-base-scale": String(sanitizeSpriteScale(visual.scale, DEFAULT_SPRITE_SCALE)),
+    "--sprite-offset-x-px": `${stageSize.width * offsetX / 100}px`,
+    "--sprite-offset-y-px": `${stageSize.height * offsetY / 100}px`,
   };
   return (
     <div
@@ -168,14 +184,17 @@ function SpriteReplacementFrame({
       data-character-id={visual.characterId}
       data-sprite-id={visual.spriteId}
       data-sprite-position={classForPosition(visual.position)}
+      data-sprite-offset-x={offsetX}
+      data-sprite-offset-y={offsetY}
       data-sprite-scale={style["--sprite-base-scale"]}
       aria-hidden={role === "previous" ? "true" : undefined}
       onAnimationEnd={onAnimationEnd}
-      style={style}
     >
-      {url
-        ? <img className="sprite-visual" src={url} alt={role === "current" ? visual.characterId : ""} />
-        : <div className="sprite-placeholder">{visual.spriteId}</div>}
+      <div className="sprite-placement-frame" style={style}>
+        {url
+          ? <img className="sprite-visual" src={url} alt={role === "current" ? visual.characterId : ""} />
+          : <div className="sprite-placeholder">{visual.spriteId}</div>}
+      </div>
     </div>
   );
 }
@@ -190,6 +209,8 @@ function SpriteSlot({
   speakingZIndex,
   phase,
   slotStyle,
+  stageSize,
+  presentationMode,
 }: {
   sprite: SpriteState;
   effect?: RuntimeAnimationEffect;
@@ -200,6 +221,8 @@ function SpriteSlot({
   speakingZIndex: number;
   phase: SpriteTransitionPhase;
   slotStyle?: CSSProperties;
+  stageSize: SpriteStageSize;
+  presentationMode: "animate" | "settle";
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const isFocusTarget = focusEffect ? spriteEffectTargetsCharacter(focusEffect, sprite.character_id, selectedCharacterId) : false;
@@ -208,7 +231,11 @@ function SpriteSlot({
   const incomingSignature = spriteReplacementSignature(sprite);
   const observedSignatureRef = useRef(incomingSignature);
   const consumedReplacementKeyRef = useRef(sprite.replacement?.key);
-  const [presentation, setPresentation] = useState<SpriteReplacementPresentation>(() => createSpritePresentation(sprite, 0));
+  const [presentation, setPresentation] = useState<SpriteReplacementPresentation>(() => (
+    presentationMode === "settle"
+      ? { current: currentSpriteVisual(sprite), generation: 0 }
+      : createSpritePresentation(sprite, 0)
+  ));
   const style = {
     ...slotStyle,
     ...(isSpeaking ? { zIndex: speakingZIndex } : {}),
@@ -235,7 +262,7 @@ function SpriteSlot({
     setPresentation((current) => {
       const nextGeneration = current.generation + 1;
       const replacementKey = sprite.replacement?.key;
-      const shouldAnimate = Boolean(
+      const shouldAnimate = presentationMode !== "settle" && Boolean(
         sprite.replacement
         && sprite.replacement.transition.kind !== "none"
         && replacementKey !== consumedReplacementKeyRef.current,
@@ -256,7 +283,17 @@ function SpriteSlot({
     sprite.replacement,
     sprite.scale,
     sprite.sprite_id,
+    presentationMode,
   ]);
+
+  useLayoutEffect(() => {
+    if (presentationMode !== "settle") return;
+    observedSignatureRef.current = incomingSignature;
+    setPresentation((current) => ({
+      current: currentSpriteVisual(sprite),
+      generation: current.generation + 1,
+    }));
+  }, [incomingSignature, presentationMode, sprite]);
 
   useEffect(() => {
     if (!presentation.previous || !presentation.transition || !presentation.transitionDeadline) return;
@@ -331,6 +368,7 @@ function SpriteSlot({
                 visual={presentation.previous}
                 role="previous"
                 transitionKind={transitionKind}
+                stageSize={stageSize}
               />
             )}
             <SpriteReplacementFrame
@@ -338,6 +376,7 @@ function SpriteSlot({
               visual={presentation.current}
               role="current"
               transitionKind={transitionKind}
+              stageSize={stageSize}
               onAnimationEnd={handleCurrentAnimationEnd}
             />
           </div>
@@ -347,22 +386,6 @@ function SpriteSlot({
   );
 }
 
-function orderedVisibleSprites(sprites: Record<string, SpriteState>, spriteOrder?: string[]): SpriteState[] {
-  const visibleByCharacter = new Map(Object.values(sprites).filter((sprite) => sprite.visible).map((sprite) => [sprite.character_id, sprite]));
-  const ordered = (spriteOrder ?? [])
-    .map((characterId) => visibleByCharacter.get(characterId))
-    .filter((sprite): sprite is SpriteState => Boolean(sprite));
-  const orderedIds = new Set(ordered.map((sprite) => sprite.character_id));
-  const missing = [...visibleByCharacter.values()]
-    .filter((sprite) => !orderedIds.has(sprite.character_id))
-    .sort((a, b) => {
-      const rankDelta = spritePositionRank(a.position) - spritePositionRank(b.position);
-      if (rankDelta !== 0) return rankDelta;
-      return a.character_id.localeCompare(b.character_id, "zh-Hans-CN");
-    });
-  return [...ordered, ...missing];
-}
-
 export function SpriteLayer({
   sprites,
   spriteOrder = [],
@@ -370,6 +393,7 @@ export function SpriteLayer({
   focusEffect,
   speakingCharacterId,
   speakerFocus = DEFAULT_SPEAKER_FOCUS,
+  presentationMode = "animate",
 }: {
   sprites: Record<string, SpriteState>;
   spriteOrder?: string[];
@@ -377,7 +401,10 @@ export function SpriteLayer({
   focusEffect?: RuntimeAnimationEffect;
   speakingCharacterId?: string;
   speakerFocus?: SpeakerFocusConfig;
+  presentationMode?: "animate" | "settle";
 }) {
+  const layerRef = useRef<HTMLDivElement | null>(null);
+  const [stageSize, setStageSize] = useState<SpriteStageSize>({ width: 0, height: 0, uiScale: 1 });
   const visibleSprites = useMemo(() => orderedVisibleSprites(sprites, spriteOrder), [sprites, spriteOrder]);
   const selectedCharacterId = visibleSprites.length > 0 ? visibleSprites[visibleSprites.length - 1].character_id : undefined;
   const keyIndexRef = useRef(0);
@@ -385,9 +412,33 @@ export function SpriteLayer({
     visibleSprites.map((sprite) => ({
       key: `${sprite.character_id}:${spriteSignature(sprite)}:${keyIndexRef.current++}`,
       sprite,
-      phase: "entering",
+      phase: presentationMode === "settle" ? "present" : "entering",
     }))
   );
+
+  useLayoutEffect(() => {
+    const layer = layerRef.current;
+    if (!layer) return;
+    const updateSize = () => {
+      const rect = layer.getBoundingClientRect();
+      const rawUiScale = Number.parseFloat(getComputedStyle(layer).getPropertyValue("--runtime-ui-scale"));
+      const uiScale = Number.isFinite(rawUiScale) && rawUiScale > 0 ? rawUiScale : 1;
+      setStageSize((current) => (
+        Math.abs(current.width - rect.width) < 0.5 && Math.abs(current.height - rect.height) < 0.5
+          && Math.abs(current.uiScale - uiScale) < 0.001
+          ? current
+          : { width: rect.width, height: rect.height, uiScale }
+      ));
+    };
+    updateSize();
+    const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(updateSize);
+    observer?.observe(layer);
+    window.addEventListener("resize", updateSize);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", updateSize);
+    };
+  }, []);
 
   useEffect(() => {
     setRenderedSprites((current) => {
@@ -425,13 +476,13 @@ export function SpriteLayer({
         nextRendered.push({
           key: `${sprite.character_id}:${spriteSignature(sprite)}:${keyIndexRef.current++}`,
           sprite,
-          phase: "entering",
+          phase: presentationMode === "settle" ? "present" : "entering",
         });
       });
 
       return nextRendered;
     });
-  }, [visibleSprites]);
+  }, [presentationMode, visibleSprites]);
 
   useEffect(() => {
     if (!renderedSprites.some((sprite) => sprite.phase === "exiting")) return undefined;
@@ -447,11 +498,13 @@ export function SpriteLayer({
     spriteLayerZIndex(undefined, false),
   ) + 2;
   const orderedPresentKeys = presentSprites.map((item) => item.key);
+  const presentSlotIndices = resolveSpriteSlotIndices(presentSprites.map((item) => item.sprite));
   const activeSlotCount = Math.max(1, orderedPresentKeys.length);
   const activeSlotWidth = Math.max(18, Math.min(34, 86 / activeSlotCount));
 
   return (
     <div
+      ref={layerRef}
       className={`sprite-layer${activeSlotCount > 1 ? " has-multiple-sprites" : ""}`}
       style={{
         "--sprite-active-count": String(activeSlotCount),
@@ -460,16 +513,23 @@ export function SpriteLayer({
     >
       {renderedSprites.map((item) => {
         const effect = spriteEffectFor(effects, item.sprite.character_id, selectedCharacterId);
-        const slotIndex = orderedPresentKeys.indexOf(item.key);
-        const slotCenter = slotIndex >= 0 && activeSlotCount > 1
-          ? 7 + (86 / activeSlotCount) * (slotIndex + 0.5)
+        const slotIndex = presentSlotIndices.get(item.sprite.character_id);
+        const slotLayout = slotIndex !== undefined && stageSize.width > 0 && stageSize.height > 0
+          ? resolveSpriteSlotLayout({
+              stage: stageSize,
+              spriteCount: activeSlotCount,
+              spriteIndex: slotIndex,
+              position: item.sprite.position,
+            })
           : undefined;
-        const placementStyle = slotCenter === undefined ? {} : {
-          left: `${slotCenter}%`,
+        const placementStyle = slotLayout ? {
+          left: `${slotLayout.left}px`,
           right: "auto",
-          width: "var(--sprite-slot-width)",
-          transform: "translateX(-50%)",
-        };
+          bottom: `${slotLayout.bottom}px`,
+          width: `${slotLayout.width}px`,
+          height: `${slotLayout.height}px`,
+          transform: "none",
+        } : {};
         return (
           <SpriteSlot
             key={item.key}
@@ -481,6 +541,8 @@ export function SpriteLayer({
             speakingCharacterId={speakingCharacterId}
             speakerFocus={speakerFocus}
             speakingZIndex={speakingZIndex}
+            stageSize={stageSize}
+            presentationMode={presentationMode}
             slotStyle={{
               ...placementStyle,
               zIndex: spriteLayerZIndex(item.sprite.layer, item.phase === "exiting"),

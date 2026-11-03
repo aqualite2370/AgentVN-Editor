@@ -30,10 +30,9 @@ export function CameraCommandEditor({
           <Clapperboard size={18} aria-hidden="true" />
           <span>
             <strong>结构化运镜</strong>
-            <small>在独立工作室里调整构图、节奏和真实演出预览。</small>
           </span>
         </div>
-        <button type="button" onClick={() => setStudioCommand(structuredClone(command))}>打开运镜工作室</button>
+        <button data-help-key="editor.control" type="button" onClick={() => setStudioCommand(structuredClone(command))}>打开运镜工作室</button>
         {studioCommand && (
           <CameraStudioDialog
             command={studioCommand}
@@ -67,11 +66,11 @@ export function CameraCommandEditor({
       </header>
       <label>
         旧版动作名称
-        <input value={command.action} onChange={(event) => onChange({ ...command, action: event.target.value })} />
+        <input data-help-key="editor.control" value={command.action} onChange={(event) => onChange({ ...command, action: event.target.value })} />
       </label>
       <label>
         旧版参数
-        <textarea
+        <textarea data-help-key="editor.control"
           value={JSON.stringify(command.params, null, 2)}
           onChange={(event) => {
             try {
@@ -84,11 +83,11 @@ export function CameraCommandEditor({
         />
       </label>
       <label className="camera-check-row">
-        <input type="checkbox" checked={command.blocking} onChange={(event) => onChange({ ...command, blocking: event.target.checked })} />
+        <input data-help-key="editor.control" type="checkbox" checked={command.blocking} onChange={(event) => onChange({ ...command, blocking: event.target.checked })} />
         等旧版效果结束再继续剧情
       </label>
       {convertible ? (
-        <button type="button" onClick={() => setStudioCommand(convertible)}>预览并转换为新版运镜</button>
+        <button data-help-key="editor.control" type="button" onClick={() => setStudioCommand(convertible)}>预览并转换为新版运镜</button>
       ) : (
         <p className="camera-command-warning">这个旧效果包含无法可靠还原的设置，请保留旧版播放。</p>
       )}

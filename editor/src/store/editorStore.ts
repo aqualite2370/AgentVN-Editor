@@ -16,6 +16,9 @@ import {
   type AnimationNodeMigrationMode,
 } from "../utils/animationNodeMigration";
 import { reportFrontendError } from "../../../shared/logging/frontendErrorLogger";
+import { normalizeBgmCommandFields } from "../../../shared/cartridge/bgmTransition";
+import { normalizeCameraCommandFields } from "../../../shared/camera/cameraMotion";
+import { normalizeOpeningAudioTracks } from "../utils/openingAudio";
 
 export type EditorNoticeTone = "info" | "success" | "warning" | "error";
 type RecentNodeEffectSource = "manual" | "ai" | "imported" | "duplicate" | "declutter";
@@ -53,6 +56,8 @@ export interface EditorNotice {
 interface EditorStoreState {
   nodes: EditorNode[];
   edges: EditorEdge[];
+  /** Local ownership fence; never serialized into a project or player script. */
+  projectLoadGeneration: number;
   selectedNodeId?: string;
   selectedEdgeId?: string;
   selectionRevision: number;
@@ -96,7 +101,10 @@ interface EditorStoreActions {
   migrateAllAnimationNodes: () => AnimationNodeBatchMigrationResult | undefined;
   applyDialogPortraitToCharacter: (characterId: string, portrait: string) => number;
   applyDialogTextStyleToCharacter: (characterId: string, style: NonNullable<DialogCommand["dialog_style"]>) => number;
-  applyNarrationStyleToAll: (style: NonNullable<NarrationCommand["dialog_style"]>) => number;
+  applyNarrationStyleToAll: (
+    style: NarrationCommand["dialog_style"],
+    narrationStyle: NonNullable<NarrationCommand["narration_style"]>,
+  ) => number;
   updateMemoryMode: (memoryMode: MemoryMode, nodeId?: string) => void;
   beginGeneration: (nodeId: string) => { ok: true; token: string } | { ok: false; activeNodeId: string };
   endGeneration: (token: string) => void;
@@ -160,6 +168,16 @@ function hasFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
+function normalizeEditorCommand(command: GameCommand): GameCommand {
+  if (command.type === "bgm") {
+    return { ...command, ...normalizeBgmCommandFields(command as unknown as { action?: unknown; fade_ms?: unknown }) };
+  }
+  if (command.type === "camera") {
+    return normalizeCameraCommandFields(command);
+  }
+  return command;
+}
+
 function sanitizeNode(node: EditorNode, index: number): EditorNode | undefined {
   if (!node || typeof node.id !== "string" || !node.data || typeof node.data.nodeKind !== "string") {
     return undefined;
@@ -167,11 +185,18 @@ function sanitizeNode(node: EditorNode, index: number): EditorNode | undefined {
 
   const x = hasFiniteNumber(node.position?.x) ? node.position.x : 240 + index * 80;
   const y = hasFiniteNumber(node.position?.y) ? node.position.y : 180 + index * 60;
+  const scene = node.data.scene
+    ? {
+        ...node.data.scene,
+        commands: node.data.scene.commands.map(normalizeEditorCommand),
+      }
+    : node.data.scene;
   return {
     ...node,
     position: { x, y },
     data: {
       ...node.data,
+      scene,
       label: typeof node.data.label === "string" ? node.data.label : "未命名节点",
       description: typeof node.data.description === "string" ? node.data.description : "",
       aiSettings: node.data.aiSettings ?? {
@@ -183,6 +208,7 @@ function sanitizeNode(node: EditorNode, index: number): EditorNode | undefined {
       previewState: node.data.previewState ?? { currentCommandIndex: 0, isPlaying: false },
       editorMeta: node.data.editorMeta ?? { collapsedInspectorSections: [], source: "manual" },
       loadingAnimation: node.data.nodeKind === "start" ? node.data.loadingAnimation ?? { kind: "default" } : node.data.loadingAnimation,
+      openingAudio: node.data.nodeKind === "start" ? normalizeOpeningAudioTracks(node.data.openingAudio) : node.data.openingAudio,
     },
   };
 }
@@ -208,10 +234,20 @@ function sanitizeNodes(nodes: EditorNode[] | undefined): EditorNode[] {
   return sanitized.length > 0 ? sanitized : structuredClone(initialNodes);
 }
 
-function sanitizeEdges(edges: EditorEdge[] | undefined, nodes: EditorNode[]): EditorEdge[] {
+export function sanitizeImportedEdges(edges: EditorEdge[] | undefined, nodes: EditorNode[]): EditorEdge[] {
   const nodeIds = new Set(nodes.map((node) => node.id));
+  const seen = new Set<string>();
   return (Array.isArray(edges) ? edges : []).filter((edge) => {
-    return typeof edge.id === "string" && nodeIds.has(edge.source) && nodeIds.has(edge.target);
+    if (typeof edge.id !== "string" || !nodeIds.has(edge.source) || !nodeIds.has(edge.target)) return false;
+    const fingerprint = [
+      edge.source,
+      edge.target,
+      edge.sourceHandle || "default",
+      edge.targetHandle || "default",
+    ].join("|");
+    if (seen.has(fingerprint)) return false;
+    seen.add(fingerprint);
+    return true;
   });
 }
 
@@ -307,13 +343,14 @@ function choicesForBranchSource(node: EditorNode | undefined): Array<{ choice_id
 }
 
 function uniqueGeneratedScene(scene: SceneBeat, nodes: EditorNode[]): SceneBeat {
+  const normalizedScene = { ...scene, commands: scene.commands.map(normalizeEditorCommand) };
   const usedSceneIds = new Set(nodes.map((node) => node.data.scene?.scene_id).filter((id): id is string => Boolean(id)));
-  const rawBase = scene.scene_id?.trim() || `scene_ai_${nanoid(6)}`;
+  const rawBase = normalizedScene.scene_id?.trim() || `scene_ai_${nanoid(6)}`;
   const base = rawBase.replace(/[^A-Za-z0-9_-]/g, "_").replace(/^_+/, "") || `scene_ai_${nanoid(6)}`;
-  if (!usedSceneIds.has(base)) return { ...scene, scene_id: base };
+  if (!usedSceneIds.has(base)) return { ...normalizedScene, scene_id: base };
   let index = 2;
   while (usedSceneIds.has(`${base}_${index}`)) index += 1;
-  return { ...scene, scene_id: `${base}_${index}` };
+  return { ...normalizedScene, scene_id: `${base}_${index}` };
 }
 
 function syncChoiceTargetForConnection(nodes: EditorNode[], connection: Connection): EditorNode[] {
@@ -733,6 +770,7 @@ export const useEditorStore = create<EditorStoreState & EditorStoreActions>()(
   (set, get) => ({
       nodes: initialNodes,
       edges: initialEdges,
+      projectLoadGeneration: 0,
       selectedNodeId: "node_scene_opening",
       selectionRevision: 0,
       viewport: { x: 0, y: 0, zoom: 1 },
@@ -744,7 +782,7 @@ export const useEditorStore = create<EditorStoreState & EditorStoreActions>()(
 
       setNodes: (nodes) => set((state) => {
         const sanitizedNodes = sanitizeNodes(nodes);
-        return withGraphHistory(state, { nodes: sanitizedNodes, edges: sanitizeEdges(state.edges, sanitizedNodes), dirty: true });
+        return withGraphHistory(state, { nodes: sanitizedNodes, edges: sanitizeImportedEdges(state.edges, sanitizedNodes), dirty: true });
       }),
       setEdges: (edges) => set((state) => withGraphHistory(state, { edges, dirty: true })),
       onNodesChange: (changes) => set((state) => {
@@ -887,13 +925,14 @@ export const useEditorStore = create<EditorStoreState & EditorStoreActions>()(
         }),
       updateSceneCommands: (nodeId, commands) =>
         set((state) => {
-          const choiceIds = commands
+          const normalizedCommands = commands.map(normalizeEditorCommand);
+          const choiceIds = normalizedCommands
             .filter((command) => command.type === "choice")
             .flatMap((command) => command.choices.map((choice) => choice.choice_id));
           return withGraphHistory(state, {
             nodes: state.nodes.map((node) => {
             if (node.id !== nodeId || !node.data.scene) return node;
-            const nextScene = { ...node.data.scene, commands };
+            const nextScene = { ...node.data.scene, commands: normalizedCommands };
             const editorMeta = node.data.editorMeta?.source === "ai_generated"
               ? { ...node.data.editorMeta, source: "ai_edited" as const }
               : node.data.editorMeta;
@@ -1003,17 +1042,20 @@ export const useEditorStore = create<EditorStoreState & EditorStoreActions>()(
         });
         return changedCount;
       },
-      applyNarrationStyleToAll: (style) => {
-        const narrationStyle: NonNullable<NarrationCommand["dialog_style"]> = {
-          background_asset_id: style.background_asset_id ?? null,
-          background_fit: style.background_fit ?? null,
-          theme_color: style.theme_color ?? null,
-          text_color: style.text_color ?? null,
-          font_size: style.font_size ?? null,
-          font_weight: style.font_weight ?? null,
-          font_style: style.font_style ?? null,
-        };
-        const serializedStyle = JSON.stringify(narrationStyle);
+      applyNarrationStyleToAll: (style, narrationStyle) => {
+        const normalizedDialogStyle: NarrationCommand["dialog_style"] = style
+          ? {
+              background_asset_id: style.background_asset_id ?? null,
+              background_fit: style.background_fit ?? null,
+              theme_color: style.theme_color ?? null,
+              text_color: style.text_color ?? null,
+              font_size: style.font_size ?? null,
+              font_weight: style.font_weight ?? null,
+              font_style: style.font_style ?? null,
+            }
+          : null;
+        const nextDialogStyleMode = normalizedDialogStyle ? "manual" as const : "inherit" as const;
+        const serializedStyle = JSON.stringify(normalizedDialogStyle);
         let changedCount = 0;
         set((state) => {
           const nodes = state.nodes.map((node) => {
@@ -1021,10 +1063,19 @@ export const useEditorStore = create<EditorStoreState & EditorStoreActions>()(
             let nodeChanged = false;
             const commands = node.data.scene.commands.map((command) => {
               if (command.type !== "narration") return command;
-              if (command.dialog_style_mode === "manual" && JSON.stringify(command.dialog_style ?? null) === serializedStyle) return command;
+              if (
+                (command.narration_style ?? "dialog") === narrationStyle
+                && (command.dialog_style_mode ?? (command.dialog_style ? "manual" : "inherit")) === nextDialogStyleMode
+                && JSON.stringify(command.dialog_style ?? null) === serializedStyle
+              ) return command;
               changedCount += 1;
               nodeChanged = true;
-              return { ...command, dialog_style_mode: "manual" as const, dialog_style: { ...narrationStyle } };
+              return {
+                ...command,
+                narration_style: narrationStyle,
+                dialog_style_mode: nextDialogStyleMode,
+                dialog_style: normalizedDialogStyle ? { ...normalizedDialogStyle } : null,
+              };
             });
             if (!nodeChanged) return node;
             const editorMeta = node.data.editorMeta?.source === "ai_generated"
@@ -1152,10 +1203,11 @@ export const useEditorStore = create<EditorStoreState & EditorStoreActions>()(
         set((state) => {
           const nodes = state.nodes.map((node) => {
             if (node.id !== nodeId || node.data.nodeKind !== "scene" || !node.data.scene) return node;
+            const normalizedScene = { ...scene, commands: scene.commands.map(normalizeEditorCommand) };
             const nextScene: SceneBeat = {
-              ...scene,
-              scene_id: options.preserveSceneId === false ? scene.scene_id : node.data.scene.scene_id,
-              chapter: options.preserveChapter === false ? scene.chapter : node.data.scene.chapter,
+              ...normalizedScene,
+              scene_id: options.preserveSceneId === false ? normalizedScene.scene_id : node.data.scene.scene_id,
+              chapter: options.preserveChapter === false ? normalizedScene.chapter : node.data.scene.chapter,
             };
             replacedNode = {
               ...node,
@@ -1332,8 +1384,9 @@ export const useEditorStore = create<EditorStoreState & EditorStoreActions>()(
       importProject: (project) => {
         const nodes = sanitizeNodes(project.nodes);
         const repaired = !Array.isArray(project.nodes) || nodes.length !== project.nodes.length || project.nodes.some((node) => nodeNeedsRepair(node));
-        const edges = sanitizeEdges(project.edges, nodes);
-        set({
+        const edges = sanitizeImportedEdges(project.edges, nodes);
+        set((state) => ({
+          projectLoadGeneration: state.projectLoadGeneration + 1,
           nodes,
           edges: edges.length > 0 || !isInitialNodeSet(nodes) ? edges : structuredClone(initialEdges),
           viewport: sanitizeViewport(project.viewport),
@@ -1342,7 +1395,7 @@ export const useEditorStore = create<EditorStoreState & EditorStoreActions>()(
           dirty: repaired || edges.length !== project.edges.length || (edges.length === 0 && isInitialNodeSet(nodes)),
           graphHistory: emptyGraphHistory(),
           lastError: repaired ? { message: "已修复不完整的同步节点，避免画布白屏。", tone: "warning", source: "项目导入" } : undefined,
-        });
+        }));
       },
       importProjectAsRoute: (project) => {
         const state = get();
@@ -1381,7 +1434,7 @@ export const useEditorStore = create<EditorStoreState & EditorStoreActions>()(
           }, 5200);
         };
         if (typeof window !== "undefined" && route.nodes.length > 80) {
-          const firstBatchSize = 24;
+          const firstBatchSize = 12;
           const nextBatchSize = 24;
           const appendedEdgeIds = new Set<string>();
           const pickEdgesForAvailableNodes = (nodeIds: Set<string>) => {
@@ -1453,7 +1506,8 @@ export const useEditorStore = create<EditorStoreState & EditorStoreActions>()(
         return { nodes: route.nodes.length, edges: route.edges.length, selectedNodeId: route.selectedNodeId };
       },
       resetGraph: () =>
-        set({
+        set((state) => ({
+          projectLoadGeneration: state.projectLoadGeneration + 1,
           nodes: arrangedInitialNodes(),
           edges: structuredClone(initialEdges),
           selectedNodeId: "node_scene_opening",
@@ -1465,7 +1519,7 @@ export const useEditorStore = create<EditorStoreState & EditorStoreActions>()(
           graphHistory: emptyGraphHistory(),
           lastError: undefined,
           generationDebug: undefined,
-        }),
+        })),
       exportProject: (metadata) => ({
         schema_version: "1.1.0",
         project_id: metadata.projectId,
@@ -1481,8 +1535,16 @@ export const useEditorStore = create<EditorStoreState & EditorStoreActions>()(
         updated_at: new Date().toISOString(),
       }),
       exportScript: () => buildRuntimeScript(get().nodes, get().edges),
-      setViewport: (viewport) => set({ viewport }),
-      setFlowSurfaceSize: (flowSurfaceSize) => set({ flowSurfaceSize }),
+      setViewport: (viewport) => {
+        const current = get().viewport;
+        if (current.x === viewport.x && current.y === viewport.y && current.zoom === viewport.zoom) return;
+        set({ viewport });
+      },
+      setFlowSurfaceSize: (flowSurfaceSize) => {
+        const current = get().flowSurfaceSize;
+        if (current.width === flowSurfaceSize.width && current.height === flowSurfaceSize.height) return;
+        set({ flowSurfaceSize });
+      },
       setNotice: (notice, tone = "info", detail) => {
         const normalized = normalizeStoreNotice(notice, tone, detail);
         logStoreNotice(normalized);

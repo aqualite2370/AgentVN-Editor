@@ -12,6 +12,7 @@ import uvicorn
 
 from app.main import app
 from app.core.error_logging import configure_error_logging, log_exception
+from app.db.migrate import migrate_from_environment
 
 
 logger = logging.getLogger("agentvn.backend.launcher")
@@ -27,6 +28,14 @@ def main() -> None:
         data_dir = Path(os.environ.get("AGENTVN_BACKEND_DATA_DIR", "./data"))
         data_dir.mkdir(parents=True, exist_ok=True)
         os.environ["DATABASE_PATH"] = str(data_dir / "vn_engine.db")
+
+    migration = migrate_from_environment()
+    if migration.get("status") == "MERGED":
+        logger.warning(
+            "Merged legacy editor databases: %s conflicts=%s",
+            migration.get("sources", []),
+            migration.get("conflicts", []),
+        )
 
     uvicorn.run(
         app,

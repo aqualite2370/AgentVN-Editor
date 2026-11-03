@@ -35,6 +35,8 @@ export interface ChunkRecord {
 
 export interface NovelProcessJob {
   jobId: string;
+  /** The provider used to create this backend job, independent of UI selection. */
+  modelName?: string;
   bookId: string;
   selectedChapterIds: string[];
   totalChapters: number;

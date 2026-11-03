@@ -5,6 +5,8 @@ export interface AdvancedToolsRequest {
   tab: AdvancedToolsTab;
   title?: string;
   message?: string;
+  /** Navigate as an options workspace, rather than an auxiliary overlay. */
+  workspaceNavigation?: boolean;
   assetStudioContext?: AssetStudioOpenContext & {
     onApplyAsset?: (asset: GeneratedAssetRecord) => void;
   };

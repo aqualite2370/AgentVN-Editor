@@ -15,6 +15,7 @@ import {
   type LivePreviewRuntimeMessage,
   type PreviewStartSpec,
 } from "../../../../shared/preview/livePreviewProtocol";
+import { resolveLivePreviewPatchSceneId } from "../../../../shared/preview/livePreviewPatch";
 import { applyProjectRuntimeSettingsToScript } from "../../utils/exportScript";
 import { manifestAssetsFromProjectAssets } from "../../utils/projectAssets";
 import {
@@ -23,6 +24,7 @@ import {
 } from "../../utils/previewEntryPaths";
 import type { AssetRef } from "../../types/assets";
 import { RuntimePreviewMask } from "../common/RuntimePreviewMask";
+import { GlassSelectionGroup } from "../common/GlassSelectionGroup";
 import { useRuntimePreviewTransition } from "../../hooks/useRuntimePreviewTransition";
 
 type RuntimePreviewScreen = "title_menu" | "playing" | "settings" | "save_load" | "history" | "gallery" | "about";
@@ -94,16 +96,19 @@ function liveScene(scene: NonNullable<ReturnType<typeof useEditorStore.getState>
 export function PreviewPanel({
   collapsed,
   resizing,
+  deferRuntimeMount = false,
   onCollapsedChange,
 }: {
   collapsed: boolean;
   resizing: boolean;
+  deferRuntimeMount?: boolean;
   onCollapsedChange: (collapsed: boolean) => void;
 }) {
   const [phase, setPhase] = useState<"idle" | "opening" | "closing">("idle");
   const [activeScreen, setActiveScreen] = useState<RuntimePreviewScreen>("playing");
   const [status, setStatus] = useState<PreviewStatus>("idle");
   const [message, setMessage] = useState("展开后会连接内嵌 GameCLI 实时预览。");
+  const [uiSkinCompatibilityWarnings, setUISkinCompatibilityWarnings] = useState<string[]>([]);
   const phaseTimerRef = useRef<number | null>(null);
   const handshakeTimerRef = useRef<number | null>(null);
   const handshakeRetryRef = useRef(0);
@@ -125,8 +130,8 @@ export function PreviewPanel({
   const pendingPresentationRef = useRef(false);
   const pendingSceneIdsRef = useRef(new Set<string>());
   const wasResizingRef = useRef(false);
-  const activeSceneIdRef = useRef<string>();
-  const replaySourceLabelRef = useRef<string>();
+  const activeSceneIdRef = useRef<string | undefined>(undefined);
+  const replaySourceLabelRef = useRef<string | undefined>(undefined);
   const [activeSceneId, setActiveSceneId] = useState<string>();
   const [routePickerOpen, setRoutePickerOpen] = useState(false);
   const [routePickerCandidates, setRoutePickerCandidates] = useState<PreviewEntryPathCandidate[]>([]);
@@ -344,6 +349,7 @@ export function PreviewPanel({
       projectAssets: manifestAssetsFromProjectAssets(currentProject.assetManifest),
       projectAssetRefs: currentProject.assetManifest,
       uiSkin: currentProject.settings.runtimeUILayout,
+      uiLayoutProfiles: currentProject.settings.runtimeUILayoutProfiles,
       packageAppearance: currentProject.settings.packageAppearance,
       characterDialogStyles: currentProject.settings.characterDialogStyles,
     };
@@ -360,9 +366,10 @@ export function PreviewPanel({
       const currentProject = useProjectStore.getState();
       const data = await createEditorLivePreviewData(liveExportInput(script));
       if (attempt !== initializationAttemptRef.current || !iframeRef.current?.contentWindow) return;
+      setUISkinCompatibilityWarnings(data.uiSkinCompatibilityWarnings);
       const requestId = nextRequestId("init");
       const runId = nextRunId();
-      const sceneId = selectedSceneId() ?? data.script.entry_scene_id;
+      const sceneId = data.script.entry_scene_id;
       postLiveMessage({
         type: "agentvn.live-preview.init",
         protocolVersion: LIVE_PREVIEW_PROTOCOL_VERSION,
@@ -397,6 +404,12 @@ export function PreviewPanel({
     active: !collapsed,
     reducedMotion: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false,
   });
+
+  useEffect(() => {
+    if (status === "error" && previewTransition.phase !== "ready") {
+      previewTransition.failTransition();
+    }
+  }, [previewTransition.failTransition, previewTransition.phase, status]);
 
   useEffect(() => {
     if (collapsed) {
@@ -467,10 +480,12 @@ export function PreviewPanel({
           pendingFullScriptRef.current = false;
           pendingSceneIdsRef.current.clear();
           const currentProject = useProjectStore.getState();
-          const script = fullScript ? currentLiveScript() : undefined;
+          const latestScript = currentLiveScript();
+          const script = fullScript ? latestScript : undefined;
           const presentation = includePresentation && script
             ? await createEditorLivePreviewData(liveExportInput(script))
             : undefined;
+          if (presentation) setUISkinCompatibilityWarnings(presentation.uiSkinCompatibilityWarnings);
           const editor = useEditorStore.getState();
           const scenes = !fullScript
             ? editor.nodes
@@ -480,7 +495,7 @@ export function PreviewPanel({
             : undefined;
           const requestId = nextRequestId("patch");
           const runId = nextRunId();
-          const sceneId = selectedSceneId() ?? script?.entry_scene_id;
+          const sceneId = resolveLivePreviewPatchSceneId(latestScript, activeSceneIdRef.current);
           postLiveMessage({
             type: "agentvn.live-preview.patch",
             protocolVersion: LIVE_PREVIEW_PROTOCOL_VERSION,
@@ -608,6 +623,13 @@ export function PreviewPanel({
     if (collapsed || !liveInitializedRef.current) return;
     const sceneId = selectedNode?.data.scene?.scene_id;
     if (!sceneId) return;
+    let script: RuntimeScript;
+    try {
+      script = currentLiveScript();
+    } catch {
+      return;
+    }
+    if (!script.scenes.some((scene) => scene.scene_id === sceneId)) return;
     const requestId = nextRequestId("scene");
     const runId = nextRunId();
     postLiveMessage({
@@ -632,7 +654,12 @@ export function PreviewPanel({
 
   useEffect(() => {
     scheduleLivePatch({ fullScript: true });
-  }, [project.settings.characterDialogStyles, scheduleLivePatch]);
+  }, [
+    project.settings.characterDialogStyles,
+    project.settings.defaultDialogPresentation,
+    project.settings.characterDialogPresentations,
+    scheduleLivePatch,
+  ]);
 
   useEffect(() => {
     scheduleLivePatch({ includePresentation: true });
@@ -667,6 +694,18 @@ export function PreviewPanel({
         clearHandshakeTimer();
         liveInitializedRef.current = false;
         replaySourceLabelRef.current = undefined;
+        const failedSceneId = event.data.sceneId;
+        if (failedSceneId && failedSceneId === activeSceneIdRef.current) {
+          try {
+            const latestScript = currentLiveScript();
+            if (resolveLivePreviewPatchSceneId(latestScript, failedSceneId) !== failedSceneId) {
+              activeSceneIdRef.current = undefined;
+              setActiveSceneId(undefined);
+            }
+          } catch {
+            // Keep the original preview error when the current editor graph cannot be exported.
+          }
+        }
         setStatus("error");
         setMessage(event.data.message);
       } else if (event.data.type === "agentvn.live-preview.ready") {
@@ -680,14 +719,16 @@ export function PreviewPanel({
         replaySourceLabelRef.current = undefined;
         setMessage(replaySourceLabel
           ? `已从“${replaySourceLabel}”重载：${event.data.sceneId ?? "当前场景"}`
-          : `实时渲染：${event.data.sceneId ?? "当前场景"}`);
+          : uiSkinCompatibilityWarnings.length > 0
+            ? `实时渲染：${event.data.sceneId ?? "当前场景"}；已自动兼容 ${uiSkinCompatibilityWarnings.length} 项历史样式`
+            : `实时渲染：${event.data.sceneId ?? "当前场景"}`);
         sendScreen(activeScreen);
         previewTransition.markReady();
       }
     }
     window.addEventListener("message", handleLivePreviewResponse);
     return () => window.removeEventListener("message", handleLivePreviewResponse);
-  }, [activeScreen, initializeLivePreview, previewTransition.phase]);
+  }, [activeScreen, initializeLivePreview, previewTransition.phase, uiSkinCompatibilityWarnings]);
 
   if (collapsed) {
     return (
@@ -704,15 +745,15 @@ export function PreviewPanel({
     <aside className={`preview-panel is-expanded${phase !== "idle" ? ` is-${phase}` : ""}`}>
       <header className="embedded-runtime-preview-header">
         <div className="embedded-runtime-preview-heading">
-          <strong>真实客户端预览</strong>
+          <strong>客户端预览</strong>
           <span>{project.title}</span>
         </div>
         <button type="button" className="preview-collapse-button" data-help-key="preview.closePanel" onClick={closePanel}>
           收起
         </button>
-      <div className="embedded-runtime-preview-toolbar">
+      <GlassSelectionGroup className="embedded-runtime-preview-toolbar" selectedKey={activeScreen} scrollAxis="x">
         {previewScreens.map((screen) => (
-          <button key={screen.id} type="button" data-help-key="preview.screen" className={activeScreen === screen.id ? "is-active" : ""} onClick={() => selectScreen(screen.id)}>
+          <button key={screen.id} type="button" data-help-key="preview.screen" className={activeScreen === screen.id ? "is-active" : ""} data-glass-selected={activeScreen === screen.id} onClick={() => selectScreen(screen.id)}>
             {screen.label}
           </button>
         ))}
@@ -728,22 +769,33 @@ export function PreviewPanel({
         >
           <RefreshCw size={14} /> 重载场景
         </button>
+      </GlassSelectionGroup>
+      <div
+        className={`embedded-runtime-preview-status is-${status}${uiSkinCompatibilityWarnings.length > 0 ? " has-compatibility-warning" : ""}`}
+        title={uiSkinCompatibilityWarnings.length > 0
+          ? `${message}\n${uiSkinCompatibilityWarnings.join("\n")}`
+          : message}
+      >
+        {message}
       </div>
-      <div className={`embedded-runtime-preview-status is-${status}`} title={message}>{message}</div>
       </header>
       <div
         ref={previewFrameRef}
         className={`embedded-runtime-preview-frame is-transition-${previewTransition.phase}`}
       >
-        <iframe
-          ref={iframeRef}
-          title="GameCLI 内嵌预览"
-          src={runtimePreviewUrl}
-          onLoad={() => {
-            liveInitializedRef.current = false;
-            if (previewTransition.phase === "ready") void initializeLivePreview();
-          }}
-        />
+        {deferRuntimeMount
+          ? <div className="embedded-runtime-preview-deferred" role="status">编辑器就绪后启动实时预览…</div>
+          : (
+            <iframe
+              ref={iframeRef}
+              title="GameCLI 内嵌预览"
+              src={runtimePreviewUrl}
+              onLoad={() => {
+                liveInitializedRef.current = false;
+                if (previewTransition.phase === "ready") void initializeLivePreview();
+              }}
+            />
+          )}
         <RuntimePreviewMask
           visible={previewTransition.maskVisible}
           snapshot={previewTransition.snapshot}
@@ -769,7 +821,7 @@ export function PreviewPanel({
             <strong>选择进入路线</strong>
             <span>从不同的上一个场景重放当前场景过渡</span>
           </header>
-          <div className="preview-route-picker-list">
+          <div className="preview-route-picker-list selection-scroll-region">
             {routePickerCandidates.map((candidate, index) => {
               const sourceLabel = previousSceneLabel(candidate);
               return (
@@ -778,6 +830,7 @@ export function PreviewPanel({
                   type="button"
                   role="menuitem"
                   data-help-key="preview.reloadSceneRoute"
+                  onFocus={(event) => event.currentTarget.scrollIntoView({ block: "nearest" })}
                   onClick={() => {
                     const sceneId = activeSceneIdRef.current;
                     if (sceneId) replaySceneFromPath(sceneId, candidate);

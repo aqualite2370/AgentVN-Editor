@@ -5,10 +5,9 @@ import {
   Pause,
   Play,
   RotateCcw,
-  Sparkles,
   XCircle,
 } from "lucide-react";
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { backendClient } from "../../api/backendClient";
 import { reportFrontendError } from "../../../../shared/logging/frontendErrorLogger";
@@ -32,8 +31,15 @@ import {
   type NovelProcessTokenBreakdown,
 } from "../../novel-import/processJobTypes";
 import { useEditorStore } from "../../store/editorStore";
-import { useNovelImportStore } from "../../store/novelImportStore";
+import { captureNovelTaskOwnership, isNovelTaskOwnershipCurrent, useNovelImportStore } from "../../store/novelImportStore";
 import { useProjectStore } from "../../store/projectStore";
+import { GlassSelectionGroup } from "../common/GlassSelectionGroup";
+import { NovelTaskCard } from "./NovelTaskCard";
+import { novelTaskMotion } from "./novelTaskMotion";
+import "./novel-task-floating.css";
+import { openWorkspaceSurface, requestCanvasNodeFocus, workspaceBackEventName, novelTaskCardRevealEventName } from "../workspace/workspaceContracts";
+import { useNovelTaskModalPriority } from "./useNovelTaskModalPriority";
+import { withNovelGraphPhaseProgress } from "../../novel-import/novelProcessGraphProgress";
 
 type TokenView = "total" | "agent" | "chapter";
 type LogOrder = "newest" | "oldest";
@@ -46,17 +52,14 @@ declare global {
 }
 
 const heartbeatTimeoutMs = 90_000;
-const workbenchExitMs = 220;
-const tokenPanelMorphMs = 420;
-const tokenPanelMorphSettleMs = 120;
 const logPanelVisibleEventLimit = 80;
 
 const statusMeta: Record<NovelProcessJobStatus, { label: string; tone: string; detail: string }> = {
-  waiting: { label: "等待中", tone: "info", detail: "任务已进入队列，正在等待 Subagent 处理槽。" },
-  running: { label: "处理中", tone: "success", detail: "多个 Subagent 正在并行处理小说切片。" },
-  paused: { label: "已暂停", tone: "warning", detail: "任务继续前不会分配新的切片。" },
-  retrying: { label: "重试中", tone: "retry", detail: "失败切片正在重新排队。" },
-  completed: { label: "已完成", tone: "success", detail: "所有可用切片结果均已合并，可以导入。" },
+  waiting: { label: "等待中", tone: "info", detail: "任务已排队，稍后开始处理。" },
+  running: { label: "处理中", tone: "success", detail: "正在并行处理所选章节。" },
+  paused: { label: "已暂停", tone: "warning", detail: "继续任务后将恢复处理。" },
+  retrying: { label: "重试中", tone: "retry", detail: "正在重新处理失败内容。" },
+  completed: { label: "已完成", tone: "success", detail: "处理结果已合并，可以导入。" },
   failed: { label: "失败", tone: "danger", detail: "任务在生成可用结果前失败。" },
   failed_partial: { label: "部分失败", tone: "danger", detail: "部分切片失败，但已完成的结果仍可使用。" },
   cancelled: { label: "已取消", tone: "muted", detail: "任务已取消，已完成的结果仍然保留。" },
@@ -254,9 +257,9 @@ function StatTile({ label, value, hint }: { label: string; value: string | numbe
 }
 
 function sourceLabel(source: NovelProcessJob["source"]): { label: string; detail: string } {
-  if (source === "api") return { label: "真实后端 API", detail: "来自后端 NovelProcessJob 快照" };
-  if (source === "ui_pressure_fixture") return { label: "UI 压力测试快照", detail: "仅用于任务面板渲染压力审计，不代表真实 AI 成功" };
-  return { label: "本地恢复 / mock adapter", detail: "只用于恢复显示，不能作为全量真实通过依据" };
+  if (source === "api") return { label: "后端 API", detail: "来自后端 NovelProcessJob 快照" };
+  if (source === "ui_pressure_fixture") return { label: "UI 压力测试快照", detail: "仅用于任务面板渲染压力审计，不代表 AI 任务成功" };
+  return { label: "本地恢复 / mock adapter", detail: "只用于恢复显示，不能作为完整通过依据" };
 }
 
 function phaseTone(status: NovelProcessPhaseProgress["status"]): ProgressMeterTone {
@@ -292,7 +295,9 @@ function PhaseTimeline({ phases }: { phases?: NovelProcessPhaseProgress[] | Lega
   return (
     <div className="novel-phase-timeline" aria-label="任务阶段进度">
       {rows.map((phase) => (
-        <article key={phase.phase} className={`is-${phase.status}`}>
+        <article key={phase.phase} className={`is-${phase.status}`}
+          data-phase={phase.phase} data-phase-status={phase.status}
+          data-progress-basis={phase.progressBasis}>
           <header>
             <strong>{phase.label}</strong>
             <span>{formatProgressPercent(phase.percent)}</span>
@@ -416,105 +421,26 @@ function TokenPanel({ job, tokenView, onTokenViewChange }: { job: NovelProcessJo
   const stats = job.tokenStats;
   const overBudget = stats.estimatedTokens > 0 && stats.actualTokens > stats.estimatedTokens * 1.2;
   const panelRef = useRef<HTMLElement | null>(null);
-  const previousRectRef = useRef<DOMRect | null>(null);
-  const morphAnimationRef = useRef<Animation | null>(null);
-  const morphSettleTimerRef = useRef<number | null>(null);
-
-  function clearMorphSettleTimer() {
-    if (morphSettleTimerRef.current === null) return;
-    window.clearTimeout(morphSettleTimerRef.current);
-    morphSettleTimerRef.current = null;
-  }
-
-  function cleanupMorphAnimation(animation = morphAnimationRef.current) {
-    const node = panelRef.current;
-    if (animation) {
-      animation.onfinish = null;
-      animation.oncancel = null;
-      animation.cancel();
-      if (morphAnimationRef.current === animation) morphAnimationRef.current = null;
-    }
-    if (node) {
-      node.style.transform = "";
-      node.style.opacity = "";
-      node.style.height = "";
-      node.classList.remove("is-morphing");
-      node.classList.remove("is-morph-settled");
-    }
-  }
-
-  function changeTokenView(view: TokenView) {
-    if (view === tokenView) return;
-    previousRectRef.current = panelRef.current?.getBoundingClientRect() ?? null;
-    clearMorphSettleTimer();
-    cleanupMorphAnimation();
-    onTokenViewChange(view);
-  }
-
+  const contentRef = useRef<HTMLDivElement>(null);
+  const animationRef = useRef<Animation | undefined>(undefined);
+  const previousViewRef = useRef(tokenView);
   useLayoutEffect(() => {
-    const previousRect = previousRectRef.current;
-    const node = panelRef.current;
-    previousRectRef.current = null;
-    if (!previousRect || !node || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
-
-    const nextRect = node.getBoundingClientRect();
-    const deltaX = previousRect.left - nextRect.left;
-    const deltaY = previousRect.top - nextRect.top;
-    const scaleX = previousRect.width / Math.max(nextRect.width, 1);
-    const heightChanged = Math.abs(previousRect.height - nextRect.height) > 1;
-    const moved = Math.abs(deltaX) > 1 || Math.abs(deltaY) > 1 || Math.abs(scaleX - 1) > 0.01 || heightChanged;
-    if (!moved) return;
-
-    node.classList.add("is-morphing");
-    const animation = node.animate(
-      [
-        {
-          transform: `translate(${deltaX}px, ${deltaY}px) scale(${scaleX}, 1)`,
-          opacity: 0.96,
-          height: `${previousRect.height}px`,
-        },
-        {
-          transform: "translate(0, 0) scale(1, 1)",
-          opacity: 1,
-          height: `${nextRect.height}px`,
-        },
-      ],
-      {
-        duration: tokenPanelMorphMs,
-        easing: "cubic-bezier(0.18, 0.9, 0.18, 1)",
-        fill: "both",
-      },
-    );
-    morphAnimationRef.current = animation;
-    animation.onfinish = () => {
-      node.classList.add("is-morph-settled");
-      animation.onfinish = null;
-      animation.oncancel = null;
-      animation.cancel();
-      node.style.transform = "";
-      node.style.opacity = "";
-      node.style.height = "";
-      if (morphAnimationRef.current === animation) morphAnimationRef.current = null;
-      morphSettleTimerRef.current = window.setTimeout(() => {
-        node.classList.remove("is-morphing");
-        node.classList.remove("is-morph-settled");
-        morphSettleTimerRef.current = null;
-      }, tokenPanelMorphSettleMs);
-    };
-    animation.oncancel = () => {
-      node.classList.remove("is-morphing");
-      node.classList.remove("is-morph-settled");
-      node.style.transform = "";
-      node.style.opacity = "";
-      node.style.height = "";
-      if (morphAnimationRef.current === animation) morphAnimationRef.current = null;
-    };
+    if (previousViewRef.current === tokenView) return;
+    previousViewRef.current = tokenView;
+    const content = contentRef.current;
+    if (!content) return;
+    const interrupted = animationRef.current?.playState === "running" || animationRef.current?.pending;
+    const style = getComputedStyle(content);
+    const opacity = interrupted ? Number(style.opacity) : .65;
+    const transform = interrupted ? style.transform : "translateY(3px)";
+    animationRef.current?.cancel();
+    const { reduced, duration, easing } = novelTaskMotion(content, 160);
+    const animation = content.animate(
+      [{ opacity, transform: reduced ? "none" : transform }, { opacity: 1, transform: "none" }],
+      { duration, easing });
+    animationRef.current = animation;
   }, [tokenView]);
-
-  useEffect(() => () => {
-    clearMorphSettleTimer();
-    cleanupMorphAnimation();
-  }, []);
+  useLayoutEffect(() => () => animationRef.current?.cancel(), []);
 
   return (
     <section ref={panelRef} className="novel-task-section novel-token-panel" aria-labelledby="novel-task-token-title">
@@ -523,7 +449,7 @@ function TokenPanel({ job, tokenView, onTokenViewChange }: { job: NovelProcessJo
           <span className="panel-kicker">Token 统计</span>
           <h3 id="novel-task-token-title">消耗与预估</h3>
         </div>
-        <div className="segmented-control novel-task-segmented" role="tablist" aria-label="Token 统计视图">
+        <GlassSelectionGroup motion="light" className="segmented-control novel-task-segmented" role="tablist" ariaLabel="Token 统计视图" selectedKey={tokenView} scrollAxis="x">
           {(["total", "agent", "chapter"] as TokenView[]).map((view) => (
             <button
               type="button"
@@ -532,19 +458,22 @@ function TokenPanel({ job, tokenView, onTokenViewChange }: { job: NovelProcessJo
               role="tab"
               aria-selected={tokenView === view}
               className={tokenView === view ? "is-active" : ""}
-              onClick={() => changeTokenView(view)}
+              data-glass-selected={tokenView === view}
+              onClick={() => {
+                if (view !== tokenView) onTokenViewChange(view);
+              }}
             >
               {view === "total" ? "总计" : view === "agent" ? "按处理槽" : "按章节"}
             </button>
           ))}
-        </div>
+        </GlassSelectionGroup>
       </header>
       {overBudget && (
         <p className="novel-token-warning" role="alert">
           实际 Token 消耗已超过预估，请检查重试次数或输出长度。
         </p>
       )}
-      <div key={tokenView} className="novel-token-view-content" data-token-view={tokenView}>
+      <div ref={contentRef} className="novel-token-view-content" data-token-view={tokenView}>
         {tokenView === "total" ? (
           <div className="novel-token-grid">
             <TokenMetric label="总输入 Token" value={stats.totalInputTokens} />
@@ -787,7 +716,7 @@ function AssignmentPanel({ job }: { job: NovelProcessJob }) {
       <header>
         <div>
           <span className="panel-kicker">分工安排</span>
-          <h3 id="novel-task-assignment-title">真实并发槽位</h3>
+          <h3 id="novel-task-assignment-title">并发槽位</h3>
         </div>
         <span className="novel-task-count">并发 {job.maxConcurrency ?? job.agents.length} · 队列 {job.queueDepth ?? job.estimatedRemainingChunks}</span>
       </header>
@@ -889,6 +818,7 @@ function visibleActions(status: NovelProcessJobStatus): Array<WorkbenchAction | 
 }
 
 export function NovelProcessTaskWorkbench() {
+  const modalBlocked = useNovelTaskModalPriority();
   const session = useNovelImportStore((state) => state.session);
   const importJob = useNovelImportStore((state) => state.importJob);
   const progress = useNovelImportStore((state) => state.progress);
@@ -897,6 +827,7 @@ export function NovelProcessTaskWorkbench() {
   const inspectableResults = useNovelImportStore((state) => state.inspectableResults);
   const isProcessing = useNovelImportStore((state) => state.isProcessing);
   const processing = useNovelImportStore((state) => state.processing);
+  const ownershipGeneration = useNovelImportStore((state) => state.ownershipGeneration);
   const pauseBlueprintGeneration = useNovelImportStore((state) => state.pauseBlueprintGeneration);
   const resumeBlueprintGeneration = useNovelImportStore((state) => state.resumeBlueprintGeneration);
   const cancelBlueprintGeneration = useNovelImportStore((state) => state.cancelBlueprintGeneration);
@@ -910,43 +841,171 @@ export function NovelProcessTaskWorkbench() {
   const [snapshot, setSnapshot] = useState<NovelProcessTaskSnapshot | undefined>(() => readPersistedNovelProcessTaskSnapshot(projectId));
   const [panelOpen, setPanelOpen] = useState(false);
   const [panelClosing, setPanelClosing] = useState(false);
+  const [hiddenCard, setHiddenCard] = useState<{ projectId: string; jobId: string }>();
   const [tokenView, setTokenView] = useState<TokenView>("total");
   const [logOrder, setLogOrder] = useState<LogOrder>("newest");
   const [busyAction, setBusyAction] = useState<WorkbenchAction>();
   const [actionMessage, setActionMessage] = useState<string>();
   const [expandedAgentIds, setExpandedAgentIds] = useState<Set<string>>(() => new Set());
   const dismissedJobIdsRef = useRef(new Set<string>());
-  const panelCloseTimerRef = useRef<number | null>(null);
+  const layerRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLElement>(null);
+  const panelAnimationRef = useRef<Animation | undefined>(undefined);
+  const backdropAnimationRef = useRef<Animation | undefined>(undefined);
+  const panelWasMountedRef = useRef(false);
+  const restoreCardFocusRef = useRef(true);
+  const mountedRef = useRef(true);
+  const actionRef = useRef(false);
+  const viewResultRef = useRef(false);
+  const resultFocusAbortRef = useRef<AbortController | undefined>(undefined);
+  const [viewingResult, setViewingResult] = useState(false);
+  const closeTaskPanelRef = useRef<() => void>(() => {});
+  const visibleJobRef = useRef<string | undefined>(undefined);
+  visibleJobRef.current = snapshot?.job.jobId;
+  const taskResponseRevisionRef = useRef(0);
 
-  function clearPanelCloseTimer() {
-    if (panelCloseTimerRef.current === null) return;
-    window.clearTimeout(panelCloseTimerRef.current);
-    panelCloseTimerRef.current = null;
+  useEffect(() => {
+    const reveal = (event: Event) => {
+      if ((event as CustomEvent<{ projectId: string }>).detail?.projectId === projectId)
+        setHiddenCard(undefined);
+    };
+    window.addEventListener(novelTaskCardRevealEventName, reveal);
+    return () => window.removeEventListener(novelTaskCardRevealEventName, reveal);
+  }, [projectId]);
+
+  function cancelPanelMotion() {
+    panelAnimationRef.current?.cancel();
+    panelAnimationRef.current = undefined;
+    backdropAnimationRef.current?.cancel();
+    backdropAnimationRef.current = undefined;
   }
 
+  useLayoutEffect(() => {
+    const layer = layerRef.current;
+    const canvas = document.querySelector<HTMLElement>(".editor-workspace > .flow-surface");
+    if (!panelOpen || !layer || !canvas) return;
+    // The portal is a presentation surface over the retained canvas track,
+    // not a full-screen modal. Never soften the node rail or cover Inspector.
+    const place = () => {
+      const rect = canvas.getBoundingClientRect();
+      layer.style.inset = `${rect.top}px ${Math.max(0, innerWidth - rect.right)}px ${Math.max(0, innerHeight - rect.bottom)}px ${rect.left}px`;
+    };
+    place();
+    const observer = new ResizeObserver(place);
+    observer.observe(canvas);
+    const workspace = canvas.closest(".editor-workspace");
+    if (workspace) observer.observe(workspace);
+    window.addEventListener("resize", place);
+    window.visualViewport?.addEventListener("resize", place);
+    window.visualViewport?.addEventListener("scroll", place);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", place);
+      window.visualViewport?.removeEventListener("resize", place);
+      window.visualViewport?.removeEventListener("scroll", place);
+    };
+  }, [panelOpen, projectId]);
+
   function openPanel() {
-    clearPanelCloseTimer();
+    restoreCardFocusRef.current = true;
     setPanelClosing(false);
     setPanelOpen(true);
   }
+  useLayoutEffect(() => {
+    const panel = panelRef.current;
+    if (!panelOpen || !panel) { panelWasMountedRef.current = false; return; }
+    const style = getComputedStyle(panel);
+    const backdrop = layerRef.current?.querySelector<HTMLElement>(".novel-task-backdrop");
+    const opacity = panelWasMountedRef.current ? Number(style.opacity) : 0;
+    const backdropOpacity = panelWasMountedRef.current && backdrop ? Number(getComputedStyle(backdrop).opacity) : 0;
+    const transform = panelWasMountedRef.current ? style.transform : "translateY(6px)";
+    panelWasMountedRef.current = true;
+    panelAnimationRef.current?.cancel();
+    backdropAnimationRef.current?.cancel();
+    const restoreCardFocus = () => {
+      if (!restoreCardFocusRef.current) return;
+      const owner = captureNovelTaskOwnership(snapshot?.job.jobId ?? "");
+      window.requestAnimationFrame(() => {
+        const card = document.querySelector<HTMLElement>(".novel-task-card-open");
+        if (isNovelTaskOwnershipCurrent(owner) && !document.querySelector('[aria-modal="true"]')
+          && card && !card.closest("[inert]")) card.focus({ preventScroll: true });
+      });
+    };
+    const finish = () => {
+      if (panelClosing) {
+        setPanelOpen(false);
+        setPanelClosing(false);
+        panelWasMountedRef.current = false;
+        restoreCardFocus();
+      }
+    };
+    const { reduced, duration, easing } = novelTaskMotion(panel, 240);
+    if (!panelClosing && !modalBlocked) panel.querySelector<HTMLElement>(".novel-task-icon-button")?.focus({ preventScroll: true });
+    if (panelClosing && !modalBlocked) restoreCardFocus();
+    const animation = panel.animate([
+      { opacity, transform: reduced ? "none" : transform },
+      { opacity: panelClosing ? 0 : 1, transform: reduced ? "none" : panelClosing ? "translateY(6px)" : "none" },
+    ], { duration, easing, fill: "both" });
+    panelAnimationRef.current = animation;
+    if (backdrop) {
+      backdropAnimationRef.current = backdrop.animate([
+        { opacity: backdropOpacity },
+        { opacity: panelClosing ? 0 : 1 },
+      ], { duration, easing, fill: "both" });
+    }
+    animation.onfinish = () => {
+      if (panelAnimationRef.current !== animation) return;
+      // Preserve the rendered terminal values until React removes the exiting
+      // layer; cancelling fill:both must never reveal its default opacity.
+      panel.style.opacity = panelClosing ? "0" : "1";
+      panel.style.transform = reduced ? "none" : panelClosing ? "translateY(6px)" : "none";
+      if (backdrop) backdrop.style.opacity = panelClosing ? "0" : "1";
+      finish();
+      animation.cancel();
+      panelAnimationRef.current = undefined;
+      backdropAnimationRef.current?.cancel();
+      backdropAnimationRef.current = undefined;
+    };
+  }, [panelOpen, panelClosing, snapshot?.job.jobId]);
 
   useEffect(() => {
     window.__AGENTVN_NOVEL_TASK_WORKBENCH_READY__ = true;
+    mountedRef.current = true;
     return () => {
+      mountedRef.current = false;
       delete window.__AGENTVN_NOVEL_TASK_WORKBENCH_READY__;
-      clearPanelCloseTimer();
+      cancelPanelMotion();
+      resultFocusAbortRef.current?.abort();
     };
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    resultFocusAbortRef.current?.abort();
     setSnapshot(readPersistedNovelProcessTaskSnapshot(projectId));
     setPanelOpen(false);
     setPanelClosing(false);
-    clearPanelCloseTimer();
+    cancelPanelMotion();
     setActionMessage(undefined);
+    setBusyAction(undefined);
+    actionRef.current = false;
+    viewResultRef.current = false;
+    setViewingResult(false);
     setExpandedAgentIds(new Set());
     dismissedJobIdsRef.current.clear();
-  }, [projectId]);
+    setHiddenCard(undefined);
+  }, [projectId, ownershipGeneration]);
+
+  useLayoutEffect(() => {
+    // A new task in the same project does not remount this controller. Its
+    // controls must not inherit the previous task's in-flight operation flags.
+    resultFocusAbortRef.current?.abort();
+    actionRef.current = false;
+    viewResultRef.current = false;
+    setBusyAction(undefined);
+    setViewingResult(false);
+    setActionMessage(undefined);
+    setExpandedAgentIds(new Set());
+  }, [snapshot?.job.jobId]);
 
   const derivedSnapshot = useMemo(() => createMockNovelProcessSnapshot({
     projectId,
@@ -962,19 +1021,20 @@ export function NovelProcessTaskWorkbench() {
   }), [projectId, projectTitle, session, importJob, progress, errors, warnings, inspectableResults, isProcessing, processing]);
 
   useEffect(() => {
-    if (!derivedSnapshot) return;
+    if (!derivedSnapshot || derivedSnapshot.projectId !== projectId) return;
     setSnapshot((current) => {
       if (current?.job.source === "api" && current.job.jobId === derivedSnapshot.job.jobId) return current;
       if (current?.job.source === "ui_pressure_fixture") return current;
+      persistNovelProcessTaskSnapshot(projectId, derivedSnapshot);
       return derivedSnapshot;
     });
-    persistNovelProcessTaskSnapshot(projectId, derivedSnapshot);
   }, [derivedSnapshot, projectId]);
 
   useEffect(() => {
     function handlePressureSnapshot(event: Event) {
       const detail = (event as CustomEvent<NovelProcessTaskSnapshot>).detail;
       if (!detail?.job?.jobId || !Array.isArray(detail.events)) return;
+      if (detail.projectId && detail.projectId !== projectId) return;
       const next: NovelProcessTaskSnapshot = {
         ...detail,
         projectId: detail.projectId ?? projectId,
@@ -986,87 +1046,109 @@ export function NovelProcessTaskWorkbench() {
 
     window.addEventListener("agentvn:novel-processing-pressure-snapshot", handlePressureSnapshot);
     return () => window.removeEventListener("agentvn:novel-processing-pressure-snapshot", handlePressureSnapshot);
-  }, [projectId]);
+  }, [projectId, ownershipGeneration]);
 
+  const pollingJobId = processing.activeJobId
+    ?? (snapshot?.projectId === projectId && snapshot.job.source === "api" ? snapshot.job.jobId : undefined);
   useEffect(() => {
-    const jobId = processing.activeJobId;
-    if (!jobId) return;
+    if (!pollingJobId) return;
+    const owner = captureNovelTaskOwnership(pollingJobId);
+    const controller = new AbortController();
     let cancelled = false;
-    const loadActiveJob = async () => {
-      try {
-        const [job, events] = await Promise.all([
-          backendClient.getNovelProcessJob(jobId),
-          backendClient.getJobEvents(jobId, 50),
-        ]);
-        if (cancelled) return;
-        const next = { projectId, job, events };
-        setSnapshot(next);
-        persistNovelProcessTaskSnapshot(projectId, next);
-        syncNovelProcessingJobSnapshot(job);
-      } catch (error) {
-        reportFrontendError("editor.novel-process", error, {
-          operation: "load-active-job",
-          jobId,
-        });
-        // Keep the local snapshot visible if the API panel is temporarily unavailable.
-      }
-    };
-    void loadActiveJob();
-    return () => {
-      cancelled = true;
-    };
-  }, [processing.activeJobId, projectId, syncNovelProcessingJobSnapshot]);
-
-  useEffect(() => {
-    if (!snapshot || snapshot.job.source !== "api") return;
-    let cancelled = false;
+    let timeout: number | undefined;
     const refresh = async () => {
+      let delay = 500;
+      const revision = taskResponseRevisionRef.current;
       try {
-        const [job, events] = await Promise.all([
-          backendClient.getNovelProcessJob(snapshot.job.jobId),
-          backendClient.getJobEvents(snapshot.job.jobId, 50),
+        // A fast error must not retry while its sibling request is still in
+        // flight. Aborting the effect cancels both; otherwise await both ends.
+        const [jobResult, eventsResult] = await Promise.allSettled([
+          backendClient.getNovelProcessJob(pollingJobId, controller.signal),
+          backendClient.getJobEvents(pollingJobId, 50, controller.signal),
         ]);
-        if (cancelled) return;
+        if (jobResult.status === "rejected") throw jobResult.reason;
+        if (eventsResult.status === "rejected") throw eventsResult.reason;
+        const job = jobResult.value;
+        const events = eventsResult.value;
+        if (cancelled || !isNovelTaskOwnershipCurrent(owner) || job.jobId !== pollingJobId
+          || revision !== taskResponseRevisionRef.current) return;
         const next = { projectId, job, events };
         setSnapshot(next);
         persistNovelProcessTaskSnapshot(projectId, next);
         syncNovelProcessingJobSnapshot(job);
+        delay = isNovelProcessJobUnfinished(job.status) ? 500 : 6000;
       } catch (error) {
-        reportFrontendError("editor.novel-process", error, {
-          operation: "refresh-job",
-          jobId: snapshot.job.jobId,
-        });
-        // The mock adapter keeps the panel usable while session 4/6 finish the API.
+        if (!controller.signal.aborted)
+          reportFrontendError("editor.novel-process", error, { operation: "refresh-job", ...owner });
+      } finally {
+        if (!cancelled && isNovelTaskOwnershipCurrent(owner))
+          timeout = window.setTimeout(() => void refresh(), delay);
       }
     };
     void refresh();
-    const intervalId = window.setInterval(refresh, isNovelProcessJobUnfinished(snapshot.job.status) ? 500 : 6000);
     return () => {
       cancelled = true;
-      window.clearInterval(intervalId);
+      controller.abort();
+      window.clearTimeout(timeout);
     };
-  }, [projectId, snapshot?.job.jobId, snapshot?.job.source, snapshot?.job.status, syncNovelProcessingJobSnapshot]);
+  }, [projectId, ownershipGeneration, pollingJobId, syncNovelProcessingJobSnapshot]);
 
-  if (!snapshot) return null;
+  useEffect(() => {
+    if (!panelOpen || panelClosing) return;
+    const canClose = () => !modalBlocked && !document.querySelector('[aria-modal="true"]');
+    const key = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || !canClose()) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      closeTaskPanelRef.current();
+    };
+    const back = (event: Event) => {
+      if (!canClose()) return;
+      (event as CustomEvent<{ handled?: boolean }>).detail.handled = true;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      closeTaskPanelRef.current();
+    };
+    document.addEventListener("keydown", key, true);
+    window.addEventListener(workspaceBackEventName, back, true);
+    return () => {
+      document.removeEventListener("keydown", key, true);
+      window.removeEventListener(workspaceBackEventName, back, true);
+    };
+  }, [panelOpen, panelClosing, modalBlocked]);
 
-  const { job, events } = snapshot;
+  const displaySnapshot = useMemo(() => {
+    if (!snapshot || snapshot.projectId !== projectId) return undefined;
+    const taskKind = snapshot.job.source === "ui_pressure_fixture" ? "fixture"
+      : snapshot.job.source === "api" || processing.activeJobId === snapshot.job.jobId ? "executor" : "blueprint";
+    return { ...snapshot, job: withNovelGraphPhaseProgress(snapshot.job, {
+      nodes, sessionId: session.session_id, taskKind, plannedScenes: importJob?.total,
+    }) };
+  }, [snapshot, projectId, nodes, session.session_id, processing.activeJobId, importJob?.total]);
+
+  if (!displaySnapshot) return null;
+
+  const { job, events } = displaySnapshot;
+  // The first API read may still be pending while we display a local progress
+  // snapshot for a newly created backend job. Transport ownership must come
+  // from the active job, not from the provenance of those provisional bytes.
+  const backendTask = job.source === "api"
+    || (job.source !== "ui_pressure_fixture" && processing.activeJobId === job.jobId);
   const meta = statusMeta[job.status];
   const actions = visibleActions(job.status);
-  const latestNodeId = importJob?.lastInsertedNodeId
-    ?? nodes.slice().reverse().find((node) => node.data.editorMeta?.importSessionId === session.session_id || node.data.editorMeta?.source === "imported")?.id;
+  const taskNodes = nodes.filter(node => backendTask
+    ? node.data.editorMeta?.sourceProcessJobId === job.jobId
+    : node.data.editorMeta?.importSessionId === session.session_id);
+  const latestNodeId = taskNodes.find(node => node.id === importJob?.lastInsertedNodeId)?.id
+    ?? taskNodes[taskNodes.length - 1]?.id;
 
-  const closePanel = () => {
+  const closePanel = (restoreFocus = true) => {
     dismissedJobIdsRef.current.add(job.jobId);
     if (!panelOpen || panelClosing) return;
+    restoreCardFocusRef.current = restoreFocus;
     setPanelClosing(true);
-    clearPanelCloseTimer();
-    const exitMs = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? 1 : workbenchExitMs;
-    panelCloseTimerRef.current = window.setTimeout(() => {
-      setPanelOpen(false);
-      setPanelClosing(false);
-      panelCloseTimerRef.current = null;
-    }, exitMs);
   };
+  closeTaskPanelRef.current = closePanel;
 
   const updateLocalSnapshot = (status: NovelProcessJobStatus, message: string) => {
     setSnapshot((current) => {
@@ -1078,10 +1160,15 @@ export function NovelProcessTaskWorkbench() {
   };
 
   const runAction = async (action: WorkbenchAction) => {
+    if (actionRef.current) return;
+    const owner = captureNovelTaskOwnership(job.jobId);
+    const current = () => mountedRef.current && isNovelTaskOwnershipCurrent(owner) && visibleJobRef.current === owner.jobId;
+    taskResponseRevisionRef.current++;
+    actionRef.current = true;
     setBusyAction(action);
     setActionMessage(undefined);
     try {
-      if (job.source === "api") {
+      if (backendTask) {
         const nextJob = action === "pause"
           ? await backendClient.pauseNovelProcessJob(job.jobId)
           : action === "resume"
@@ -1089,9 +1176,11 @@ export function NovelProcessTaskWorkbench() {
             : action === "cancel"
               ? await backendClient.cancelNovelProcessJob(job.jobId)
               : await backendClient.retryFailedChunks(job.jobId);
+        if (!current() || nextJob.jobId !== job.jobId) return;
         const next = { projectId, job: nextJob, events };
         setSnapshot(next);
         persistNovelProcessTaskSnapshot(projectId, next);
+        syncNovelProcessingJobSnapshot(nextJob);
       } else {
         if (action === "pause") {
           pauseBlueprintGeneration();
@@ -1110,16 +1199,19 @@ export function NovelProcessTaskWorkbench() {
           void resumeBlueprintGeneration();
           updateLocalSnapshot("retrying", "重试失败项");
         }
-        setActionMessage("当前为 mock adapter 操作，真实执行由任务 API 接入。");
+        setActionMessage("当前为 mock adapter 操作；任务执行由后端 API 提供。");
       }
     } catch (error) {
       reportFrontendError("editor.novel-process", error, {
         operation: action,
-        jobId: job.jobId,
+        ...owner,
       });
-      setActionMessage(error instanceof Error ? error.message : String(error));
+      if (current()) setActionMessage(error instanceof Error ? error.message : String(error));
     } finally {
-      setBusyAction(undefined);
+      if (current()) {
+        actionRef.current = false;
+        setBusyAction(undefined);
+      }
     }
   };
 
@@ -1131,25 +1223,75 @@ export function NovelProcessTaskWorkbench() {
   };
 
   const viewResult = async () => {
-    const importResult = job.source === "api" && (job.status === "completed" || job.status === "failed_partial")
-      ? await importNovelProcessJobResults(job.jobId)
-      : undefined;
-    const targetNodeId = importResult?.lastInsertedNodeId ?? latestNodeId;
-    if (!targetNodeId) {
-      setActionMessage("暂无可定位的已完成节点。");
-      return;
+    if (viewResultRef.current) return;
+    const owner = captureNovelTaskOwnership(job.jobId);
+    const current = () => mountedRef.current && isNovelTaskOwnershipCurrent(owner) && visibleJobRef.current === owner.jobId;
+    viewResultRef.current = true;
+    setViewingResult(true);
+    setActionMessage(undefined);
+    try {
+      const requiresImport = backendTask && (job.status === "completed" || job.status === "failed_partial");
+      const importResult = requiresImport ? await importNovelProcessJobResults(job.jobId) : undefined;
+      if (!current()) return;
+      if (requiresImport && !importResult) {
+        setActionMessage("结果导入未完成，请检查错误后重试。");
+        return;
+      }
+      const targetNodeId = importResult?.lastInsertedNodeId ?? latestNodeId;
+      if (!targetNodeId || !useEditorStore.getState().nodes.some(node => node.id === targetNodeId)) {
+        setActionMessage("暂无可定位的本任务已完成节点。");
+        return;
+      }
+      openWorkspaceSurface("edit");
+      const deadline = performance.now() + 5000;
+      const ready = await new Promise<boolean>(resolve => {
+        const check = () => {
+          if (!current()) { resolve(false); return; }
+          const flow = document.querySelector<HTMLElement>(".flow-surface");
+          const active = document.querySelector('[data-workspace-surface="edit"][aria-current="page"]');
+          if (active && flow && !flow.closest("[inert]")) { resolve(true); return; }
+          if (performance.now() >= deadline) { resolve(false); return; }
+          window.setTimeout(check, 25);
+        };
+        check();
+      });
+      if (!current()) return;
+      if (!ready) { setActionMessage("编辑页尚未就绪，结果已保留，请重试定位。"); return; }
+      selectNode(targetNodeId);
+      const editor = useEditorStore.getState();
+      const controller = new AbortController();
+      resultFocusAbortRef.current?.abort();
+      resultFocusAbortRef.current = controller;
+      const focused = await requestCanvasNodeFocus(
+        targetNodeId, Math.min(1, editor.viewport.zoom || .82), current, controller.signal,
+      ).finally(() => {
+        controller.abort();
+        if (resultFocusAbortRef.current === controller) resultFocusAbortRef.current = undefined;
+      });
+      if (!current()) return;
+      if (!focused) { setActionMessage("结果已保留，但画布定位尚未完成，请重试。"); return; }
+      setActionMessage(importResult?.notice);
+      if (importResult?.notice) {
+        editor.setNotice({ message: importResult.notice, tone: "info",
+          source: "novel-task-result", reportable: false, context: { ...owner } });
+      }
+      closePanel(false);
+    } catch (error) {
+      reportFrontendError("editor.novel-process", error, { operation: "view-result", ...owner });
+      if (current()) setActionMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (current()) { viewResultRef.current = false; setViewingResult(false); }
     }
-    selectNode(targetNodeId);
-    setActionMessage(importResult?.notice ?? "已定位到最新导入结果。");
-    closePanel();
   };
 
   const content = (
     <>
       {panelOpen && (
-        <div className={`novel-task-layer${panelClosing ? " is-closing" : ""}`} aria-live="polite">
+        <div ref={layerRef} className={`novel-task-layer${panelClosing ? " is-closing" : ""}`} aria-live="polite"
+          inert={modalBlocked || panelClosing} aria-hidden={modalBlocked || panelClosing || undefined}>
           <div className="novel-task-backdrop" aria-hidden="true" />
           <section
+            ref={panelRef}
             className={`novel-task-workbench is-${meta.tone}${panelClosing ? " is-closing" : ""}`}
             role="dialog"
             aria-modal="false"
@@ -1159,13 +1301,13 @@ export function NovelProcessTaskWorkbench() {
           >
             <header className="novel-task-header">
               <div className="novel-task-title-block">
-                <span className="panel-kicker">任务工作台</span>
+                <span className="panel-kicker">小说处理</span>
                 <h2 id="novel-task-workbench-title">{job.novelTitle}</h2>
-                <small>{job.jobId} · {formatRelativeTime(job.updatedAt)}更新{job.source === "mock" ? " · 本地回退数据" : ""}</small>
+                <small>{formatRelativeTime(job.updatedAt)}更新</small>
               </div>
               <div className="novel-task-header-status">
                 <span className={`novel-task-status is-${meta.tone}`}>{meta.label}</span>
-                <button type="button" className="novel-task-icon-button" data-help-key="novel.task.closePanel" aria-label="最小化任务面板" onClick={closePanel}>
+                <button type="button" className="novel-task-icon-button" data-help-key="novel.task.closePanel" aria-label="最小化任务面板" onClick={() => closePanel()}>
                   <Minimize2 size={16} />
                 </button>
               </div>
@@ -1174,15 +1316,20 @@ export function NovelProcessTaskWorkbench() {
             <div className="novel-task-body">
               {job.promptVersion && job.promptVersion !== "novel-process-v3" && (
                 <div className="novel-agent-quality-warning">
-                  旧解析版本 {job.promptVersion} 不支持章节片段聚合；请新建任务以使用 novel-process-v3。
+                  此任务来自旧版处理流程。建议重新创建任务，以获得更完整的章节结果。
                 </div>
               )}
               <OverviewPanel job={job} />
-              <AssignmentPanel job={job} />
               <QualityDimensionPanel dimensions={job.qualityDimensions} issues={job.qualityIssues} />
               <TokenPanel job={job} tokenView={tokenView} onTokenViewChange={setTokenView} />
-              <AgentPanel agents={job.agents} expandedAgentIds={expandedAgentIds} onToggleAgents={toggleAgentDetails} />
-              <LogPanel events={events} logOrder={logOrder} onLogOrderChange={setLogOrder} />
+              <details className="novel-task-technical-details">
+                <summary>技术详情</summary>
+                <div className="novel-task-technical-details-body">
+                  <AssignmentPanel job={job} />
+                  <AgentPanel agents={job.agents} expandedAgentIds={expandedAgentIds} onToggleAgents={toggleAgentDetails} />
+                  <LogPanel events={events} logOrder={logOrder} onLogOrderChange={setLogOrder} />
+                </div>
+              </details>
             </div>
 
             <footer className="novel-task-actions" aria-label="任务操作">
@@ -1204,7 +1351,7 @@ export function NovelProcessTaskWorkbench() {
                   </button>
                 )}
                 {actions.includes("view") && (
-                  <button type="button" data-help-key="novel.task.viewResult" onClick={() => void viewResult()}>
+                  <button type="button" data-help-key="novel.task.viewResult" disabled={viewingResult || Boolean(busyAction)} onClick={() => void viewResult()}>
                     <Eye size={15} />{job.status === "cancelled" ? "查看已完成结果" : "查看结果"}
                   </button>
                 )}
@@ -1214,7 +1361,7 @@ export function NovelProcessTaskWorkbench() {
                   </button>
                 )}
                 {actions.includes("collapse") && (
-                  <button type="button" className="is-ghost" data-help-key="novel.task.collapse" onClick={closePanel}>
+                  <button type="button" className="is-ghost" data-help-key="novel.task.collapse" onClick={() => closePanel()}>
                     <Minimize2 size={15} />收起面板
                   </button>
                 )}
@@ -1224,31 +1371,17 @@ export function NovelProcessTaskWorkbench() {
         </div>
       )}
 
-      {!panelOpen && (
-        <button
-          type="button"
-          className={`novel-task-mini-entry is-${meta.tone}`}
-          style={{ "--novel-task-progress": `${Math.max(0, Math.min(100, job.progressPercent)) * 3.6}deg` } as CSSProperties}
-          data-help-key="novel.task.openPanel"
-          aria-label={`打开小说任务面板，当前状态：${meta.label}`}
-          title={`${job.novelTitle} · ${meta.label} · ${job.completedChunks}/${job.totalChunks} · ${formatPercent(job.progressPercent)}`}
-          data-testid="novel-task-mini-entry"
-          data-job-status={job.status}
-          onClick={() => {
-            dismissedJobIdsRef.current.delete(job.jobId);
-            openPanel();
-          }}
-        >
-          <span className="novel-task-mini-icon">
-            <Sparkles size={20} />
-            {(job.status === "failed" || job.status === "failed_partial" || job.status === "retrying") && <i aria-hidden="true" />}
-          </span>
-          <span className="novel-task-mini-tooltip" role="tooltip">
-            <strong>{statusMeta[job.status].label}</strong>
-            <small>{job.completedChunks}/{job.totalChunks} · {formatPercent(job.progressPercent)}</small>
-          </span>
-        </button>
-      )}
+      {<NovelTaskCard key={projectId} projectId={projectId} job={job}
+        label={meta.label} tone={meta.tone} inactive={modalBlocked}
+        dismissed={hiddenCard?.projectId === projectId && hiddenCard.jobId === job.jobId}
+        onDismiss={() => {
+          setHiddenCard({ projectId, jobId: job.jobId });
+          document.querySelector<HTMLButtonElement>('[data-help-key="toolbar.novelImport"]')?.focus({ preventScroll: true });
+        }}
+        suppressed={panelOpen && !panelClosing} onOpen={() => {
+          dismissedJobIdsRef.current.delete(job.jobId);
+          openPanel();
+        }} />}
     </>
   );
   return typeof document === "undefined" ? content : createPortal(content, document.body);

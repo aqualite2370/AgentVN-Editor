@@ -1,0 +1,12 @@
+[package]
+name = "agentvn-gui-pack-library-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "../../../editor/src-tauri/src/gui_pack_library.rs"
+
+[dependencies]
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.150"

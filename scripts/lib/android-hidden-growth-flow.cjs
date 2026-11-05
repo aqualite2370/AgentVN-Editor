@@ -1,15 +1,21 @@
 "use strict";
 const fs = require("node:fs"), assert = require("node:assert/strict");
+const path = require("node:path");
+const { verifyResourceProvenance } = require("./android-resource-provenance.cjs");
 const JSZip = require("../../editor/node_modules/jszip");
 const { validateExportTarget } = require("./android-export-target.cjs");
 const { sha256 } = require("./installed-acceptance.cjs");
 const { measureSettingsIconProportions, assertSettingsIconProportions } = require("./runtime-settings-proportions.cjs");
 const { renderedDialogGlyphs } = require("./rendered-dialog-glyphs.cjs");
 const { verifyScrollableSaveCards } = require("./android-save-reachability.cjs");
-function assertCanonical(manifest, script) {
+function assertCanonical(manifest, script, expectedAssetIds) {
   assert.equal(manifest.game_id, "project_msiz08p7_0_89ebc8a8cb");
   assert.equal(manifest.title, "隐忍的成长");
-  assert.equal(manifest.assets.length, 143);
+  if (expectedAssetIds) {
+    assert([115, 143].includes(expectedAssetIds.length));
+    assert.equal(new Set(expectedAssetIds).size, expectedAssetIds.length);
+    assert.deepEqual(manifest.assets.map(a => a.asset_id).sort(), [...expectedAssetIds].sort());
+  } else assert.equal(manifest.assets.length, 143);
   assert.equal(script.scenes.length, 18);
   assert(script.scenes.some(s => s.scene_id === "scene_opening"));
 }
@@ -25,20 +31,26 @@ async function validateHiddenGrowthApk(apk, proofFile) {
   const script = JSON.parse(await zip.file(`${base}script.json`).async("string"));
   const layoutEntry = zip.file(`${base}ui/layout.json`);
   const layoutBytes = layoutEntry ? await layoutEntry.async("nodebuffer") : null;
-  assertCanonical(manifest, script);
+  assertCanonical(manifest, script, target.exportedAssetIds);
   if (layoutBytes) assert.equal(JSON.parse(layoutBytes).layout_type ?? "agentvn", "agentvn");
   const expected = new Map(target.resource.assets.map(a => [a.assetId, a]));
+  const originals = new Map(target.provenance.assets.map(a => [a.assetId, a]));
+  const optimizationFile = path.join(path.dirname(apk), "release-optimization-report.json");
+  const optimizationBytes = fs.readFileSync(optimizationFile);
+  const optimization = JSON.parse(optimizationBytes);
+  assert.equal(optimization.profile, "balanced");
   const assets = [];
   for (const asset of manifest.assets) {
     assert(!asset.path.split(/[\\/]/).includes(".."));
     const e = zip.file(`${base}${asset.path}`); assert(e, `APK asset missing: ${asset.asset_id}`);
     const bytes = await e.async("nodebuffer"), hash = sha256(bytes);
-    assert.equal(hash, asset.hash_sha256); assert.equal(bytes.length, asset.size_bytes);
-    assert.equal(hash, expected.get(asset.asset_id)?.final.sha256, `Final-project Windows/Android resource differs: ${asset.asset_id}`);
-    assets.push({ assetId: asset.asset_id, sha256: hash, bytes: bytes.length });
+    const provenance = verifyResourceProvenance(asset, hash, bytes.length,
+      expected.get(asset.asset_id), originals.get(asset.asset_id), optimization);
+    assets.push({ assetId: asset.asset_id, sha256: hash, bytes: bytes.length, provenance });
   }
   assert.equal(sha256(await zip.file(`${base}script.json`).async("nodebuffer")), target.resource.script.sha256);
   return { title: manifest.title, gameId: manifest.game_id, script, assets, proof: target.proof,
+    optimization: { path: optimizationFile, sha256: sha256(optimizationBytes), warnings: optimization.warnings },
     layout: { present: !!layoutBytes, sha256: layoutBytes ? sha256(layoutBytes) : null },
     scope: "Canonical authored AgentVN story; representative first branch, not all routes or NVL/bubble" };
 }

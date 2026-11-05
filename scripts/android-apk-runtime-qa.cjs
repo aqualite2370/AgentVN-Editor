@@ -25,6 +25,7 @@ const { measureSettingsIconProportions, assertSettingsIconProportions } = requir
 const { validateDefaultTitleApk, measureAndroidDefaultTitle, exerciseAndroidDefaultTitle } = require('./lib/android-default-title-flow.cjs');
 const { validateHiddenGrowthApk, exerciseHiddenGrowth } = require('./lib/android-hidden-growth-flow.cjs');
 const { packageSmokeCoverage, packageSmokeStatus, validatePackageSmokeApk, exercisePackageSmoke } = require('./lib/android-package-smoke.cjs');
+const { runtimeInterfaceVisibility } = require('./lib/runtime-interface-visibility.cjs');
 
 const root = path.resolve(__dirname, "..");
 const argv = process.argv.slice(2);
@@ -764,10 +765,15 @@ async function exerciseMenuActions(cdp) {
   await waitFor(cdp, `Boolean(document.querySelector('.story-player'))`, 'player after history');
   report.menuActions.history = 'PASS';
   await ensureQuickMenuExpanded(cdp, 'menu hide action');
+  const beforeHide = (await dom(cdp)).player;
   await tapSelector(cdp, button('hide_ui'), 'hide player interface');
-  await waitFor(cdp, `!document.querySelector('.dialog-box') && !document.querySelector('.playback-controls')`, 'interface hidden');
+  const hidden = await waitFor(cdp, `(() => { const s=(${runtimeInterfaceVisibility.toString()})(); return s.hidden && s; })()`, 'interface hidden/inert with no focus');
   await tapSelector(cdp, '.story-player', 'touch to restore interface');
-  await waitFor(cdp, `Boolean(document.querySelector('.dialog-box') && document.querySelector('.playback-controls'))`, 'interface restored');
+  const restored = await waitFor(cdp, `(() => { const s=(${runtimeInterfaceVisibility.toString()})(); return s.restored && s; })()`, 'interface restored');
+  const afterHide = (await dom(cdp)).player;
+  if (beforeHide.sceneId !== afterHide.sceneId || beforeHide.commandIndex !== afterHide.commandIndex)
+    throw new Error('HIDE_RESTORE_TOUCH_ADVANCED_STORY');
+  report.hideInterfaceEvidence = { hidden, restored, before: beforeHide, after: afterHide };
   report.menuActions.hide = 'PASS';
   await ensureQuickMenuExpanded(cdp, 'menu rollback action');
   const before = (await dom(cdp)).player;
@@ -1246,6 +1252,10 @@ async function main() {
   report.coldBoot = verifyColdBoot(fs.existsSync(bootPath) ? JSON.parse(fs.readFileSync(bootPath, 'utf8')) : null,
     run(['shell', 'cat', '/proc/sys/kernel/random/boot_id']), report.startedAt);
   report.requiredCoverage.coldEmulatorBoot = report.coldBoot.status;
+  // Capture the actual provider before functional steps, so an early failure
+  // cannot leave its warnings without version provenance.
+  report.webviewVersion = run(['shell', 'dumpsys', 'webviewupdate']);
+  fs.writeFileSync(path.join(outputDir, 'webview-provider-before-runtime.txt'), report.webviewVersion, 'utf8');
   const existing = runQuiet(['shell', 'pm', 'path', packageName]);
   if (/package:/.test(existing.stdout || '')) fail('Package is already installed; device is occupied. Existing user data was preserved.', 'DEVICE_OCCUPIED');
   run(["logcat", "-c"]);

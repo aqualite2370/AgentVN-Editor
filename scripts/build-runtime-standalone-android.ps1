@@ -1560,10 +1560,75 @@ function Capture-AndroidFailureDiagnostics {
   }
 }
 
+function New-AndroidCargoTarget {
+  param(
+    [Parameter(Mandatory = $true)][string]$TauriDir,
+    [Parameter(Mandatory = $true)][string]$NodeExecutable,
+    [string]$TemporaryRoot = [System.IO.Path]::GetTempPath()
+  )
+  $normal = [System.IO.Path]::GetFullPath((Join-Path $TauriDir "target"))
+  # MSVC's host build-script linker still rejects long /OUT paths even when
+  # Cargo and Windows support long filenames. Leave room for crate/hash tails.
+  if ($normal.Length -le 120) {
+    return [pscustomobject]@{ path = $normal; owned = $false }
+  }
+  $parents = @($TemporaryRoot, (Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "AgentVN\ct"))
+  foreach ($parent in $parents) {
+    $token = [guid]::NewGuid().ToString("N")
+    $candidate = [System.IO.Path]::GetFullPath((Join-Path $parent ("avn-cargo-" + $token.Substring(0, 16))))
+    if (Test-Path -LiteralPath $candidate) { throw "ANDROID_CARGO_TARGET_CONFLICT: refusing an existing target." }
+    New-Item -ItemType Directory -Force -Path $candidate | Out-Null
+    try {
+      $physical = (& $NodeExecutable -e "console.log(require('node:fs').realpathSync.native(process.argv[1]))" $candidate | Out-String).Trim()
+      if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($physical)) {
+        throw "ANDROID_CARGO_TARGET_INVALID: could not resolve the physical target directory."
+      }
+      if ($physical.StartsWith('\\?\')) { $physical = $physical.Substring(4) }
+      if ($physical.Length -gt 120) {
+        [System.IO.Directory]::Delete($candidate, $false)
+        continue
+      }
+      [System.IO.File]::WriteAllText((Join-Path $physical ".agentvn-owner"), $token)
+      return [pscustomobject]@{
+        path = $physical; parent = [System.IO.Path]::GetDirectoryName($physical)
+        token = $token; owned = $true
+      }
+    } catch {
+      if ((Test-Path -LiteralPath $candidate) -and
+          @(Get-ChildItem -LiteralPath $candidate -Force).Count -eq 0) {
+        [System.IO.Directory]::Delete($candidate, $false)
+      }
+      throw
+    }
+  }
+  throw "ANDROID_CARGO_TARGET_TOO_LONG: choose a shorter Windows temporary directory before building."
+}
+
+function Remove-AndroidCargoTarget {
+  param([AllowNull()][object]$Target)
+  if ($null -eq $Target -or -not $Target.owned) { return }
+  $resolved = [System.IO.Path]::GetFullPath([string]$Target.path)
+  $parent = [System.IO.Path]::GetFullPath([string]$Target.parent)
+  $leaf = [System.IO.Path]::GetFileName($resolved)
+  if ($leaf -notmatch '^avn-cargo-[a-f0-9]{16}$' -or
+      [System.IO.Path]::GetDirectoryName($resolved) -cne $parent -or
+      [System.IO.Path]::GetFullPath((Join-Path $parent $leaf)) -cne $resolved) {
+    throw "ANDROID_CARGO_TARGET_CLEANUP_REFUSED: target is outside its recorded parent."
+  }
+  if ((Get-Item -LiteralPath $resolved -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+    throw "ANDROID_CARGO_TARGET_CLEANUP_REFUSED: target was replaced by a link."
+  }
+  if ([System.IO.File]::ReadAllText((Join-Path $resolved ".agentvn-owner")) -cne [string]$Target.token) {
+    throw "ANDROID_CARGO_TARGET_CLEANUP_REFUSED: ownership marker differs."
+  }
+  Remove-Item -LiteralPath $resolved -Recurse -Force
+}
+
 function Ensure-AndroidCargoTargetDirs {
   param([string]$TauriDir)
+  $targetRoot = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $TauriDir "target" }
   foreach ($target in @("aarch64-linux-android", "armv7-linux-androideabi", "i686-linux-android", "x86_64-linux-android")) {
-    New-Item -ItemType Directory -Force -Path (Join-Path $TauriDir "target\$target\release\deps") | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $targetRoot "$target\release\deps") | Out-Null
   }
 }
 
@@ -1791,6 +1856,8 @@ $PreviousGradleOptsEnv = $env:GRADLE_OPTS
 $PreviousGradleUserHomeEnv = $env:GRADLE_USER_HOME
 $PreviousGradleDistributionEnv = $env:AGENTVN_GRADLE_DISTRIBUTION
 $PreviousCargoBuildJobsEnv = $env:CARGO_BUILD_JOBS
+$PreviousCargoTargetDirEnv = $env:CARGO_TARGET_DIR
+$CargoTarget = $null
 $PreviousRustflagsEnv = $env:RUSTFLAGS
 
 New-Item -ItemType Directory -Force -Path $BackupRoot | Out-Null
@@ -1804,6 +1871,10 @@ if ($HadRuntimeTauriConfig) { Copy-Item -LiteralPath $RuntimeTauriConfigPath -De
 Backup-AndroidLauncherIcons -BackupDir $AndroidIconBackupRoot
 
 try {
+  $CargoTarget = New-AndroidCargoTarget -TauriDir (Join-Path $RuntimeRoot "src-tauri") -NodeExecutable $NodePath
+  $env:CARGO_TARGET_DIR = $CargoTarget.path
+  Write-Utf8Atomic -Path (Join-Path $ResolvedDiagnostics "android-cargo-target.json") -Value $CargoTarget
+  Add-Utf8Log -Path $BuildLog -Value "Android Cargo target: $($CargoTarget.path); temporary=$($CargoTarget.owned)"
   New-Item -ItemType Directory -Force -Path $PackagedEmbeddedDir | Out-Null
   $unpackLog = Join-Path $ResolvedDiagnostics "standalone-unpack.log"
   $unpackExit = Invoke-LoggedCommand -FilePath $NodePath -ArgumentList @((Join-Path $Root "scripts\unpack-vncart.cjs"), $ResolvedCartridge, $PackagedEmbeddedDir) -WorkingDirectory $Root -LogPath $unpackLog
@@ -1939,7 +2010,7 @@ try {
   # Tauri/Gradle actually use, with the target fallback kept for older layouts.
   $ApkSearchRoots = @(
     (Join-Path $RuntimeRoot "src-tauri\gen\android\app\build\outputs\apk"),
-    (Join-Path $RuntimeRoot "src-tauri\target\android")
+    (Join-Path $env:CARGO_TARGET_DIR "android")
   ) | Where-Object { Test-Path -LiteralPath $_ }
   $ApkFiles = @()
   foreach ($rootPath in $ApkSearchRoots) {
@@ -2100,6 +2171,8 @@ try {
   if ($null -eq $PreviousGradleUserHomeEnv) { Remove-Item Env:\GRADLE_USER_HOME -ErrorAction SilentlyContinue } else { $env:GRADLE_USER_HOME = $PreviousGradleUserHomeEnv }
   if ($null -eq $PreviousGradleDistributionEnv) { Remove-Item Env:\AGENTVN_GRADLE_DISTRIBUTION -ErrorAction SilentlyContinue } else { $env:AGENTVN_GRADLE_DISTRIBUTION = $PreviousGradleDistributionEnv }
   if ($null -eq $PreviousCargoBuildJobsEnv) { Remove-Item Env:\CARGO_BUILD_JOBS -ErrorAction SilentlyContinue } else { $env:CARGO_BUILD_JOBS = $PreviousCargoBuildJobsEnv }
+  if ($null -eq $PreviousCargoTargetDirEnv) { Remove-Item Env:\CARGO_TARGET_DIR -ErrorAction SilentlyContinue } else { $env:CARGO_TARGET_DIR = $PreviousCargoTargetDirEnv }
+  Remove-AndroidCargoTarget $CargoTarget
   if ($null -eq $PreviousRustflagsEnv) { Remove-Item Env:\RUSTFLAGS -ErrorAction SilentlyContinue } else { $env:RUSTFLAGS = $PreviousRustflagsEnv }
   if (Test-Path -LiteralPath $BackupRoot) { Remove-Item -LiteralPath $BackupRoot -Recurse -Force }
   foreach ($artifact in @($Artifacts)) {

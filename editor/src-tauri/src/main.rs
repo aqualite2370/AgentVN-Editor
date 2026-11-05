@@ -239,9 +239,13 @@ struct ElevatedAndroidBuildRequest {
 struct AndroidSymlinkCapability {
     schema_version: u32,
     probe_root: String,
+    #[serde(default)]
+    resolved_probe_root: Option<String>,
     success: bool,
     win32_error_code: Option<i32>,
     error: Option<String>,
+    #[serde(default)]
+    failed_operation: Option<String>,
     windows_build: String,
     checked_at: u128,
     is_elevated: bool,
@@ -4036,24 +4040,45 @@ fn windows_symbolic_link_privilege_state() -> (bool, bool, Option<String>) {
 
 #[cfg(target_os = "windows")]
 fn probe_android_symlink_capability(probe_root: &Path) -> AndroidSymlinkCapability {
-    let probe_directory = probe_root.join(format!(
+    let mut probe_directory = probe_root.join(format!(
         ".agentvn-symlink-probe-{}-{}",
         std::process::id(),
         error_report_timestamp()
     ));
-    let source = probe_directory.join("source.txt");
-    let link = probe_directory.join("link.txt");
+    let mut source = probe_directory.join("source.txt");
+    let mut link = probe_directory.join("link.txt");
+    let mut resolved_probe_root = None;
     let mut error = None;
     let mut win32_error_code = None;
+    let mut operation = "create-probe-directory";
+    let mut failed_operation = None;
     let success = (|| -> io::Result<bool> {
         fs::create_dir_all(&probe_directory)?;
+        // Packaged hosts can redirect AppData writes while the kernel follows
+        // symlink targets without that redirection. Use physical paths for
+        // both ends, not a logical AppData target which does not exist on disk.
+        operation = "resolve-probe-directory";
+        probe_directory = fs::canonicalize(&probe_directory)?;
+        resolved_probe_root = probe_directory.parent().map(|path| path.to_string_lossy().into_owned());
+        source = probe_directory.join("source.txt");
+        link = probe_directory.join("link.txt");
+        operation = "write-probe-source";
         fs::write(&source, "agentvn-symlink-probe")?;
+        operation = "create-symbolic-link";
         symlink_file(&source, &link)?;
-        Ok(fs::read_to_string(&link)? == "agentvn-symlink-probe")
+        operation = "read-symbolic-link";
+        if fs::read_to_string(&link)? != "agentvn-symlink-probe" {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Symbolic-link readback did not match the probe source"));
+        }
+        Ok(true)
     })()
     .unwrap_or_else(|failure| {
         win32_error_code = failure.raw_os_error();
-        error = Some(failure.to_string());
+        failed_operation = Some(operation.to_string());
+        error = Some(format!(
+            "{operation}: {failure}; source={}; source_readable={}; link_target={:?}",
+            source.display(), fs::read_to_string(&source).is_ok(), fs::read_link(&link)
+        ));
         false
     });
     let _ = fs::remove_file(&link);
@@ -4063,11 +4088,13 @@ fn probe_android_symlink_capability(probe_root: &Path) -> AndroidSymlinkCapabili
     let (privilege_present, privilege_enabled, privilege_query_error) =
         windows_symbolic_link_privilege_state();
     AndroidSymlinkCapability {
-        schema_version: 2,
+        schema_version: 3,
         probe_root: probe_root.to_string_lossy().to_string(),
+        resolved_probe_root,
         success,
         win32_error_code,
         error,
+        failed_operation,
         windows_build: windows_version_number(),
         checked_at: error_report_timestamp(),
         is_elevated: windows_process_is_elevated(),
@@ -4081,11 +4108,13 @@ fn probe_android_symlink_capability(probe_root: &Path) -> AndroidSymlinkCapabili
 #[cfg(not(target_os = "windows"))]
 fn probe_android_symlink_capability(probe_root: &Path) -> AndroidSymlinkCapability {
     AndroidSymlinkCapability {
-        schema_version: 2,
+        schema_version: 3,
         probe_root: probe_root.to_string_lossy().to_string(),
+        resolved_probe_root: None,
         success: true,
         win32_error_code: None,
         error: None,
+        failed_operation: None,
         windows_build: windows_version_number(),
         checked_at: error_report_timestamp(),
         is_elevated: false,
@@ -4099,6 +4128,9 @@ fn probe_android_symlink_capability(probe_root: &Path) -> AndroidSymlinkCapabili
 fn classify_android_symlink_failure(capability: &AndroidSymlinkCapability) -> Option<&'static str> {
     if capability.success {
         return None;
+    }
+    if capability.failed_operation.as_deref().is_some_and(|step| step != "create-symbolic-link") {
+        return Some("SYMLINK_PROBE_IO_FAILED");
     }
     let permission_failure = capability
         .win32_error_code
@@ -4330,7 +4362,7 @@ fn run_elevated_android_build_request(request_path: &Path) -> Result<i32, String
         );
         write_elevated_failure_manifest(
             &request,
-            "ELEVATED_SYMLINK_DENIED",
+            classify_android_symlink_failure(&probe).unwrap_or("ELEVATED_SYMLINK_DENIED"),
             &message,
             Some(&probe),
         )?;
@@ -5707,12 +5739,14 @@ fn build_standalone_package_blocking_inner(
                 let mut result = package_build_result(
                     "BLOCKED",
                     format!(
-                        "The current process cannot create the symbolic link required by Tauri in {}. Win32 error: {}. The process is already elevated or the filesystem rejected symbolic links, so another UAC retry would not help.",
+                        "Symbolic-link verification failed in {} during {}. Win32 error: {}. Details: {}",
                         probe_root.display(),
+                        probe.failed_operation.as_deref().unwrap_or("symbolic-link verification"),
                         probe
                             .win32_error_code
                             .map(|value| value.to_string())
-                            .unwrap_or_else(|| "unknown".to_string())
+                            .unwrap_or_else(|| "unknown".to_string()),
+                        probe.error.as_deref().unwrap_or("No operation details were recorded.")
                     ),
                     Vec::new(),
                     vec![format!(
@@ -6307,6 +6341,7 @@ fn refresh_android_artifact_cleanup_evidence(
     artifact: &PackageBuildArtifact,
     cache_dir: &Path,
     cartridge_path: &Path,
+    physical_inputs: (&Path, &Path),
     expected_run_id: Option<&str>,
     cleanup_error: Option<&str>,
 ) -> Result<(), String> {
@@ -6324,9 +6359,22 @@ fn refresh_android_artifact_cleanup_evidence(
         return Err("APK metadata belongs to another build run".to_string());
     }
     let has_parent = |value: &Path| value.components().any(|part| matches!(part, std::path::Component::ParentDir));
+    let normalize = |value: &Path| PathBuf::from(shell_display_path(value));
+    let normalized_cache = normalize(cache_dir);
+    let physical_cache = normalize(physical_inputs.0);
+    let physical_source = normalize(physical_inputs.1);
+    let owned_path = |value: &Path| {
+        let normalized = normalize(value);
+        normalized.is_absolute() && !has_parent(value)
+            && (normalized.starts_with(&normalized_cache) || normalized.starts_with(&physical_cache))
+            && normalized != normalized_cache && normalized != physical_cache
+    };
+    let receipt_source = evidence["sourceCartridge"]["path"].as_str().map(Path::new);
     if !apk.is_absolute() || has_parent(apk)
-        || evidence["apk"]["path"].as_str().map(Path::new) != Some(apk)
-        || evidence["sourceCartridge"]["path"].as_str().map(Path::new) != Some(cartridge_path)
+        || evidence["apk"]["path"].as_str().map(Path::new).map(normalize) != Some(normalize(apk))
+        || !receipt_source.is_some_and(|source| {
+            normalize(source) == normalize(cartridge_path) || normalize(source) == physical_source
+        })
         || !cartridge_path.is_absolute() || !cartridge_path.starts_with(cache_dir) || has_parent(cartridge_path)
     {
         return Err("APK metadata artifact/source ownership mismatch".to_string());
@@ -6344,14 +6392,13 @@ fn refresh_android_artifact_cleanup_evidence(
         let hash = entry["sha256"].as_str()
             .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
             .ok_or_else(|| format!("APK metadata missing {key}.sha256"))?;
-        if !file.is_absolute() || !file.starts_with(cache_dir) || has_parent(file) {
+        if !owned_path(file) {
             return Err(format!("APK metadata {key} is outside this build cache"));
         }
         let cleaned = match fs::metadata(file) {
             Ok(_) => {
-                let resolved_cache = fs::canonicalize(cache_dir).map_err(|error| error.to_string())?;
-                let resolved_file = fs::canonicalize(file).map_err(|error| error.to_string())?;
-                if !resolved_file.starts_with(&resolved_cache) || resolved_file == resolved_cache {
+                let resolved_file = normalize(&fs::canonicalize(file).map_err(|error| error.to_string())?);
+                if !resolved_file.starts_with(&physical_cache) || resolved_file == physical_cache {
                     return Err(format!("APK metadata {key} resolves outside this build cache"));
                 }
                 !sha256_file(file)?.eq_ignore_ascii_case(hash)
@@ -6373,6 +6420,23 @@ fn refresh_android_artifact_cleanup_evidence(
     write_json_atomic(&metadata_path, &evidence)
 }
 
+fn resolve_cleanup_input_identity(path: &Path) -> Result<PathBuf, String> {
+    if !path.is_absolute() || path.components().any(|part| matches!(part, std::path::Component::ParentDir)) {
+        return Err("Native cleanup input must be an absolute path without parent traversal".into());
+    }
+    match fs::canonicalize(path) {
+        Ok(resolved) => Ok(resolved),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            // Repeated finalization is valid after successful cleanup. Resolve
+            // the surviving native-owned ancestor, never a path from metadata.
+            let parent = path.parent().ok_or_else(|| error.to_string())?;
+            let leaf = path.file_name().ok_or_else(|| error.to_string())?;
+            Ok(resolve_cleanup_input_identity(parent)?.join(leaf))
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 fn finalize_standalone_package_build_inputs(
     cache_dir: &Path,
     cartridge_path: &Path,
@@ -6380,6 +6444,17 @@ fn finalize_standalone_package_build_inputs(
     expected_run_id: Option<&str>,
     result: &Result<StandalonePackageBuildResult, String>,
 ) -> Result<(), String> {
+    // The elevated builder sees physical AppData paths. Resolve native-owned
+    // identities while the inputs exist; cleanup removes them before metadata
+    // is refreshed, so canonicalizing afterwards loses that identity.
+    let physical_inputs = (|| -> Result<(PathBuf, PathBuf), String> {
+        let cache = resolve_cleanup_input_identity(cache_dir)?;
+        let source = resolve_cleanup_input_identity(cartridge_path)?;
+        if !source.starts_with(&cache) || source == cache {
+            return Err("Native cartridge resolves outside this build cache".into());
+        }
+        Ok((cache, source))
+    })();
     let cleanup = if matches!(result, Ok(value) if value.ok) {
         remove_path_if_exists(cache_dir)
     } else {
@@ -6388,8 +6463,12 @@ fn finalize_standalone_package_build_inputs(
     let mut errors = Vec::new();
     if let Ok(build) = result {
         for artifact in build.artifacts.iter().filter(|item| item.kind == "android_apk_signed") {
+            let (physical_cache, physical_source) = match &physical_inputs {
+                Ok(inputs) => inputs,
+                Err(error) => { errors.push(error.clone()); continue; }
+            };
             if let Err(error) = refresh_android_artifact_cleanup_evidence(
-                artifact, cache_dir, cartridge_path, expected_run_id,
+                artifact, cache_dir, cartridge_path, (physical_cache, physical_source), expected_run_id,
                 cleanup.as_ref().err().map(String::as_str),
             ) {
                 errors.push(error);
@@ -10061,6 +10140,31 @@ mod standalone_evidence_cleanup_tests {
         assert_eq!(sha256_file(&fixture.apk).unwrap(), fixture.initial["apk"]["sha256"]);
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn redirected_cache_alias_accepts_physical_receipt_after_inputs_are_removed() {
+        let fixture = Fixture::new(true);
+        let alias = fixture.root.join("logical-appdata");
+        std::os::windows::fs::symlink_dir(&fixture.root, &alias).unwrap();
+        let mut receipt = fixture.initial.clone();
+        for (key, file) in [("sourceCartridge", &fixture.source), ("prepackageLayout", &fixture.layout)] {
+            receipt[key]["path"] = shell_display_path(&fs::canonicalize(file).unwrap()).into();
+        }
+        write_json_atomic(&fixture.metadata, &receipt).unwrap();
+        finalize_standalone_package_build_inputs(
+            &alias.join("cache"), &alias.join("cache/source.vncart"), None, Some("host-cleanup-test"), &fixture.result
+        ).unwrap();
+        assert!(!fixture.cache.exists());
+        let saved = fixture.read();
+        assert_eq!(saved["nativeCleanup"]["status"], "PASS");
+        assert_eq!(saved["sourceCartridge"]["cleaned"], true);
+        assert_eq!(saved["prepackageLayout"]["cleaned"], true);
+        for key in ["apk", "sourceCartridge", "prepackageLayout"] {
+            assert_eq!(saved[key]["sha256"], receipt[key]["sha256"]);
+        }
+        fs::remove_dir(&alias).unwrap();
+    }
+
     #[test]
     fn failed_build_cleanup_keeps_diagnostics_but_updates_deleted_inputs() {
         let fixture = Fixture::new(false);
@@ -10231,6 +10335,7 @@ mod standalone_evidence_cleanup_tests {
         let before = fs::read(&fixture.metadata).unwrap();
         let error = refresh_android_artifact_cleanup_evidence(
             &fixture.result.as_ref().unwrap().artifacts[0], &fixture.cache, &fixture.source,
+            (&fs::canonicalize(&fixture.cache).unwrap(), &fs::canonicalize(&fixture.source).unwrap()),
             Some("host-cleanup-test"), Some("cleanup failed before reaching this link"),
         ).unwrap_err();
         assert!(error.contains("resolves outside this build cache"));
@@ -10909,9 +11014,11 @@ mod standalone_package_upload_tests {
         let capability = |success, code, elevated| AndroidSymlinkCapability {
             schema_version: 1,
             probe_root: "C:\\构建目录".to_string(),
+            resolved_probe_root: None,
             success,
             win32_error_code: code,
             error: None,
+            failed_operation: None,
             windows_build: "test".to_string(),
             checked_at: 0,
             is_elevated: elevated,
@@ -10936,6 +11043,46 @@ mod standalone_package_upload_tests {
             classify_android_symlink_failure(&capability(false, Some(50), false)),
             Some("SYMLINK_UNSUPPORTED")
         );
+        let read_failure = AndroidSymlinkCapability {
+            failed_operation: Some("read-symbolic-link".into()),
+            ..capability(false, Some(3), false)
+        };
+        assert_eq!(classify_android_symlink_failure(&read_failure), Some("SYMLINK_PROBE_IO_FAILED"));
+        let mut legacy = serde_json::to_value(capability(true, None, false)).unwrap();
+        legacy.as_object_mut().unwrap().remove("failedOperation");
+        legacy.as_object_mut().unwrap().remove("resolvedProbeRoot");
+        let restored: AndroidSymlinkCapability = serde_json::from_value(legacy).unwrap();
+        assert!(restored.success);
+        assert!(restored.failed_operation.is_none() && restored.resolved_probe_root.is_none());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn android_symlink_probe_reports_source_directory_io_failure() {
+        let root = std::env::temp_dir().join(format!(
+            "agentvn-symlink-blocked-{}-{}", std::process::id(), error_report_timestamp()
+        ));
+        fs::write(&root, "owned fixture blocks directory creation").unwrap();
+        let result = probe_android_symlink_capability(&root);
+        assert_eq!(fs::read_to_string(&root).unwrap(), "owned fixture blocks directory creation");
+        fs::remove_file(&root).unwrap();
+        assert!(!result.success);
+        assert_eq!(result.failed_operation.as_deref(), Some("create-probe-directory"));
+        assert_eq!(classify_android_symlink_failure(&result), Some("SYMLINK_PROBE_IO_FAILED"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "Real Windows AppData filesystem regression; run explicitly under the QA session"]
+    fn android_symlink_probe_reads_back_in_redirected_appdata() {
+        let root = PathBuf::from(std::env::var_os("LOCALAPPDATA").expect("LOCALAPPDATA"))
+            .join("com.agentvn.editor").join("standalone-package")
+            .join(format!("symlink-regression-{}-{}", std::process::id(), error_report_timestamp()));
+        assert!(!root.exists(), "fresh owned fixture required");
+        let capability = probe_android_symlink_capability(&root);
+        fs::remove_dir(&root).expect("remove empty owned fixture after probe cleanup");
+        println!("{capability:#?}");
+        assert!(capability.success, "Actual symlink readback failed: {capability:#?}");
     }
 
     #[cfg(target_os = "windows")]
@@ -10944,9 +11091,11 @@ mod standalone_package_upload_tests {
         let capability = AndroidSymlinkCapability {
             schema_version: 2,
             probe_root: "C:\\构建目录".to_string(),
+            resolved_probe_root: None,
             success: true,
             win32_error_code: None,
             error: None,
+            failed_operation: None,
             windows_build: "test".to_string(),
             checked_at: 0,
             is_elevated: false,

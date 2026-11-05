@@ -137,7 +137,7 @@ export type GameCommand =
   | { type: "state_update"; key: string; operation: "set" | "set_if_unset" | "add" | "subtract" | "toggle" | "append" | "remove"; value: JsonValue; value_type?: StateValueType }
   | { type: "conditional_jump"; condition: string | Condition; target_scene_id: string; else_target_scene_id?: string | null }
   | { type: "jump"; target_scene_id: string }
-  | { type: "animation"; animation_id: string; target: string; params: Record<string, JsonValue>; blocking: boolean }
+  | { type: "animation"; animation_id: string; animation_asset_id?: string; target: string; params: Record<string, JsonValue>; blocking: boolean }
   | { type: "bgm"; bgm_id?: string | null; action: "play" | "stop"; volume?: number | null; fade_ms?: number | null }
   | { type: "sfx"; sfx_id: string; volume?: number | null }
   | CameraCommand

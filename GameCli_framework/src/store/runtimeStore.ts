@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { fetchNativeAnimationAsset, resolveNativeAnimationAssets } from "../../../shared/animation/nativeAnimationAsset";
 import { reportFrontendError } from "../../../shared/logging/frontendErrorLogger";
 import { StoryEngine, type StoryEngineState, type PlaybackSessionCheckpoint } from "../engine/StoryEngine";
 import { assetResolver } from "../engine/assetResolver";
@@ -740,6 +741,18 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
     setPresentationMode: (presentationMode) => set({ presentationMode }),
     async loadGame(game) {
       const owner = ++saveOwner;
+      const script = await resolveNativeAnimationAssets(game.script, game.manifest.assets, asset => {
+        const url = game.assetUrls[asset.asset_id] || game.assetUrls[asset.path];
+        if (!url) throw new Error(`动画素材 ${asset.asset_id} 缺少可读取的文件。`);
+        return fetchNativeAnimationAsset(url);
+      }).catch(error => {
+        if (owner === saveOwner) throw error;
+        reportFrontendError("player.animation.stale-load", error, { gameId: game.game_id });
+        return undefined;
+      });
+      if (owner !== saveOwner) return;
+      if (!script) return;
+      game = { ...game, script };
       set({ quickSavePending: false, quickLoadCandidate: undefined, saveNotice: undefined,
         galleryReplayActive: false, galleryReturnSnapshot: undefined, galleryReplayReturnScreen: undefined, galleryReturnSession: undefined,
         saveStorageInfo: undefined, saveMigrationOpen: false, saveMigrationPending: false, saveMigrationError: undefined });
@@ -799,6 +812,18 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
     },
     async loadLivePreview(game, start) {
       const owner = ++saveOwner;
+      const script = await resolveNativeAnimationAssets(game.script, game.manifest.assets, asset => {
+        const url = game.assetUrls[asset.asset_id] || game.assetUrls[asset.path];
+        if (!url) throw new Error(`动画素材 ${asset.asset_id} 缺少可读取的文件。`);
+        return fetchNativeAnimationAsset(url);
+      }).catch(error => {
+        if (owner === saveOwner) throw error;
+        reportFrontendError("player.animation.stale-load", error, { gameId: game.game_id });
+        return undefined;
+      });
+      if (owner !== saveOwner) return;
+      if (!script) return;
+      game = { ...game, script };
       set({ quickSavePending: false, quickLoadCandidate: undefined, saveNotice: undefined,
         galleryReplayActive: false, galleryReturnSnapshot: undefined, galleryReplayReturnScreen: undefined, galleryReturnSession: undefined,
         saveStorageInfo: undefined, saveMigrationOpen: false, saveMigrationPending: false, saveMigrationError: undefined });

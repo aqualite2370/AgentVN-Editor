@@ -40,6 +40,8 @@ import { resolveCharacterSpriteLayout } from "../../utils/spritePlacementApply";
 import { AssetPicker } from "../common/AssetPicker";
 import { reportFrontendError } from "../../../../shared/logging/frontendErrorLogger";
 import { RichSelect } from "../common/RichSelect";
+import { inspectEditorAnimationAsset } from "../../animation/animationAsset";
+import type { AssetRef } from "../../types/assets";
 
 interface WorkbenchRect {
   x: number;
@@ -288,6 +290,27 @@ export function FloatingCommandWorkbench({
   const [spritePlacementOpen, setSpritePlacementOpen] = useState(false);
   const [spriteAnimationConfig, setSpriteAnimationConfig] = useState<CharacterSpriteAnimationConfig>(() => defaultCharacterAnimationConfig(true));
   const [animationId, setAnimationId] = useState("");
+  const [animationAssetPending, setAnimationAssetPending] = useState(false);
+  const [animationAssetError, setAnimationAssetError] = useState<string>();
+  const animationSelectionGeneration = useRef(0);
+  useEffect(() => () => { ++animationSelectionGeneration.current; }, []);
+  async function selectAnimationAsset(id: string, asset?: AssetRef) {
+    const owner = ++animationSelectionGeneration.current;
+    setAnimationAssetError(undefined);
+    setAnimationAssetPending(false);
+    if (!id) { setAnimationId(""); return; }
+    if (!asset) { setAnimationAssetError("找不到所选动画素材。"); return; }
+    setAnimationAssetPending(true);
+    try {
+      await inspectEditorAnimationAsset(asset);
+      if (owner === animationSelectionGeneration.current) setAnimationId(id);
+    } catch (error) {
+      if (owner === animationSelectionGeneration.current)
+        setAnimationAssetError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (owner === animationSelectionGeneration.current) setAnimationAssetPending(false);
+    }
+  }
   const [animationTarget, setAnimationTarget] = useState("sprite:alice");
   const [animationConfig, setAnimationConfig] = useState<CharacterSpriteAnimationConfig>(() => ({ ...defaultCharacterAnimationConfig(true), kind: "tween" }));
   const [insertPopoverOpen, setInsertPopoverOpen] = useState(false);
@@ -577,13 +600,14 @@ export function FloatingCommandWorkbench({
       };
     }
     if (commandType === "animation") {
-      const compiled = compileCharacterAnimation(animationConfig, null, null, true);
+      const compiled = animationId ? null : compileCharacterAnimation(animationConfig, null, null, true);
       return {
         type: "animation",
-        animation_id: animationId.trim(),
+        animation_id: animationId.trim() || "custom",
+        ...(animationId ? { animation_asset_id: animationId } : {}),
         animation_display_name: animationConfig.display_name ?? "",
         target: animationTarget.trim() || spriteTargetForCharacter("selected"),
-        params: compiled?.params ?? { duration: 500 },
+        params: animationId ? {} : compiled?.params ?? { duration: 500 },
         blocking: compiled?.blocking ?? true,
       };
     }
@@ -632,6 +656,7 @@ export function FloatingCommandWorkbench({
   }
 
   function submitCommand() {
+    if (commandType === "animation" && (animationAssetPending || animationAssetError)) return;
     if (commandType === "camera" && onOpenCameraStudio) {
       onOpenCameraStudio();
       return;
@@ -649,6 +674,7 @@ export function FloatingCommandWorkbench({
   function submitInsert(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
     if (!onInsert) return;
+    if (commandType === "animation" && (animationAssetPending || animationAssetError)) return;
     const afterIndex = Number(insertAfterInput);
     if (!Number.isInteger(afterIndex) || afterIndex < 1 || afterIndex > commands.length) {
       setInsertError(`请输入 1 到 ${commands.length} 之间的整数序号`);
@@ -843,14 +869,16 @@ export function FloatingCommandWorkbench({
           </strong>
           <AssetPicker
             label="演出动画素材"
-            field="animation_id"
+            field="animation_asset_id"
             value={animationId}
             allowedTypes={["animation"]}
             helpKey="command.animation.animationId"
             emptyLabel="暂无可用动画素材"
             variant="popover"
-            onChange={setAnimationId}
+            onChange={(id, asset) => void selectAnimationAsset(id, asset)}
           />
+          {animationAssetPending && <span role="status">正在检查动画素材…</span>}
+          {animationAssetError && <span role="alert">{animationAssetError}</span>}
           <label>
             动画目标
             <input value={animationTarget} data-help-key="command.animation.target" onChange={(event) => setAnimationTarget(event.target.value)} />
@@ -870,13 +898,13 @@ export function FloatingCommandWorkbench({
               <input data-help-key="command.animation.spriteTargetCustom" value={spriteTargetId} onChange={(event) => setAnimationTarget(spriteTargetForCharacter(event.target.value))} />
             </label>
           </div>
-          <CharacterAnimationControls
+          {!animationId && <CharacterAnimationControls
             value={animationConfig}
             compact
             studioTitle="演出动效工作室"
             targetLabel={animationTarget || "动画目标"}
             onChange={(next) => setAnimationConfig(next ?? { ...defaultCharacterAnimationConfig(true), kind: "none" })}
-          />
+          />}
         </div>
       );
     }
@@ -989,7 +1017,7 @@ export function FloatingCommandWorkbench({
           <div className="workbench-detail-content">{renderQuickFields()}</div>
         </section>
         <div className="workbench-submit-actions">
-          <button type="button" className="workbench-submit" data-testid="workbench-add-command" data-help-key="workbench.addCommand" onClick={submitCommand}>
+          <button type="button" className="workbench-submit" data-testid="workbench-add-command" data-help-key="workbench.addCommand" disabled={commandType === "animation" && (animationAssetPending || Boolean(animationAssetError))} onClick={submitCommand}>
             {commandType === "camera" ? "打开运镜工作室" : "添加到场景末尾"}
           </button>
           <button
@@ -1000,7 +1028,7 @@ export function FloatingCommandWorkbench({
             data-help-key="workbench.insertCommand"
             aria-haspopup="dialog"
             aria-expanded={insertPopoverOpen}
-            disabled={!onInsert || commands.length === 0 || commandType === "camera"}
+            disabled={!onInsert || commands.length === 0 || commandType === "camera" || (commandType === "animation" && (animationAssetPending || Boolean(animationAssetError)))}
             title={commandType === "camera" ? "运镜请在事件列表中用＋运镜选择位置" : undefined}
             onClick={insertPopoverOpen ? closeInsertPopover : openInsertPopover}
           >

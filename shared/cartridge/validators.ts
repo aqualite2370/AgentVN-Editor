@@ -331,6 +331,9 @@ export function validateRuntimeScript(script: RuntimeScript, manifest?: GameMani
         }
       }
       if (command.type === "animation") {
+        if (command.animation_asset_id != null && (typeof command.animation_asset_id !== "string" || !command.animation_asset_id.trim())) {
+          issues.push(issue("invalid_animation_asset_id", "动画素材 ID 不能为空。", "error", `scene.${scene.scene_id}.animation.animation_asset_id`));
+        }
         const targetId = spriteTargetCharacterId(command.target);
         if (targetId && targetId !== "selected" && targetId !== "all" && !characterIds.has(targetId)) {
           issues.push(issue("missing_animation_character_target", `角色动画目标无效（target）：${command.target} 找不到可追溯的角色。请先添加该角色的对白/立绘命令，或把目标改成 sprite:selected、sprite:all、已有角色 ID。`, "error", `scene.${scene.scene_id}.animation.target`));
@@ -430,7 +433,8 @@ function collectCommandAssetReferences(command: GameCommand): Array<{ asset_id: 
   if (command.type === "bgm" && command.bgm_id) return [{ asset_id: command.bgm_id, asset_type: "bgm" }];
   if (command.type === "sfx") return command.sfx_id ? [{ asset_id: command.sfx_id, asset_type: "sfx" }] : [];
   if (command.type === "gallery_anchor") return command.asset_id ? [{ asset_id: command.asset_id, asset_type: "ui", image_like: true }] : [];
-  if (command.type === "animation") return [];
+  if (command.type === "animation") return command.animation_asset_id
+    ? [{ asset_id: command.animation_asset_id, asset_type: "animation" }] : [];
   return [];
 }
 

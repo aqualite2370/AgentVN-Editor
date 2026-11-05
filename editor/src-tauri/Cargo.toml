@@ -1,6 +1,6 @@
 [package]
 name = "agentvn-editor"
-version = "1.9.44"
+version = "1.9.45"
 description = "AgentVN Editor"
 authors = ["AquaLite"]
 edition = "2021"

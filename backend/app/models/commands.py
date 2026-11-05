@@ -313,10 +313,18 @@ class JumpCommand(StrictBaseModel):
 class AnimationCommand(StrictBaseModel):
     type: Literal["animation"] = "animation"
     animation_id: str
+    animation_asset_id: str | None = None
     animation_display_name: str | None = None
     target: str
     params: dict[str, Any] = Field(default_factory=dict)
     blocking: bool = True
+
+    @field_validator("animation_asset_id")
+    @classmethod
+    def validate_animation_asset_id(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("animation_asset_id cannot be blank")
+        return value
 
 
 class BgmCommand(StrictBaseModel):

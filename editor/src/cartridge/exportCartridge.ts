@@ -16,6 +16,8 @@ import { collectProjectAssets } from "./collectProjectAssets";
 import { normalizeAssetManifestPath } from "../utils/projectAssets";
 import { reportFrontendError } from "../../../shared/logging/frontendErrorLogger";
 import { compileControlPresentation, layoutPresentationTargets, resolveLayoutPresentations } from "../../../shared/cartridge/controlPresentation";
+import { resolveNativeAnimationAssets } from "../../../shared/animation/nativeAnimationAsset";
+import { readEditorAnimationAsset } from "../animation/animationAsset";
 
 export interface EditorCartridgeExportInput {
   script: RuntimeScript;
@@ -496,7 +498,7 @@ export function applyCharacterDialogStylesToScript<T extends DialogStyleRuntimeS
 
 export async function exportEditorCartridge(input: EditorCartridgeExportInput): Promise<EditorCartridgeExportResult> {
   const packageData = await createEditorCartridgeData(input);
-  const cartridgeAssets = await buildCartridgeAssets(packageData.manifestAssets, input.projectAssetRefs);
+  const cartridgeAssets = await buildCartridgeAssets(packageData.manifestAssets, packageData.assetRefs);
   const unavailableAssets = cartridgeAssets
     .filter((asset) => asset.placeholder)
     .map((asset) => ({
@@ -566,11 +568,22 @@ async function createEditorCartridgeData(input: EditorCartridgeExportInput) {
   }
   const uiSkinNormalization = selectedSkin ? normalizeUISkinLayoutForRuntime(resolveLayoutPresentations(selectedSkin)) : undefined;
   const uiSkin = uiSkinNormalization?.layout;
-  const preparedScript: RuntimeScript = applyCharacterDialogStylesToScript({
+  const styledScript: RuntimeScript = applyCharacterDialogStylesToScript({
     ...input.script,
     game_id: normalizeGameId(input.gameId || input.script.game_id),
     title: input.title || input.script.title || "AgentVN Game"
   }, input.characterDialogStyles);
+  const animationTexts = new Map<string, string>();
+  const preparedScript = await resolveNativeAnimationAssets(styledScript, input.projectAssets ?? [], async asset => {
+    const ref = input.projectAssetRefs?.find(item => item.asset_id === asset.asset_id);
+    if (!ref) throw new Error(`动画素材 ${asset.asset_id} 没有可读取的工程资源。`);
+    const text = await readEditorAnimationAsset(ref);
+    animationTexts.set(asset.asset_id, text);
+    return text;
+  }, { materialize: false });
+  const assetRefs = input.projectAssetRefs?.map(ref => animationTexts.has(ref.asset_id)
+    ? { ...ref, metadata: { ...ref.metadata, bytes: new TextEncoder().encode(animationTexts.get(ref.asset_id)!) } }
+    : ref);
   const normalizedScript: RuntimeScript = {
     ...preparedScript,
     schema_version: runtimeScriptSchemaVersion(preparedScript),
@@ -659,6 +672,7 @@ async function createEditorCartridgeData(input: EditorCartridgeExportInput) {
     gallery,
     uiSkin,
     manifestAssets,
+    assetRefs,
     assetReport: {
       missingAssets: scan.missingAssets.map((asset) => ({ asset_id: asset.asset_id, asset_type: asset.asset_type, source: asset.source })),
       placeholderAssets: manifestAssets
@@ -701,7 +715,7 @@ export async function exportEditorPreviewDirectory(input: EditorCartridgeExportI
       contents: JSON.stringify(packageData.uiSkin, null, 2),
     });
   }
-  const assets = await buildPreviewDirectoryAssets(packageData.manifestAssets, input.projectAssetRefs);
+  const assets = await buildPreviewDirectoryAssets(packageData.manifestAssets, packageData.assetRefs);
   return {
     fileName: packageData.fileName,
     manifest: packageData.manifest,

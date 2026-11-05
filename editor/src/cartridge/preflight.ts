@@ -468,7 +468,7 @@ function validateChoiceTargets(script: RuntimeScript, nodes: EditorNode[], edges
 
 function validateAssetReferences(script: RuntimeScript, assets: AssetRef[], nodes?: EditorNode[]): PreflightIssue[] {
   const assetsById = new Map(assets.map((asset) => [asset.asset_id, asset]));
-  const references = nodes?.length ? collectEditorAssetReferences(nodes) : collectAssetReferencesFromScript(script);
+  const references = nodes?.length ? collectEditorAssetReferences(nodes, assets) : collectAssetReferencesFromScript(script);
   const issues: PreflightIssue[] = [];
   for (const ref of references) {
     const assetId = ref.asset_id.trim();

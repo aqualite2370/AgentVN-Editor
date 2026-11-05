@@ -26,6 +26,7 @@ export const CONTROL_PRESENTATION_RUNTIME_VERSION = "0.24.0";
 export const STORY_UI_HIDE_RUNTIME_VERSION = "0.25.0";
 export const RENPY_TITLE_TEXT_RUNTIME_VERSION = "0.26.0";
 export const GAME_VIEWPORT_RUNTIME_VERSION = "0.27.0";
+export const NATIVE_ANIMATION_ASSET_RUNTIME_VERSION = "0.28.0";
 
 export function minimumRuntimeVersionForLayout(scriptVersion: string, layout?: UISkinLayout): string {
   if (layout?.gameViewport && compareSemver(scriptVersion, GAME_VIEWPORT_RUNTIME_VERSION) < 0)
@@ -183,6 +184,9 @@ export function scriptUsesGalleryAnchor(script: Pick<RuntimeScript, "scenes">): 
 }
 
 export function minimumRuntimeVersionForScript(script: PresentationScript & { opening_audio?: RuntimeScript["opening_audio"]; rollback?: RuntimeScript["rollback"] }): string {
+  if (script.scenes.some(scene => scene.commands.some(command =>
+    command.type === "animation" && command.animation_asset_id != null)))
+    return NATIVE_ANIMATION_ASSET_RUNTIME_VERSION;
   if (scriptUsesPresentationConfig(script)) return DIALOG_PRESENTATION_CONFIG_RUNTIME_VERSION;
   if (scriptUsesBubblePresentation(script)) return BUBBLE_PRESENTATION_RUNTIME_VERSION;
   if (scriptUsesNvlPageClear(script)) return NVL_PAGE_CLEAR_RUNTIME_VERSION;

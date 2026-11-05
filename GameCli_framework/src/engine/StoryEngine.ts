@@ -1401,6 +1401,8 @@ export class StoryEngine {
         }
         break;
       case "animation":
+        if (command.animation_asset_id && (!Array.isArray(command.params.keyframes) || command.params.keyframes.length < 2))
+          throw new Error(`ANIMATION_ASSET_UNRESOLVED: 动画素材 ${command.animation_asset_id} 尚未正确加载。`);
         const duration = animationTotalDuration(command.params);
         const effect: RuntimeAnimationEffect = {
           effect_id: newId("anim"),

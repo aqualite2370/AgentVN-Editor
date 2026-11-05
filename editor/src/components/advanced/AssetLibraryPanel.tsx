@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { reportFrontendError } from "../../../../shared/logging/frontendErrorLogger";
+import { parseNativeAnimationAsset, NATIVE_ANIMATION_MAX_BYTES } from "../../../../shared/animation/nativeAnimationAsset";
 import {
   AlertCircle,
   Check,
@@ -329,11 +330,8 @@ async function prepareAutomaticImport(file: File): Promise<PendingImport> {
   if (file.size === 0) throw new Error(`${file.name}：文件为空或无法读取`);
   const mimeType = inferImportMimeType(file);
   if (mimeType === "application/json" || /\.json$/i.test(file.name)) {
-    try {
-      JSON.parse(await file.text());
-    } catch {
-      throw new Error(`${file.name}：JSON 内容损坏或格式无效`);
-    }
+    if (file.size > NATIVE_ANIMATION_MAX_BYTES) throw new Error(`${file.name}：动画文件超过 1 MiB。`);
+    parseNativeAnimationAsset(await file.text(), file.name);
   }
   const dataUrl = await readFileAsDataUrl(file);
   const pending: PendingImport = {

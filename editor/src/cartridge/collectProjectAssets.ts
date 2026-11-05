@@ -1,5 +1,6 @@
 import { buildAssetManifest, collectAssetReferencesFromScript, type AssetReference } from "../../../shared/cartridge/assetScanner";
 import type { AssetManifestItem, RuntimeScript } from "../../../shared/cartridge/types";
+import { animationAssetId } from "../../../shared/animation/nativeAnimationAsset";
 
 export interface ProjectAssetScanResult {
   references: AssetReference[];
@@ -20,7 +21,13 @@ function markPlaceholder(asset: AssetManifestItem): AssetManifestItem {
 }
 
 export function collectProjectAssets(script: RuntimeScript, projectAssets: AssetManifestItem[] = []): ProjectAssetScanResult {
-  const references = collectAssetReferencesFromScript(script);
+  const references = collectAssetReferencesFromScript({
+    ...script, scenes: script.scenes.map(scene => ({ ...scene, commands: scene.commands.map(command => {
+      if (command.type !== "animation") return command;
+      const id = animationAssetId(command, projectAssets);
+      return id ? { ...command, animation_asset_id: id } : command;
+    }) })),
+  });
   const finalAssetIds = new Set(projectAssets.filter((asset) => !isPlaceholderAsset(asset)).map((asset) => asset.asset_id));
   const missingAssets = references.filter((ref) => !finalAssetIds.has(ref.asset_id));
   const existingIds = new Set(projectAssets.map((asset) => asset.asset_id));

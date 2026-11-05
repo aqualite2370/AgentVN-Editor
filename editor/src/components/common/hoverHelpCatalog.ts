@@ -251,6 +251,7 @@ const supplementalHoverHelpCatalog = {
   "asset.useRewrite": quickHelp("使用改写结果", "把改写后的提示词应用回当前输入框。", "确认改写内容符合创作意图后点击。", "会替换提示词文本，不会自动发起生成。"),
   "canvas.resizer": quickHelp("调整画布区域", "拖动改变编辑画布和侧边栏的空间比例。", "当检查器或画布空间不够时使用。", "尺寸只影响当前编辑器布局。"),
   "command.animation.blocking": quickHelp("等待动画结束", "控制动画播放时是否阻塞后续命令。", "关键演出需要播完再继续时开启。", "会影响运行时命令推进节奏。"),
+  "command.animation.animationId": quickHelp("演出动画素材", "选择素材库中的原生关键帧 JSON。", "先从素材库导入，再选择目标；循环素材需关闭阻塞。", "导出包含实际文件；更换素材会清除该指令的参数覆盖，不执行脚本或第三方动画格式。"),
   "command.animation.params": quickHelp("动画高级参数", "微调模板未覆盖的动画效果。"),
   "command.animation.target": quickHelp("动画目标", "选择演出动画作用到哪个运行端对象。", "例如屏幕、背景、对白框或指定立绘。", "导出后决定 GameCLI 应用动画的目标元素。"),
   "command.background.backgroundFit": quickHelp("背景显示模式", "控制剧情背景命令在舞台中如何显示背景图。", "强制铺满会拉伸到舞台宽高；完整显示保留整张图；裁切铺满保持比例并填满舞台。", "导出后写入 BackgroundCommand.background_fit，旧命令缺省按强制铺满处理。"),

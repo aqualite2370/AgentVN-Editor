@@ -141,6 +141,7 @@ export const assetFieldLabels: Record<string, string> = {
   background_id: "背景图", sprite_id: "角色图像", portrait: "对白头像", voice: "对白语音",
   bgm_id: "背景音乐", sfx_id: "音效", video_id: "过场视频", image_id: "展示图片",
   font_asset_id: "字体", "dialog_style.background_asset_id": "对白框底图", asset_id: "画廊图片",
+  animation_asset_id: "演出动画", animation_id: "演出动画",
 };
 
 function missingReason(assetId: string, asset: AssetRef | undefined, type: AssetType, allowedTypes: AssetType[] = [type]): string | undefined {
@@ -218,7 +219,7 @@ export function buildPendingVisualAssetsForScene(
   const node_label = options.nodeLabel;
   const commands = scene.commands;
   commands.forEach((command, index) => {
-    for (const ref of collectCommandAssetFields(command)) {
+    for (const ref of collectCommandAssetFields(command, options.projectAssets)) {
       const asset = assets.get(ref.asset_id);
       const reason = missingReason(ref.asset_id, asset, ref.asset_type, ref.allowedTypes);
       if (!reason) continue;

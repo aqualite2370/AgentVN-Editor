@@ -1,6 +1,8 @@
 import type { AssetType } from "../../../shared/cartridge/types";
 import type { GameCommand } from "../types/commands";
 import type { EditorNode } from "../types/nodes";
+import { animationAssetId } from "../../../shared/animation/nativeAnimationAsset";
+type AssetDescriptor = { asset_id: string; asset_type: AssetType };
 
 export interface EditorAssetReference {
   asset_id: string;
@@ -54,7 +56,7 @@ function reference(node: EditorNode, command: GameCommand | { type: "loading_ani
   }];
 }
 
-export function collectCommandAssetFields(command: GameCommand): Array<{
+export function collectCommandAssetFields(command: GameCommand, assets: readonly AssetDescriptor[] = []): Array<{
   asset_id: string; asset_type: AssetType; field: string; allowedTypes?: AssetType[];
 }> {
   // Preserve empty IDs for required fields so the inspector can explain an unconfigured command.
@@ -65,6 +67,10 @@ export function collectCommandAssetFields(command: GameCommand): Array<{
   if (command.type === "sprite") return command.visible === false ? [] : [field("sprite_id", command.sprite_id, "sprite")];
   if (command.type === "bgm") return command.action === "stop" ? [] : [field("bgm_id", command.bgm_id, "bgm")];
   if (command.type === "sfx") return [field("sfx_id", command.sfx_id, "sfx")];
+  if (command.type === "animation") {
+    const id = animationAssetId(command, assets);
+    return id ? [field(command.animation_asset_id ? "animation_asset_id" : "animation_id", id, "animation")] : [];
+  }
   if (command.type === "gallery_anchor") return [{ ...field("asset_id", command.asset_id, "ui"), allowedTypes: ["background", "sprite", "portrait", "ui"] }];
   if (command.type === "dialog" || command.type === "narration") {
     return [
@@ -76,18 +82,18 @@ export function collectCommandAssetFields(command: GameCommand): Array<{
   return [];
 }
 
-function collectCommandAssetReferences(node: EditorNode, command: GameCommand, commandIndex: number): EditorAssetReference[] {
-  return collectCommandAssetFields(command).flatMap(item =>
+function collectCommandAssetReferences(node: EditorNode, command: GameCommand, commandIndex: number, assets: readonly AssetDescriptor[]): EditorAssetReference[] {
+  return collectCommandAssetFields(command, assets).flatMap(item =>
     reference(node, command, commandIndex, item.field, item.asset_id, item.asset_type));
 }
 
-export function collectEditorAssetReferences(nodes: EditorNode[]): EditorAssetReference[] {
+export function collectEditorAssetReferences(nodes: EditorNode[], assets: readonly AssetDescriptor[] = []): EditorAssetReference[] {
   const references: EditorAssetReference[] = [];
   for (const node of nodes) {
     if (node.data.scene) {
-      node.data.scene.commands.forEach((command, index) => references.push(...collectCommandAssetReferences(node, command, index)));
+      node.data.scene.commands.forEach((command, index) => references.push(...collectCommandAssetReferences(node, command, index, assets)));
     }
-    if (node.data.animation) references.push(...collectCommandAssetReferences(node, node.data.animation, 0));
+    if (node.data.animation) references.push(...collectCommandAssetReferences(node, node.data.animation, 0, assets));
     const loadingAnimation = node.data.loadingAnimation;
     if (node.data.nodeKind === "start" && loadingAnimation?.kind === "video") {
       references.push(...reference(node, { type: "loading_animation" }, -1, "video_asset_id", loadingAnimation.video_asset_id, "video"));

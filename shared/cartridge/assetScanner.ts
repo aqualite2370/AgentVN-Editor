@@ -34,7 +34,8 @@ export function collectAssetReferencesFromCommand(command: GameCommand, source =
   if (command.type === "bgm" && command.action !== "stop" && command.bgm_id) return [{ asset_id: command.bgm_id, asset_type: "bgm", source }];
   if (command.type === "sfx") return [{ asset_id: command.sfx_id, asset_type: "sfx", source }];
   if (command.type === "gallery_anchor" && command.asset_id) return [{ asset_id: command.asset_id, asset_type: "ui", source }];
-  if (command.type === "animation") return [];
+  if (command.type === "animation") return command.animation_asset_id
+    ? [{ asset_id: command.animation_asset_id, asset_type: "animation", source: `${source}.animation_asset_id` }] : [];
   return [];
 }
 

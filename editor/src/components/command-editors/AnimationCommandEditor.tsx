@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { AnimationCommand } from "../../types/commands";
 import { animationTargetOptions } from "../../utils/localizedOptions";
 import { characterIdFromSpriteTarget, collectCharacterIdsFromNodes, spriteTargetForCharacter } from "../../utils/characterReferences";
@@ -7,6 +7,8 @@ import { LocalizedValueSelect } from "../common/LocalizedValueSelect";
 import { FieldHelp } from "../common/FieldHelp";
 import { AssetPicker } from "../common/AssetPicker";
 import { RichSelect } from "../common/RichSelect";
+import { inspectEditorAnimationAsset } from "../../animation/animationAsset";
+import type { AssetRef } from "../../types/assets";
 
 export function AnimationCommandEditor({
   command,
@@ -16,6 +18,34 @@ export function AnimationCommandEditor({
   onChange: (command: AnimationCommand) => void;
 }) {
   const nodes = useEditorStore((state) => state.nodes);
+  const [assetError, setAssetError] = useState<string>();
+  const [assetPending, setAssetPending] = useState(false);
+  const generation = useRef(0);
+  useEffect(() => {
+    setAssetPending(false);
+    setAssetError(undefined);
+    return () => { ++generation.current; };
+  }, [command]);
+  async function selectAsset(assetId: string, asset?: AssetRef) {
+    const owner = ++generation.current;
+    setAssetError(undefined);
+    if (!assetId) {
+      setAssetPending(false);
+      onChange({ ...command, animation_asset_id: undefined, animation_id: "custom", params: {} });
+      return;
+    }
+    if (!asset) { setAssetError("找不到所选动画素材。"); return; }
+    setAssetPending(true);
+    try {
+      await inspectEditorAnimationAsset(asset);
+      if (generation.current !== owner) return;
+      onChange({ ...command, animation_id: assetId, animation_asset_id: assetId, params: {} });
+    } catch (error) {
+      if (generation.current === owner) setAssetError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (generation.current === owner) setAssetPending(false);
+    }
+  }
   const characterIds = useMemo(() => collectCharacterIdsFromNodes(nodes), [nodes]);
   const spriteTargetId = characterIdFromSpriteTarget(command.target);
   const isSpriteTarget = command.target.trim().toLowerCase().startsWith("sprite:");
@@ -26,12 +56,15 @@ export function AnimationCommandEditor({
     <div className="form-grid">
       <AssetPicker
         label="演出动画素材"
-        field="animation_id"
-        value={command.animation_id}
+        field="animation_asset_id"
+        value={command.animation_asset_id ?? command.animation_id}
         allowedTypes={["animation"]}
         helpKey="command.animation.animationId"
-        onChange={(assetId) => onChange({ ...command, animation_id: assetId })}
+        onChange={(assetId, asset) => void selectAsset(assetId, asset)}
       />
+      {assetPending && <span role="status">正在检查动画素材…</span>}
+      {assetError && <span role="alert">{assetError}</span>}
+      {command.animation_asset_id && <small>当前使用素材文件；演出参数可覆盖素材值，留空对象则沿用素材。重新选素材会清除参数覆盖。</small>}
       <label>
         演出动画代称 <FieldHelp field="animation_display_name" />
         <input data-help-key="editor.control"

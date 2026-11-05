@@ -141,6 +141,7 @@ export interface JumpCommand {
 export interface AnimationCommand {
   type: "animation";
   animation_id: string;
+  animation_asset_id?: string;
   animation_display_name?: string | null;
   target: string;
   params: Record<string, JsonValue>;

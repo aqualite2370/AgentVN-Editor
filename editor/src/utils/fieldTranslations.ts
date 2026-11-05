@@ -40,6 +40,7 @@ export const fieldTranslations: Record<string, string> = {
   operation: "状态操作",
   value: "变量值",
   animation_id: "演出动画素材",
+  animation_asset_id: "演出动画素材",
   target: "作用目标",
   params: "参数",
   blocking: "是否阻塞",

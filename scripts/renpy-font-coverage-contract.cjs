@@ -4,17 +4,14 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { transformSync } = require("../editor/node_modules/esbuild");
+const { buildSync } = require("../editor/node_modules/esbuild");
 const fontkit = require("../editor/node_modules/fontkit");
 
 const root = path.resolve(__dirname, "..");
 const sourcePath = path.join(root, "editor/src/renpy/fontCoverage.ts");
-const compiled = transformSync(fs.readFileSync(sourcePath, "utf8"), {
-  loader: "ts",
-  format: "cjs",
-});
+const compiled = buildSync({ entryPoints: [sourcePath], bundle: true, platform: "node", format: "cjs", write: false });
 const loadedModule = { exports: {} };
-new Function("module", "exports", compiled.code)(loadedModule, loadedModule.exports);
+new Function("module", "exports", "require", compiled.outputFiles[0].text)(loadedModule, loadedModule.exports, require);
 const { analyzeFontCharacterCoverage, collectRenpyFontCoverageText } = loadedModule.exports;
 
 const complete = analyzeFontCharacterCoverage([65, 66], "ABBA\u200b\uFE0F");

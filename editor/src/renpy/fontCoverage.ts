@@ -1,4 +1,7 @@
 import type { EditorNode } from "../types/nodes";
+import type { UISkinLayout } from "../../../shared/cartridge/uiSkin";
+import type { CustomComponentNode } from "../../../shared/cartridge/customComponent";
+import { compileControlPresentation, layoutPresentationTargets } from "../../../shared/cartridge/controlPresentation";
 
 export interface FontCoverageResult {
   totalCharacters: number;
@@ -9,7 +12,7 @@ export interface FontCoverageResult {
 
 const runtimeLabels = [
   "开始游戏", "继续游戏", "存档", "读档", "设置", "选项", "返回", "确定", "取消",
-  "历史", "关于", "帮助", "画廊", "回退", "快进", "自动", "快存", "快读",
+  "历史", "关于", "帮助", "画廊", "回退", "快进", "自动", "快存", "快读", "隐藏",
   "音乐", "音效", "语音", "窗口模式", "全屏",
 ];
 
@@ -22,6 +25,7 @@ export function collectRenpyFontCoverageText(
   author: string,
   characterNames: string[],
   nodes: EditorNode[],
+  layout?: UISkinLayout,
 ): string {
   const values: string[] = [];
   addText(values, title);
@@ -55,6 +59,24 @@ export function collectRenpyFontCoverageText(
     }
   }
 
+  // Use the whole active draft, not only the selected page. A font can otherwise
+  // falsely appear complete until the player opens a different authored page.
+  if (layout) {
+    addText(values, layout.renpyTitleText?.title?.text);
+    addText(values, layout.renpyTitleText?.version?.text);
+    const addComponentText = (node: CustomComponentNode) => {
+      addText(values, node.text);
+      node.children.forEach(addComponentText);
+    };
+    for (const screen of layout.screens) for (const component of screen.components) {
+      addText(values, component.label);
+      if (component.customComponent) addComponentText(component.customComponent.root);
+    }
+    if (layout.advancedPresentationEnabled) for (const target of layoutPresentationTargets(layout)) {
+      const compiled = compileControlPresentation(target.source);
+      if (compiled.ok && compiled.definition) addComponentText(compiled.definition.root);
+    }
+  }
   values.push(...runtimeLabels);
   return [...new Set(values)].join("\n");
 }

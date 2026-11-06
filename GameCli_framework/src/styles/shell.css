@@ -3099,7 +3099,10 @@
 .runtime-opening-media {
   position: absolute;
   inset: 0;
+  margin: auto;
   opacity: 0;
+  /* Geometry is authored state; only WAAPI owns the opacity presentation. */
+  transition-property: none !important;
 }
 
 .runtime-opening-screen .custom-loading-animation.is-fullscreen {
@@ -3122,7 +3125,7 @@
 .runtime-opening-screen .custom-loading-animation img {
   width: 100%;
   height: 100%;
-  object-fit: contain;
+  object-fit: var(--opening-media-fit, contain);
 }
 
 @media (prefers-reduced-motion: reduce) {

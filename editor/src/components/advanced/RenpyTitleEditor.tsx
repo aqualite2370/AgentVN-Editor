@@ -299,8 +299,7 @@ export function RenpyTitleEditor({ draft, previewDraft = draft, title, fontCover
     return url ? [[asset.asset_id, backendClient.resolveProjectAssetUrl(url)]] : [];
   })), [assets]);
   const [fontLoadError, setFontLoadError] = useState("");
-  const coverageText = [fontCoverageText, draft.renpyTitleText?.title?.text ?? "",
-    draft.renpyTitleText?.version?.text ?? "", ...pageComponents.map(component => component.label ?? "")].join("\n");
+  const coverageText = fontCoverageText;
   const [fontCoverage, setFontCoverage] = useState<
     | { status: "system" | "loading" | "error"; message?: string }
     | { status: "complete" | "incomplete"; result: FontCoverageResult }

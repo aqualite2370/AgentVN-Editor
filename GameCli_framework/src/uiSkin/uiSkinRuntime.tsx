@@ -23,6 +23,12 @@ import type { GameManifest } from "../types/manifest";
 import { resolveRuntimeTextScale, useRuntimeViewport, type RuntimeFormFactor, type RuntimePlatform, type RuntimeSafeInsets, type RuntimeTextScale, type RuntimeViewportPhase } from "./runtimeViewport";
 import { resolveDialogueModeLayout, type DialogueLayoutMode } from "../../../shared/cartridge/dialogueModeLayout";
 import { fitGameViewport, gameFrameSafeInsets, resolveGameViewport, resolvePlayerGameViewport } from "../../../shared/cartridge/gameViewport";
+import { fontFamilyForAsset, runtimeFontFaceRule } from "./runtimeFont";
+export { fontFamilyForAsset } from "./runtimeFont";
+
+function cssUrl(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "");
+}
 
 interface UISkinContextValue {
   skin: UISkinLayout;
@@ -61,44 +67,6 @@ const UISkinContext = createContext<UISkinContextValue>({
   viewportPhase: "stable",
   scopeRef: { current: null },
 });
-
-const runtimeFontFallback = `Inter, "Segoe UI", system-ui, sans-serif`;
-
-function fontFamilyName(assetId: string): string {
-  return `AgentVNFont_${assetId.replace(/[^a-z0-9_-]/gi, "_")}`;
-}
-
-function isAndroidStandaloneRuntime(): boolean {
-  if (typeof navigator === "undefined") return false;
-  return /Android/i.test(navigator.userAgent);
-}
-
-function isPixelFontAsset(assetId: string): boolean {
-  return /(unifont|pixel|bitmap|monospace)/i.test(assetId);
-}
-
-export function fontFamilyForAsset(assetId?: string | null): string | undefined {
-  const normalized = assetId?.trim();
-  if (!normalized) return undefined;
-  // Unifont and other bitmap-oriented fonts render Chinese as coarse pixel
-  // blocks in Android WebView. Keep explicit project fonts on desktop, but
-  // use the platform's normal CJK fallback for Android standalone packages.
-  if (isAndroidStandaloneRuntime() && isPixelFontAsset(normalized)) return undefined;
-  return `"${fontFamilyName(normalized)}", ${runtimeFontFallback}`;
-}
-
-function cssUrl(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "");
-}
-
-function fontFaceFormat(filename?: string, mimeType?: string): string | undefined {
-  const lower = `${filename ?? ""} ${mimeType ?? ""}`.toLowerCase();
-  if (lower.includes("woff2")) return "woff2";
-  if (lower.includes("woff")) return "woff";
-  if (lower.includes("ttf") || lower.includes("truetype")) return "truetype";
-  if (lower.includes("otf") || lower.includes("opentype")) return "opentype";
-  return undefined;
-}
 
 function useLandscapeLock(active: boolean): void {
   useEffect(() => {
@@ -716,15 +684,13 @@ export function UISkinProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const fontAssets = currentGame?.manifest.assets
       .filter((asset) => asset.asset_type === "font")
-      .filter((asset) => !(isAndroidStandaloneRuntime() && isPixelFontAsset(asset.asset_id)))
       ?? [];
     if (fontAssets.length === 0) return;
     const rules = fontAssets
       .map((asset) => {
         const source = toRuntimeAssetUrl(currentGame?.assetUrls[asset.asset_id] ?? currentGame?.assetUrls[asset.path]);
         if (!source) return undefined;
-        const format = fontFaceFormat(asset.filename, asset.mime_type);
-        return `@font-face{font-family:"${fontFamilyName(asset.asset_id)}";src:url("${cssUrl(source)}")${format ? ` format("${format}")` : ""};font-display:swap;}`;
+        return runtimeFontFaceRule(asset.asset_id, asset.filename, asset.mime_type, source);
       })
       .filter(Boolean)
       .join("\n");

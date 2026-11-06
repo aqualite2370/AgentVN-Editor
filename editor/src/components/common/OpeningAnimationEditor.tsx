@@ -6,6 +6,8 @@ import { buildProjectAssetPath, sanitizeAssetId } from "../../utils/projectAsset
 import { useProjectStore } from "../../store/projectStore";
 import { reportFrontendError } from "../../../../shared/logging/frontendErrorLogger";
 import { GlassSelectionGroup } from "./GlassSelectionGroup";
+import { resolveOpeningPresentation } from "../../../../shared/cartridge/openingPresentation";
+import { RichSelect } from "./RichSelect";
 
 interface OpeningAnimationEditorProps {
   animation?: LoadingAnimationConfig;
@@ -71,15 +73,25 @@ export function OpeningAnimationEditor({ animation = { kind: "default" }, assets
     [animation, assets],
   );
   const imageSource = (asset?: AssetRef) => asset?.metadata.data_url ?? asset?.metadata.blob_url ?? asset?.metadata.url;
+  const presentation = resolveOpeningPresentation(animation.presentation);
+  const updatePresentation = (patch: Partial<typeof presentation>) => {
+    if (animation.kind === "default") return;
+    onChange({ ...animation, presentation: { ...presentation, ...patch } });
+  };
 
   function setMode(kind: LoadingAnimationConfig["kind"]) {
     setError(undefined);
     if (kind === "default") onChange({ kind });
-    else if (kind === "video") onChange({ kind, video_asset_id: animation.kind === "video" ? animation.video_asset_id : "" });
+    else if (kind === "video") onChange({
+      kind,
+      video_asset_id: animation.kind === "video" ? animation.video_asset_id : "",
+      ...(animation.presentation ? { presentation: animation.presentation } : {}),
+    });
     else onChange({
       kind,
       image_asset_ids: animation.kind === "image_sequence" ? animation.image_asset_ids : [],
       frame_duration_ms: animation.kind === "image_sequence" ? animation.frame_duration_ms ?? 1000 : 1000,
+      ...(animation.presentation ? { presentation: animation.presentation } : {}),
     });
   }
 
@@ -93,7 +105,8 @@ export function OpeningAnimationEditor({ animation = { kind: "default" }, assets
       const used = new Set(assets.map((asset) => asset.asset_id));
       const asset = importedAsset(file, dataUrl, "video", uniqueAssetId(`loading_video_${fileStem(file.name)}`, used));
       setAssetManifest([asset, ...assets.filter((item) => item.asset_id !== asset.asset_id)]);
-      onChange({ kind: "video", video_asset_id: asset.asset_id });
+      onChange({ kind: "video", video_asset_id: asset.asset_id,
+        ...(animation.presentation ? { presentation: animation.presentation } : {}) });
     } catch (cause) {
       reportFrontendError("editor.loading-animation", cause, { operation: "import-video", fileName: file.name });
       setError(cause instanceof Error ? cause.message : "导入视频失败");
@@ -119,6 +132,7 @@ export function OpeningAnimationEditor({ animation = { kind: "default" }, assets
         kind: "image_sequence",
         image_asset_ids: [...(animation.kind === "image_sequence" ? animation.image_asset_ids : []), ...imported.map((asset) => asset.asset_id)],
         frame_duration_ms: animation.kind === "image_sequence" ? animation.frame_duration_ms ?? 1000 : 1000,
+        ...(animation.presentation ? { presentation: animation.presentation } : {}),
       });
     } catch (cause) {
       reportFrontendError("editor.loading-animation", cause, { operation: "import-images", fileCount: files.length });
@@ -137,9 +151,26 @@ export function OpeningAnimationEditor({ animation = { kind: "default" }, assets
           </button>
         ))}
       </GlassSelectionGroup>
+      {animation.kind !== "default" && (
+        <fieldset className="loading-animation-presentation">
+          <legend>片头容器</legend>
+          <label>容器<RichSelect ariaLabel="片头容器" value={presentation.mode}
+            options={[{ value: "fullscreen", label: "全屏" }, { value: "centered", label: "居中尺寸" }]}
+            onChange={mode => updatePresentation({ mode })} /></label>
+          <label>画面适配<RichSelect ariaLabel="片头画面适配" value={presentation.fit}
+            options={[{ value: "contain", label: "完整显示" }, { value: "cover", label: "裁切铺满" }, { value: "stretch", label: "拉伸" }]}
+            onChange={fit => updatePresentation({ fit })} /></label>
+          {presentation.mode === "centered" && <>
+            <label>宽度（%）<input aria-label="片头容器宽度（百分比）" type="number" min={20} max={100} step={1}
+              value={presentation.width_percent} onChange={event => updatePresentation({ width_percent: Math.min(100, Math.max(20, Number(event.target.value) || 20)) })} /></label>
+            <label>高度（%）<input aria-label="片头容器高度（百分比）" type="number" min={20} max={100} step={1}
+              value={presentation.height_percent} onChange={event => updatePresentation({ height_percent: Math.min(100, Math.max(20, Number(event.target.value) || 20)) })} /></label>
+          </>}
+        </fieldset>
+      )}
       {animation.kind === "video" && (
         <div className="loading-animation-editor-row">
-          <AssetPicker label="开屏视频素材" field="loading_animation.video_asset_id" value={animation.video_asset_id} allowedTypes={["video"]} helpKey={`${helpKey}.videoAsset`} onChange={(assetId) => onChange({ kind: "video", video_asset_id: assetId })} />
+          <AssetPicker label="开屏视频素材" field="loading_animation.video_asset_id" value={animation.video_asset_id} allowedTypes={["video"]} helpKey={`${helpKey}.videoAsset`} onChange={(assetId) => onChange({ ...animation, video_asset_id: assetId })} />
           <label className="loading-animation-import" data-help-key={`${helpKey}.videoImport`}><input data-help-key="editor.control" type="file" accept="video/*,.mp4,.webm,.mov,.m4v,.ogv" hidden onChange={(event) => void importVideo(event)} />导入视频</label>
           {!videoAsset && animation.video_asset_id && <p className="inline-status warning">视频素材缺失，请重新选择。</p>}
         </div>
@@ -148,7 +179,7 @@ export function OpeningAnimationEditor({ animation = { kind: "default" }, assets
         <div className="loading-animation-editor-row">
           <div className="opening-audio-picker-row">
             <AssetPicker label="添加图片帧" field="loading_animation.image_asset_id" value={selectedFrame} allowedTypes={["ui", "background", "portrait", "sprite"]} helpKey={`${helpKey}.imageAsset`} onChange={(assetId) => setSelectedFrame(assetId)} />
-            <button data-help-key="editor.control" type="button" disabled={!selectedFrame} onClick={() => { onChange({ kind: "image_sequence", image_asset_ids: [...imageIds, selectedFrame], frame_duration_ms: animation.frame_duration_ms ?? 1000 }); setSelectedFrame(""); }}>添加为帧</button>
+            <button data-help-key="editor.control" type="button" disabled={!selectedFrame} onClick={() => { onChange({ ...animation, image_asset_ids: [...imageIds, selectedFrame], frame_duration_ms: animation.frame_duration_ms ?? 1000 }); setSelectedFrame(""); }}>添加为帧</button>
           </div>
           <label className="loading-animation-import"><input data-help-key="editor.control" type="file" accept="image/*,.png,.jpg,.jpeg,.webp,.gif,.bmp,.svg" multiple hidden onChange={(event) => void importImages(event)} />导入图片</label>
           <label className="loading-animation-duration">切换时间（毫秒）<input data-help-key="editor.control" type="number" min={100} step={100} value={animation.frame_duration_ms ?? 1000} onChange={(event) => onChange({ ...animation, frame_duration_ms: Math.max(100, Math.round(Number(event.target.value) || 1000)) })} /></label>

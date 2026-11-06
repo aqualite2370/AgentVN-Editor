@@ -68,9 +68,9 @@ export const agentvnDocIndexMetadata = {
     },
     {
       "path": "docs/ASSISTANT_USER_GUIDE.md",
-      "sha256": "11326c55f28a90332f866deeb95a1dd94c4bef9039fc5bc2b33d52b25a120e46",
-      "characters": 6473,
-      "chunks": 12
+      "sha256": "47b76622bca612da60a4b744d87c35d6351e9440ace2b16ef13265fe22ebd1ee",
+      "characters": 7174,
+      "chunks": 14
     },
     {
       "path": "docs/CARTRIDGE_EXPORT.md",
@@ -80,8 +80,8 @@ export const agentvnDocIndexMetadata = {
     },
     {
       "path": "docs/CARTRIDGE_FORMAT.md",
-      "sha256": "03b2362efeed6fb9e4723ce611f4bf8673935b9bd54a751972cb7ed829751206",
-      "characters": 12201,
+      "sha256": "e1ce3e917a38797bb62fc482b7b943a34e63a9eeb94bd19b1f54b4711dfdb352",
+      "characters": 13012,
       "chunks": 17
     },
     {
@@ -988,7 +988,27 @@ export const agentvnDocIndex: readonly AssistantDocChunk[] = [
       "current-operation-guide",
       "hide-ui"
     ],
-    "text": "## hide-ui | 游戏画面隐藏与恢复操作界面\n\n游玩中，AgentVN 展开快捷菜单后点击“隐藏”；Ren’Py 底部九项单行快捷栏直接点击“隐藏”。键盘 H 也可隐藏。\n隐藏对白、姓名容器、头像、NVL、气泡、分支选项、自定义剧情控件和快捷操作，场景与音频按原规则继续。自动与快进暂停，恢复后还原原模式。\n轻触或点击画面、H、Escape 可以恢复；Android 返回先关闭最上层确认框，再恢复隐藏界面。这一次恢复操作不能同时推进或选择剧情。隐藏期间分支与NVL累计内容不丢失。\n隐藏仅为当前游玩会话的临时显示状态，不是玩家偏好，不写入存档；读档、重启或离开剧情安全恢复。不要将它与作者脚本的 hide_dialog 演出命令混为一谈。\n实现：StoryPlayer、RenpyQuickBar、runtimeStore、runtimeSystemBack。\n"
+    "text": "## hide-ui | 游戏画面隐藏与恢复操作界面\n\n游玩中，AgentVN 展开快捷菜单后点击“隐藏”；Ren’Py 底部九项单行快捷栏直接点击“隐藏”。键盘 H 也可隐藏。\n隐藏对白、姓名容器、头像、NVL、气泡、分支选项、自定义剧情控件和快捷操作，场景与音频按原规则继续。自动与快进暂停，恢复后还原原模式。\n轻触或点击画面、H、Escape 可以恢复；Android 返回先关闭最上层确认框，再恢复隐藏界面。这一次恢复操作不能同时推进或选择剧情。隐藏期间分支与NVL累计内容不丢失。\n隐藏仅为当前游玩会话的临时显示状态，不是玩家偏好，不写入存档；读档、重启或离开剧情安全恢复。不要将它与作者脚本的 hide_dialog 演出命令混为一谈。\n实现：StoryPlayer、RenpyQuickBar、runtimeStore、runtimeSystemBack。\n\n"
+  },
+  {
+    "id": "guide-opening-container-1",
+    "source": "docs/ASSISTANT_USER_GUIDE.md",
+    "title": "片头全屏、居中容器与跳过",
+    "tags": [
+      "current-operation-guide",
+      "opening-container"
+    ],
+    "text": "## opening-container | 片头全屏、居中容器与跳过\n\n在入口节点检查器或工程设置中的“用户开屏动画”选择视频或多图序列。“片头容器”可选全屏、居中尺寸；画面适配可选完整显示、裁切铺满、拉伸。居中宽高为视口的20–100%，外层黑底始终全屏遮挡。更换媒体保留容器设置；默认线条动画不使用这组媒体参数。旧工程缺省维持全屏完整显示。\n片头支持鼠标左键或单次触摸跳过，右键、拖动和取消触摸不跳过。跳过保留退出淡出，不将此次点击交给标题或剧情。新容器表现最低Runtime0.29.0。此为当前源码能力；旧安装器不会自动获得它。\n实现：OpeningAnimationEditor、OpeningScreen、openingPresentation、exportScript。\n\n"
+  },
+  {
+    "id": "guide-portable-font-1",
+    "source": "docs/ASSISTANT_USER_GUIDE.md",
+    "title": "Windows与Android使用同一工程字体",
+    "tags": [
+      "current-operation-guide",
+      "portable-font"
+    ],
+    "text": "## portable-font | Windows与Android使用同一工程字体\n\n只在作者PC安装的字体不会自动进入APK。先将有分发许可的字体文件作为字体素材导入工程，再在“客户端布局”的字体资源或具体对白/控件中绑定，导出时才会携带并加载该文件。\n作者显式指定的工程字体在Windows和Android均应遵从，不按字体资源ID中的unifont、pixel、bitmap或monospace静默改用系统字体。字体缺少某些字形或浏览器无法解码时仍可能出现后备字形；需要核对具体字体文件和打包结果。当前源码修复尚不代表已生成并验收新的APK。\n实现：RuntimeLayoutDesigner、exportCartridge、runtimeFont、UISkinProvider、DialogBox。\n"
   },
   {
     "id": "doc-docs-cartridge-export-md-1-1",
@@ -1118,7 +1138,7 @@ export const agentvnDocIndex: readonly AssistantDocChunk[] = [
       "reference",
       "docs"
     ],
-    "text": "## Loading Animation\n\n`loading_animation` controls the GameCLI loading screen before the story starts.\n\nSupported shapes:\n\n```json\n{ \"kind\": \"default\" }\n```\n\n```json\n{ \"kind\": \"video\", \"video_asset_id\": \"boot_video\" }\n```\n\n```json\n{\n  \"kind\": \"image_sequence\",\n  \"image_asset_ids\": [\"boot_frame_001\", \"boot_frame_002\"],\n  \"frame_duration_ms\": 1000\n}\n```\n\n`default` uses the built-in circular boot animation. Video loading animations must reference a `video` asset. Image sequence frames are packed as `ui` assets; when `frame_duration_ms` is omitted, the editor defaults to 1000 ms per frame.\n\n"
+    "text": "## Loading Animation\n\n`loading_animation` selects authored opening media after the loading indicator and before the title menu. The opening owns a separate full-screen backdrop, rather than replacing a page transition. A left mouse click or single primary touch skips the opening without activating the page below it.\n\nVideo and image-sequence configurations may include `presentation`:\n\n```json\n{\n  \"mode\": \"centered\",\n  \"fit\": \"contain\",\n  \"width_percent\": 80,\n  \"height_percent\": 80\n}\n```\n\n`mode` is `fullscreen` (default) or `centered`. `fit` is `contain` (default), `cover`, or `stretch`. Width and height are numbers between 20 and 100, relative to the viewport; they apply to the centered media container. The opaque backdrop always covers the full viewport. Missing parameters retain full-screen, contain behavior. Non-default presentation requires Runtime `0.29.0`; older runtimes reject such cartridges.\n\nSupported shapes:\n\n```json\n{ \"kind\": \"default\" }\n```\n\n```json\n{ \"kind\": \"video\", \"video_asset_id\": \"boot_video\" }\n```\n\n```json\n{\n  \"kind\": \"image_sequence\",\n  \"image_asset_ids\": [\"boot_frame_001\", \"boot_frame_002\"],\n  \"frame_duration_ms\": 1000\n}\n```\n\n`default` uses the built-in circular boot animation. Video loading animations must reference a `video` asset. Image sequence frames are packed as `ui` assets; when `frame_duration_ms` is omitted, the editor defaults to 1000 ms per frame.\n\n"
   },
   {
     "id": "doc-docs-cartridge-format-md-10-1",

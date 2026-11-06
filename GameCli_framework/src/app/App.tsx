@@ -942,7 +942,7 @@ export function App() {
         && hasCustomBootAnimation(bootAnimation, bootAssetUrls) && (
         <OpeningScreen animation={bootAnimation} assetUrls={bootAssetUrls}
           complete={bootReady && openingCycleComplete}
-          onCycleComplete={handleOpeningCycleComplete} onComplete={hideBootOverlay}
+          onCycleComplete={handleOpeningCycleComplete} onSkip={handleOpeningCycleComplete} onComplete={hideBootOverlay}
           onError={handleBootAnimationError} />
       )}
       {bootBlocking && (bootError || bootStage === "line" || !hasCustomBootAnimation(bootAnimation, bootAssetUrls)) && (

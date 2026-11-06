@@ -1,7 +1,7 @@
 "use strict";
 // Source knowledge/retrieval only: never reads user settings or calls a model.
 const fs = require("node:fs"), path = require("node:path"), assert = require("node:assert/strict");
-const { buildSync } = require("../editor/node_modules/esbuild");
+const { buildSync } = require(require.resolve("esbuild", { paths: [path.join(__dirname, "../editor")] }));
 const root = path.resolve(__dirname, ".."), out = process.argv[2];
 assert(out && !fs.existsSync(out), "Use independent evidence");
 fs.mkdirSync(out, { recursive: true });

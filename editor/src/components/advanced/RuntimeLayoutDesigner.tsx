@@ -1229,7 +1229,6 @@ export function RuntimeLayoutDesigner({ sessionRef }: { sessionRef?: MutableRefO
   const projectTitle = useProjectStore((state) => state.title);
   const projectAuthor = useProjectStore((state) => state.author);
   const characterDisplayNamesById = useProjectStore((state) => state.settings.characterDisplayNames);
-  const characterDisplayNames = Object.values(characterDisplayNamesById);
   const layoutType = useProjectStore((state) => state.settings.runtimeUILayoutProfiles?.activeType ?? "agentvn");
   const workspaceDraft = readRuntimeLayoutWorkspaceDraft(projectId, layoutType, cloneSkin);
   const restoredDraft = workspaceDraft ?? (
@@ -1243,12 +1242,12 @@ export function RuntimeLayoutDesigner({ sessionRef }: { sessionRef?: MutableRefO
   const assetManifest = useProjectStore((state) => state.assetManifest);
   const projectNodes = useEditorStore((state) => state.nodes);
   const selectedScene = useEditorStore((state) => state.nodes.find((node) => node.id === state.selectedNodeId)?.data.scene);
-  const fontCoverageText = collectRenpyFontCoverageText(
-    projectTitle, projectAuthor, characterDisplayNames, projectNodes,
-  );
   const packageAppearance = useProjectStore((state) => state.settings.packageAppearance);
   const aboutFields = packageAppearance.about?.fields ?? defaultAboutFields;
   const [draft, setDraft] = useState<UISkinLayout>(() => cloneSkin(restoredDraft ?? savedSkin));
+  const fontCoverageText = useMemo(() => collectRenpyFontCoverageText(
+    projectTitle, projectAuthor, Object.values(characterDisplayNamesById), projectNodes, draft,
+  ), [projectTitle, projectAuthor, characterDisplayNamesById, projectNodes, draft]);
   const presentationPreview = useControlPresentationPreview(draft, projectId);
   const hasInvalidPresentation = layoutPresentationTargets(draft).some(target =>
     !compileControlPresentation(target.source).ok);

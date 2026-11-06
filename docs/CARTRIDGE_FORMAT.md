@@ -187,7 +187,20 @@ Dialog commands may carry per-line visual overrides:
 
 ## Loading Animation
 
-`loading_animation` controls the GameCLI loading screen before the story starts.
+`loading_animation` selects authored opening media after the loading indicator and before the title menu. The opening owns a separate full-screen backdrop, rather than replacing a page transition. A left mouse click or single primary touch skips the opening without activating the page below it.
+
+Video and image-sequence configurations may include `presentation`:
+
+```json
+{
+  "mode": "centered",
+  "fit": "contain",
+  "width_percent": 80,
+  "height_percent": 80
+}
+```
+
+`mode` is `fullscreen` (default) or `centered`. `fit` is `contain` (default), `cover`, or `stretch`. Width and height are numbers between 20 and 100, relative to the viewport; they apply to the centered media container. The opaque backdrop always covers the full viewport. Missing parameters retain full-screen, contain behavior. Non-default presentation requires Runtime `0.29.0`; older runtimes reject such cartridges.
 
 Supported shapes:
 

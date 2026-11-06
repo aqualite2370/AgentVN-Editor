@@ -160,10 +160,18 @@ export interface Scene {
   ending_id?: string;
 }
 
-export type LoadingAnimationConfig =
+export interface OpeningPresentation {
+  mode?: "fullscreen" | "centered";
+  fit?: "contain" | "cover" | "stretch";
+  width_percent?: number;
+  height_percent?: number;
+}
+
+export type LoadingAnimationConfig = (
   | { kind: "default" }
   | { kind: "video"; video_asset_id: string }
-  | { kind: "image_sequence"; image_asset_ids: string[]; frame_duration_ms?: number };
+  | { kind: "image_sequence"; image_asset_ids: string[]; frame_duration_ms?: number }
+) & { presentation?: OpeningPresentation };
 
 export type OpeningAudioAssetType = Extract<AssetType, "bgm" | "sfx" | "voice">;
 export type OpeningAudioPlayback = "once" | "loop";

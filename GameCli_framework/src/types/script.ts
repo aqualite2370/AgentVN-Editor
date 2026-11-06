@@ -1,10 +1,8 @@
 import type { GameCommand } from "./commands";
 import type { DialogPresentationMode, DialogVisualStyle, OpeningAudioTrack } from "../../../shared/cartridge/types";
 
-export type LoadingAnimationConfig =
-  | { kind: "default" }
-  | { kind: "video"; video_asset_id: string }
-  | { kind: "image_sequence"; image_asset_ids: string[]; frame_duration_ms?: number };
+export type { LoadingAnimationConfig } from "../../../shared/cartridge/types";
+import type { LoadingAnimationConfig } from "../../../shared/cartridge/types";
 
 export interface SpeakerFocusConfig {
   enabled: boolean;

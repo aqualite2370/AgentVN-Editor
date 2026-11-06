@@ -12,6 +12,7 @@ import { conditionToRuntimeCondition, isBuilderCondition } from "./conditions";
 import { validateDefaultHandleFanOut, validateScript, type ValidationIssue, type ValidationRuntimeScript } from "./validation";
 import { normalizeOpeningAudioTracks } from "./openingAudio";
 import { isDialogPresentationMode } from "../../../shared/cartridge/dialogPresentation";
+import { openingPresentationErrors } from "../../../shared/cartridge/openingPresentation";
 
 function normalizeRuntimeCommands(commands: GameCommand[]): GameCommand[] {
   return commands.map((command) => {
@@ -185,14 +186,18 @@ function collectCharacterProfiles(scenes: RuntimeScene[]): RuntimeScript["charac
 
 function normalizeLoadingAnimation(config: LoadingAnimationConfig | undefined): LoadingAnimationConfig | undefined {
   if (!config || config.kind === "default") return undefined;
+  const errors = openingPresentationErrors(config.presentation);
+  if (errors.length) throw new Error(errors.join("\n"));
+  const presentation = config.presentation ? { ...config.presentation } : undefined;
   if (config.kind === "video") {
     const videoAssetId = config.video_asset_id.trim();
-    return videoAssetId ? { kind: "video", video_asset_id: videoAssetId } : undefined;
+    return videoAssetId ? { kind: "video", video_asset_id: videoAssetId, ...(presentation ? { presentation } : {}) } : undefined;
   }
   const imageAssetIds = Array.from(new Set(config.image_asset_ids.map((assetId) => assetId.trim()).filter(Boolean)));
   if (imageAssetIds.length === 0) return undefined;
   const frameDurationMs = Math.max(100, Math.round(config.frame_duration_ms ?? 1000));
-  return { kind: "image_sequence", image_asset_ids: imageAssetIds, frame_duration_ms: frameDurationMs };
+  return { kind: "image_sequence", image_asset_ids: imageAssetIds, frame_duration_ms: frameDurationMs,
+    ...(presentation ? { presentation } : {}) };
 }
 
 function defaultTargetSceneId(node: EditorNode, nodes: EditorNode[], edges: EditorEdge[]): string | undefined {

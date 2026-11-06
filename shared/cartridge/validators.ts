@@ -5,6 +5,7 @@ import type { AssetType, CartridgeValidationResult, ChecksumManifest, GalleryMan
 import { validateCharacterAnimationConfig } from "../animation/characterAnimation";
 import { isBubblePositionConfig, isDialogPresentationMode } from "./dialogPresentation";
 import { validateVisualTransitionConfig } from "../animation/visualTransition";
+import { openingPresentationErrors } from "./openingPresentation";
 import { validateCameraCommand } from "../camera/cameraMotion";
 import { MAX_SPRITE_SCALE, MIN_SPRITE_SCALE } from "./spriteScale";
 import { MAX_SPRITE_LAYER, MIN_SPRITE_LAYER, isValidSpriteLayer } from "./spriteLayer";
@@ -474,6 +475,9 @@ function isValidShellBackgroundDimming(value: unknown): boolean {
 export function validateAssetReferences(script: RuntimeScript, manifest: GameManifest): CartridgeValidationResult {
   const assets = new Map(manifest.assets.map((asset) => [asset.asset_id, asset]));
   const issues: ValidationIssue[] = [];
+  for (const message of openingPresentationErrors(script.loading_animation?.presentation)) {
+    issues.push(issue("opening_presentation", message, "error", "script.loading_animation.presentation"));
+  }
   if (!isValidBackgroundFit(manifest.shell?.background_fit)) {
     issues.push(issue("background_fit", `Shell background display mode is invalid: ${String(manifest.shell?.background_fit)}. GameCLI supports stretch, contain, and cover; invalid values fall back to stretch.`, "warning", "manifest.shell.background_fit"));
   }

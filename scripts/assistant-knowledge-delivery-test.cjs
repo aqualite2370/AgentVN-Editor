@@ -11,6 +11,8 @@ const manifest = "docs/assistant-knowledge-sources.json";
 const generator = "scripts/build-agent-doc-index.cjs";
 const normalize = value => value.toString("utf8").replace(/\r\n/g, "\n");
 const hash = value => crypto.createHash("sha256").update(value).digest("hex");
+const dependencyPath = [path.join(root, "editor/node_modules"), process.env.NODE_PATH]
+  .filter(Boolean).join(path.delimiter);
 const report = { status: "RUNNING", scope: "COMMITTED_KNOWLEDGE_ARCHIVE_REBUILD_NOT_FULL_EDITOR_OR_INSTALLATION",
   at: new Date().toISOString(), cases: [], commands: [], paidRequests: 0, productStarts: 0,
   dependencyBoundary: "Uses the existing editor/node_modules/esbuild via NODE_PATH; does not claim a clean dependency installation." };
@@ -37,6 +39,7 @@ try {
   const sources = JSON.parse(fs.readFileSync(path.join(root, manifest))).markdown;
   const files = [...sources, manifest, generator, generated, "editor/src/components/common/hoverHelpCatalog.ts",
     "editor/src/assistant/retrieval.ts", "editor/src/assistant/types.ts",
+    "editor/src/components/advanced/RenpyGuiImportWorkbench.tsx",
     "scripts/assistant-knowledge-index-test.cjs", "scripts/assistant-knowledge-test.cjs",
     "scripts/assistant-knowledge-delivery-test.cjs"];
   check("all-necessary-inputs-exist-in-current-commit-with-current-content", () => {
@@ -66,13 +69,28 @@ try {
     return { archive, sha256: hash(fs.readFileSync(archive)), source };
   });
   const run = args => command(process.execPath, [path.join(source, generator), ...args],
-    { cwd: source, env: { ...process.env, NODE_PATH: path.join(root, "editor/node_modules") } });
+    { cwd: source, env: { ...process.env, NODE_PATH: dependencyPath } });
   check("committed-generator-check-and-rebuild-match-committed-artifact", () => {
     assert.equal(run(["--check"]).status, 0);
     const before = fs.readFileSync(path.join(source, generated));
     assert.equal(run([]).status, 0);
     assert.equal(normalize(fs.readFileSync(path.join(source, generated))), normalize(before));
     return { outputSHA256: hash(normalize(before)), outputBytes: before.length };
+  });
+  check("archived-retrieval-tests-use-shipped-guide-and-real-dialog-selectors", () => {
+    const evidence = path.join(out, "archived-retrieval");
+    const result = command(process.execPath,
+      [path.join(source, "scripts/assistant-knowledge-test.cjs"), evidence],
+      { cwd: source, env: { ...process.env, NODE_PATH: dependencyPath } });
+    assert.equal(result.status, 0, result.stderr?.toString());
+    const file = path.join(evidence, "report.json");
+    const retrieval = JSON.parse(fs.readFileSync(file, "utf8"));
+    assert.equal(retrieval.status, "PASS");
+    assert(retrieval.cases.length >= 24, "Empty or incomplete retrieval matrix");
+    assert(retrieval.cases.every(item => item.status === "PASS"));
+    assert(retrieval.cases.some(item =>
+      item.name === "gui-application-retrieves-the-dialog-selection-workflow-not-canvas-selection"));
+    return { report: file, sha256: hash(fs.readFileSync(file)), cases: retrieval.cases.length };
   });
   check("crlf-checkout-and-extra-local-documents-cannot-change-shipped-knowledge", () => {
     const before = normalize(fs.readFileSync(path.join(source, generated)));

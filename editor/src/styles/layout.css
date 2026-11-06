@@ -1997,6 +1997,10 @@ body.is-toolbar-popover-open .floating-command-workbench{z-index:0!important;poi
 .loading-animation-mode{display:flex;flex-wrap:wrap;gap:6px}
 .loading-animation-mode button,.loading-animation-import{min-height:34px;display:inline-flex;align-items:center;justify-content:center;gap:7px}
 .loading-animation-mode button.is-active{border-color:color-mix(in srgb,var(--accent) 52%,var(--line));background:color-mix(in srgb,var(--accent) 16%,var(--surface-2));color:var(--ink-strong)}
+.loading-animation-presentation{display:flex;flex-wrap:wrap;align-items:end;gap:8px;margin:0;padding:9px 10px;border:1px solid color-mix(in srgb,var(--line) 82%,transparent);border-radius:8px}
+.loading-animation-presentation legend{padding:0 5px;color:var(--ink-strong);font-size:12px}
+.loading-animation-presentation label{display:grid;gap:4px;min-width:110px;color:var(--muted);font-size:12px}
+.loading-animation-presentation select,.loading-animation-presentation input{min-height:32px;max-width:150px}
 .loading-animation-import{width:fit-content;padding:0 11px;border:1px solid color-mix(in srgb,var(--accent) 34%,var(--line));border-radius:8px;background:color-mix(in srgb,var(--field) 74%,transparent);color:var(--ink);cursor:pointer}
 .loading-animation-import input{display:none}
 .loading-animation-current{display:grid;gap:3px;min-width:0;padding:9px 10px;border:1px solid color-mix(in srgb,var(--line) 80%,transparent);border-radius:8px;background:color-mix(in srgb,var(--surface) 72%,transparent)}

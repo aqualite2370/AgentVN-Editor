@@ -4,6 +4,7 @@ import type { UISkinLayout } from "./uiSkin";
 import { compareSemver } from "./compatibility";
 import { RENPY_BUTTON_ROLE_PAGES, RENPY_MENU_FRAME_PROPERTIES, RENPY_NAVIGATION_PAGES } from "./renpyGui";
 import { layoutPresentationTargets } from "./controlPresentation";
+import { usesCustomOpeningPresentation } from "./openingPresentation";
 
 export const RENPY_LAYOUT_RUNTIME_VERSION = "0.8.0";
 export const RENPY_MENU_PAGE_OVERRIDES_RUNTIME_VERSION = "0.9.0";
@@ -27,6 +28,7 @@ export const STORY_UI_HIDE_RUNTIME_VERSION = "0.25.0";
 export const RENPY_TITLE_TEXT_RUNTIME_VERSION = "0.26.0";
 export const GAME_VIEWPORT_RUNTIME_VERSION = "0.27.0";
 export const NATIVE_ANIMATION_ASSET_RUNTIME_VERSION = "0.28.0";
+export const OPENING_PRESENTATION_RUNTIME_VERSION = "0.29.0";
 
 export function minimumRuntimeVersionForLayout(scriptVersion: string, layout?: UISkinLayout): string {
   if (layout?.gameViewport && compareSemver(scriptVersion, GAME_VIEWPORT_RUNTIME_VERSION) < 0)
@@ -183,7 +185,10 @@ export function scriptUsesGalleryAnchor(script: Pick<RuntimeScript, "scenes">): 
   return script.scenes.some((scene) => scene.commands.some((command) => command.type === "gallery_anchor"));
 }
 
-export function minimumRuntimeVersionForScript(script: PresentationScript & { opening_audio?: RuntimeScript["opening_audio"]; rollback?: RuntimeScript["rollback"] }): string {
+export function minimumRuntimeVersionForScript(script: PresentationScript & { opening_audio?: RuntimeScript["opening_audio"]; rollback?: RuntimeScript["rollback"]; loading_animation?: RuntimeScript["loading_animation"] }): string {
+  if (script.loading_animation?.kind !== "default"
+    && usesCustomOpeningPresentation(script.loading_animation?.presentation))
+    return OPENING_PRESENTATION_RUNTIME_VERSION;
   if (script.scenes.some(scene => scene.commands.some(command =>
     command.type === "animation" && command.animation_asset_id != null)))
     return NATIVE_ANIMATION_ASSET_RUNTIME_VERSION;

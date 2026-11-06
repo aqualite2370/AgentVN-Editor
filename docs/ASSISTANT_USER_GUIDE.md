@@ -95,3 +95,15 @@ Agent 能力由本次模式与授权生成，不可任意读取工程文件、�
 轻触或点击画面、H、Escape 可以恢复；Android 返回先关闭最上层确认框，再恢复隐藏界面。这一次恢复操作不能同时推进或选择剧情。隐藏期间分支与NVL累计内容不丢失。
 隐藏仅为当前游玩会话的临时显示状态，不是玩家偏好，不写入存档；读档、重启或离开剧情安全恢复。不要将它与作者脚本的 hide_dialog 演出命令混为一谈。
 实现：StoryPlayer、RenpyQuickBar、runtimeStore、runtimeSystemBack。
+
+## opening-container | 片头全屏、居中容器与跳过
+
+在入口节点检查器或工程设置中的“用户开屏动画”选择视频或多图序列。“片头容器”可选全屏、居中尺寸；画面适配可选完整显示、裁切铺满、拉伸。居中宽高为视口的20–100%，外层黑底始终全屏遮挡。更换媒体保留容器设置；默认线条动画不使用这组媒体参数。旧工程缺省维持全屏完整显示。
+片头支持鼠标左键或单次触摸跳过，右键、拖动和取消触摸不跳过。跳过保留退出淡出，不将此次点击交给标题或剧情。新容器表现最低Runtime0.29.0。此为当前源码能力；旧安装器不会自动获得它。
+实现：OpeningAnimationEditor、OpeningScreen、openingPresentation、exportScript。
+
+## portable-font | Windows与Android使用同一工程字体
+
+只在作者PC安装的字体不会自动进入APK。先将有分发许可的字体文件作为字体素材导入工程，再在“客户端布局”的字体资源或具体对白/控件中绑定，导出时才会携带并加载该文件。
+作者显式指定的工程字体在Windows和Android均应遵从，不按字体资源ID中的unifont、pixel、bitmap或monospace静默改用系统字体。字体缺少某些字形或浏览器无法解码时仍可能出现后备字形；需要核对具体字体文件和打包结果。当前源码修复尚不代表已生成并验收新的APK。
+实现：RuntimeLayoutDesigner、exportCartridge、runtimeFont、UISkinProvider、DialogBox。

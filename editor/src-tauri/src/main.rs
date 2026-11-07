@@ -3818,8 +3818,19 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String>
         use windows_sys::Win32::Storage::FileSystem::{
             MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
         };
-        let source = wide_null(&temporary);
-        let destination = wide_null(path);
+        // CreateFile can resolve a virtualized/junction directory while the
+        // rename destination remains lexical. Publish beside the actual temp
+        // file so both sides of the atomic rename address the same directory.
+        let (resolved_temporary, resolved_destination) =
+            resolved_json_publish_paths(&temporary, path).map_err(|error| {
+                let _ = fs::remove_file(&temporary);
+                format!(
+                    "Failed to resolve JSON publish directory {}: {error}",
+                    path.display()
+                )
+            })?;
+        let source = wide_null(&resolved_temporary);
+        let destination = wide_null(&resolved_destination);
         let moved = unsafe {
             MoveFileExW(
                 source.as_ptr(),
@@ -3847,6 +3858,16 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String>
         })?;
     }
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn resolved_json_publish_paths(temporary: &Path, destination: &Path) -> io::Result<(PathBuf, PathBuf)> {
+    let name = destination.file_name().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "JSON destination has no file name")
+    })?;
+    let source = fs::canonicalize(temporary)?;
+    let target = source.with_file_name(name);
+    Ok((source, target))
 }
 
 #[cfg(target_os = "windows")]
@@ -10884,6 +10905,52 @@ mod standalone_package_upload_tests {
         let text = String::from_utf8(bytes).expect("strict UTF-8");
         assert!(text.contains("隐忍的成长"));
         fs::remove_dir_all(root).expect("remove UTF-8 JSON fixture");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn atomic_json_publish_resolves_existing_source_without_requiring_destination() {
+        let root = std::env::temp_dir().join(format!(
+            "agentvn-resolved-json-test-{}-{}",
+            std::process::id(), error_report_timestamp()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let temporary = root.join("临时.json.tmp");
+        let destination = root.join("尚未存在.json");
+        fs::write(&temporary, b"original").unwrap();
+        assert!(!destination.exists());
+        let (source, target) = resolved_json_publish_paths(&temporary, &destination).unwrap();
+        assert_eq!(source, fs::canonicalize(&temporary).unwrap());
+        assert_eq!(target, fs::canonicalize(&root).unwrap().join("尚未存在.json"));
+        assert_eq!(source.parent(), target.parent());
+        assert_eq!(fs::read(&temporary).unwrap(), b"original");
+        assert!(!destination.exists(), "path resolution must not create the destination");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn atomic_json_writer_keeps_existing_json_when_publish_is_denied() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "agentvn-denied-json-test-{}-{}",
+            std::process::id(), error_report_timestamp()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let destination = root.join("中文原存档.json");
+        fs::write(&destination, b"original bytes").unwrap();
+        let lock = OpenOptions::new().read(true).share_mode(0).open(&destination).unwrap();
+        let error = write_json_atomic(&destination, &serde_json::json!({"replacement": true}))
+            .expect_err("a locked destination must fail without a copy/delete fallback");
+        assert!(error.contains("Failed to publish JSON"));
+        drop(lock);
+        assert_eq!(fs::read(&destination).unwrap(), b"original bytes");
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1, "failed temporary must be removed");
+        write_json_atomic(&destination, &serde_json::json!({"重试": "成功"})).unwrap();
+        let text = fs::read_to_string(&destination).unwrap();
+        assert!(text.contains("成功"));
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

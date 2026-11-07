@@ -42,6 +42,12 @@ function summarizeNovelImportError(error?: string): string | undefined {
     .replace(/\s+/g, " ")
     .trim();
   if (!compact) return undefined;
+  if (/finish_reason.?[=:].?length|output.*limit|structured output truncated|输出.*(?:超限|上限|截断)/i.test(compact)) {
+    return "模型输出达到上限，解析已暂停。已完成结果保留，可从断点继续。";
+  }
+  if (/context.*(?:length|limit|budget)|输入超过预算|maximum context/i.test(compact)) {
+    return "当前批次超过模型输入预算，解析已暂停。已完成结果保留，请调整预算或拆分范围。";
+  }
   if (/validation errors|Input should be|not valid JSON|valid JSON|JSON/i.test(compact)) {
     return "模型返回内容未通过结构校验，当前阶段已暂停。完整错误已发送到右上角报错通知。";
   }
@@ -1290,7 +1296,9 @@ function StatusPanel() {
   const validationFixes = session.validation_reports.reduce((sum, report) => sum + report.fixes.length, 0);
   const checkpointSummary = [
     Object.keys(session.scan_partials).length > 0 ? `扫描 ${Object.keys(session.scan_partials).length}` : "",
-    Object.keys(session.outline_partials).length > 0 ? `大纲 ${Object.keys(session.outline_partials).length}` : "",
+    ["mainline", "structure", "index"].some(key => key in session.outline_partials)
+      ? `大纲 ${["mainline", "structure", "index"].filter(key => key in session.outline_partials).length}` : "",
+    session.outline_partials.batches?.length ? `汇总批次 ${session.outline_partials.batches.length}` : "",
     session.planned_chapter_ids.length > 0 ? `章节 ${session.planned_chapter_ids.length}` : "",
   ].filter(Boolean).join(" / ") || "无";
   const preflight = pendingImport?.preflight ?? session.import_record?.preflight ?? preflightFromDocument(session.document);
@@ -1432,10 +1440,24 @@ function NovelImportLanding() {
 
 function NovelAiScanPanel() {
   const analyses = useNovelImportStore((state) => state.session.ai_chunk_analyses);
+  const isProcessing = useNovelImportStore((state) => state.isProcessing);
+  const startAiAnalysis = useNovelImportStore((state) => state.startAiAnalysis);
+  const model = getNovelImportModelStatus();
   return (
     <section className="novel-primary-panel novel-ai-scan-panel is-active">
       <h3>AI 全文扫描</h3>
-      <p>模型正在分批阅读小说，提取章节候选、角色、时间线和伏笔。每个批次都会保留摘要，供后续合成全书大纲。</p>
+      <p>{isProcessing
+        ? "正在分批阅读并合成大纲，已完成结果自动保留。"
+        : "解析已暂停，继续时复用已完成的扫描和大纲批次。"}</p>
+      {!isProcessing && (
+        <div className="novel-ai-main-actions">
+          <button type="button" className="primary-action novel-ai-compact-button ai-glow-button"
+            data-help-key="novel.aiStart" disabled={!model.configured} onClick={() => void startAiAnalysis()}>
+            <WandSparkles size={16} /> 继续 AI 解析
+          </button>
+          {!model.configured && <p className="inline-warning">请先在“模型/连接”配置文本生成模型。</p>}
+        </div>
+      )}
       <div className="novel-ai-log-list">
         {analyses.map((analysis) => (
           <article key={analysis.chunk_id}>

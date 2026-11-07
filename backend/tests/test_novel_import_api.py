@@ -1319,7 +1319,7 @@ def test_novel_import_service_has_single_resumable_method_definitions() -> None:
     assert source.count("def stream_ai_scan_chunk(") == 1
     assert source.count("def ai_build_outline(") == 1
     assert "request.partial_summary" in source
-    assert "request.partial_mainline" in source
+    assert "OutlinePipeline(self, request)" in source
 
 
 def test_novel_import_ai_scan_stream_resumes_from_summary_checkpoint(monkeypatch) -> None:

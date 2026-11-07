@@ -558,6 +558,14 @@ export interface NovelAiOutlinePartial {
   mainline?: NovelAiOutlineMainline;
   structure?: NovelAiOutlineStructure;
   index?: NovelAiOutlineIndex;
+  source_hash?: string;
+  batches?: NovelAiOutlineBatchCheckpoint[];
+}
+
+export interface NovelAiOutlineBatchCheckpoint {
+  key: string;
+  stage: "mainline" | "structure" | "index";
+  payload: NovelAiOutlineMainline | NovelAiOutlineStructure | NovelAiOutlineIndex;
 }
 
 export interface ProgressiveImportJob {

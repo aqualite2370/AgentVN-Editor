@@ -183,6 +183,16 @@ test("paused blueprint failures do not count as successful generation", () => {
       generatedCount: 1, failedSceneIds: ["candidate_1"], startedAt: at } });
   assert.equal(partial.job.progressPercent, 50);
   assert.equal(partial.job.status, "failed_partial");
+  assert.equal(partial.job.runningAgentCount, 0);
+  assert(!partial.job.agents.some(agent => ["running", "retrying"].includes(agent.status)));
+});
+test("outline failure retains a terminal card without a blueprint job", () => {
+  const failed = createMockNovelProcessSnapshot({ ...input, processing: undefined,
+    session: { ...session, ai_stage: "scan", document: { document_id: "doc", title: "小说" },
+      chunks: [{ chunk_id: "done", estimated_tokens: 100 }], ai_chunk_analyses: [{ chunk_id: "done" }] },
+    errors: ["finish_reason=length"], importJob: undefined, progress: undefined, isProcessing: false });
+  assert.equal(failed.job.status, "failed_partial");
+  assert.equal(failed.job.runningAgentCount, 0);
 });
 assert(cases.length >= 11);
 console.log(JSON.stringify({ status: "PASS", cases: cases.length, source: path.resolve(__filename) }));

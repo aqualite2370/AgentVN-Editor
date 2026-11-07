@@ -624,6 +624,8 @@ type NovelImportSet = StoreApi<NovelImportStore>["setState"];
 
 function classifyNovelImportError(error: unknown, detail: string, phase: string): string {
   const haystack = `${error instanceof Error ? error.name : ""}\n${phase}\n${detail}`.toLowerCase();
+  if (/finish_reason.?[=:].?length|output.*limit|structured output truncated|输出.*(?:超限|上限|截断)/.test(haystack)) return "模型输出超限，已保留断点";
+  if (/context.*(?:length|limit|budget)|输入超过预算|maximum context/.test(haystack)) return "模型输入超过预算，已保留断点";
   if (/aborterror|timed out|timeout|超时|超过\s+\d+\s*秒/.test(haystack)) return "请求超时";
   if (/missing novel ai routes|backend route is missing|接口版本|openapi/.test(haystack)) return "后端小说 AI 接口缺失";
 
@@ -1191,6 +1193,34 @@ function applyScanCheckpoint(
 
 function applyOutlineCheckpoint(owner: NovelTaskOwnership, checkpoint: AiCheckpointEvent): void {
   if (!isNovelTaskOwnershipCurrent(owner)) return;
+  if (checkpoint.stage === "source") {
+    if (typeof checkpoint.payload !== "string" || !/^[a-f0-9]{64}$/.test(checkpoint.payload)) return;
+    const sourceHash = checkpoint.payload;
+    useNovelImportStore.setState((state) => {
+      if (!isNovelTaskOwnershipCurrent(owner)) return {};
+      const previous = state.session.outline_partials;
+      const changed = previous.source_hash && previous.source_hash !== sourceHash;
+      return { session: touch({ ...state.session, outline_partials: changed
+        ? { batches: previous.batches, source_hash: sourceHash }
+        : { ...previous, source_hash: sourceHash } }) };
+    });
+    flushNovelPersistenceSync(owner.projectId, true);
+    return;
+  }
+  if (checkpoint.stage === "batch") {
+    const row = checkpoint.payload as NonNullable<NovelAiOutlinePartial["batches"]>[number] | undefined;
+    if (!row || !/^[a-f0-9]{64}$/.test(row.key) || !isOutlineCheckpointStage(row.stage)
+      || !row.payload || typeof row.payload !== "object") return;
+    useNovelImportStore.setState((state) => {
+      if (!isNovelTaskOwnershipCurrent(owner)) return {};
+      const previous = state.session.outline_partials;
+      const batches = [...(previous.batches ?? []).filter(b => b.key !== row.key), row];
+      return { session: touch({ ...state.session, outline_partials: { ...previous, batches } }),
+        progress: markProgressHeartbeat(state.progress) };
+    });
+    flushNovelPersistenceSync(owner.projectId, true);
+    return;
+  }
   if (!isOutlineCheckpointStage(checkpoint.stage)) {
     useNovelImportStore.setState((state) => isNovelTaskOwnershipCurrent(owner)
       ? ({ warnings: [...state.warnings, `未知大纲检查点：${checkpoint.stage}`] })
@@ -1208,6 +1238,7 @@ function applyOutlineCheckpoint(owner: NovelTaskOwnership, checkpoint: AiCheckpo
       progress: markProgressHeartbeat(state.progress),
     };
   });
+  flushNovelPersistenceSync(owner.projectId, true);
 }
 
 function appendInspectableResult(result: Omit<NovelAiInspectableResult, "id" | "createdAt">): void {
@@ -3136,6 +3167,8 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
         partial_mainline: outlineState.session.outline_partials.mainline,
         partial_structure: outlineState.session.outline_partials.structure,
         partial_index: outlineState.session.outline_partials.index,
+        partial_batches: outlineState.session.outline_partials.batches,
+        partial_source_hash: outlineState.session.outline_partials.source_hash,
         provider_selection: providerSelection,
       }, {
         onDelta: (delta) => {
@@ -3198,7 +3231,7 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
           processing,
           progress: undefined,
           isProcessing: false,
-          modelStream: { ...current.modelStream, status: "全书大纲已生成" },
+          modelStream: { ...current.modelStream, status: "全书大纲已生成", requestId: undefined },
         };
       });
     } catch (error) {
@@ -3206,6 +3239,11 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
         reportFrontendError("editor.novel-import", error, { operation: "ai-analysis-stale-response", ...ownership });
         return;
       }
+      // Flush pending rAF text before entering a terminal state. It must never
+      // run afterwards and turn a failed task back into "streaming".
+      const failedRequestId = get().modelStream.requestId;
+      if (failedRequestId) flushModelStreamDeltaQueue(set, failedRequestId);
+      clearModelStreamDeltaQueue(failedRequestId);
       const summary = reportNovelImportError({
         phase: "AI 全文扫描",
         modelLabel,
@@ -3219,9 +3257,10 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
         errors: [...current.errors, summary],
         progress: undefined,
         isProcessing: false,
-        modelStream: { ...current.modelStream, open: true, status: "模型流程已停止" },
+        modelStream: { ...current.modelStream, open: true, status: "解析已暂停，可从断点继续", requestId: undefined },
         session: touch({ ...current.session, ai_stage: "scan" }),
       }));
+      flushNovelPersistenceSync(ownership.projectId, true);
     }
   },
 
@@ -3880,7 +3919,7 @@ function buildPersistenceForCurrentState(state: NovelImportStore): NovelPersiste
   };
 }
 
-function flushNovelPersistenceSync(projectId = novelStoreProjectId): void {
+function flushNovelPersistenceSync(projectId = novelStoreProjectId, persistCheckpoint = false): void {
   if (syncingNovelPersistence) return;
   const state = useNovelImportStore.getState();
   const next = buildPersistenceForCurrentState(state);
@@ -3900,6 +3939,22 @@ function flushNovelPersistenceSync(projectId = novelStoreProjectId): void {
     }
   }
   syncingNovelPersistence = false;
+  if (persistCheckpoint && useProjectStore.getState().projectId === projectId) {
+    // Checkpoints cannot depend on the UI metadata debounce: task/stream
+    // updates may keep resetting it while a long model operation runs.
+    // Use the same serialized writer, taking a fresh snapshot when it starts.
+    void backendClient.saveProjectState(() => {
+      const project = useProjectStore.getState();
+      if (project.projectId !== projectId) return {};
+      return { project_metadata: {
+        projectId, title: project.title, author: project.author,
+        createdAt: project.createdAt, updatedAt: project.updatedAt,
+        assetManifest: project.assetManifest, settings: { ...project.settings },
+      } };
+    }).catch(error => reportFrontendError("editor.novel-import", error, {
+      operation: "persist-outline-checkpoint", projectId,
+    }));
+  }
 }
 
 function scheduleNovelPersistenceSync(): void {

@@ -276,6 +276,12 @@ class NovelAiChunkTimelineNotes(StrictBaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class NovelAiOutlineBatchCheckpoint(StrictBaseModel):
+    key: str = Field(..., pattern=r"^[a-f0-9]{64}$")
+    stage: Literal["mainline", "structure", "index"]
+    payload: dict[str, Any]
+
+
 class NovelAiOutlineRequest(StrictBaseModel):
     document_id: str
     title: str
@@ -285,6 +291,8 @@ class NovelAiOutlineRequest(StrictBaseModel):
     partial_mainline: "NovelAiOutlineMainline | None" = None
     partial_structure: "NovelAiOutlineStructure | None" = None
     partial_index: "NovelAiOutlineIndex | None" = None
+    partial_batches: list[NovelAiOutlineBatchCheckpoint] = Field(default_factory=list, max_length=4096)
+    partial_source_hash: str | None = None
     provider_selection: ProviderSelectionRequest | None = None
 
 

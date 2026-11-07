@@ -100,8 +100,15 @@ function latestOutputPreview(results: NovelAiInspectableResult[], fallback: stri
 }
 
 function statusFromImportState(input: NovelProcessMockInput): NovelProcessJobStatus | undefined {
-  const { importJob, progress, errors, isProcessing } = input;
-  if (!importJob && !progress) return undefined;
+  const { importJob, progress, errors, isProcessing, session } = input;
+  if (!importJob && !progress) {
+    if (!session.document || session.chunks.length === 0) return undefined;
+    if (errors.length > 0 && !isProcessing)
+      return session.ai_chunk_analyses.length > 0 ? "failed_partial" : "failed";
+    if (isProcessing) return "running";
+    if (session.ai_outline) return "paused";
+    return undefined;
+  }
   if (importJob?.cancelRequested || importJob?.status === "cancelled") return "cancelled";
   if (importJob?.pauseRequested || importJob?.status === "paused") {
     if (errors.length === 0) return "paused";
@@ -421,7 +428,7 @@ function buildAgents(input: NovelProcessMockInput, status: NovelProcessJobStatus
     if (status === "completed") agentStatus = "completed";
     else if (status === "cancelled") agentStatus = index === 0 ? "cancelled" : "completed";
     else if (status === "failed" || (status === "failed_partial" && index === 0)) agentStatus = "failed";
-    else if (status === "retrying" || (status === "failed_partial" && index === 1)) agentStatus = "retrying";
+    else if (status === "retrying") agentStatus = "retrying";
     else if (status === "running") agentStatus = index === 0 ? "running" : index % 3 === 0 ? "waiting" : "running";
     else if (status === "paused") agentStatus = "waiting";
     const chunkTotal = Math.max(1, Math.min(6, Math.ceil(totalChunks / agentCount)));

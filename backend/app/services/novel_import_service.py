@@ -55,6 +55,7 @@ from app.models.novel_import import (
 )
 from app.models.scene import SceneBeat
 from app.schemas.requests import ProviderSelectionRequest
+from app.services.novel_outline_pipeline import OutlinePipeline
 from app.utils.ids import new_id
 
 
@@ -367,75 +368,14 @@ class NovelImportService:
         yield ("final", self._compose_chunk_analysis(summary, entities, timeline))
 
     def ai_build_outline(self, request: NovelAiOutlineRequest) -> NovelAiOutlineResponse:
-        mainline = request.partial_mainline or self.provider.create_with_tools(
-            NovelAiOutlineMainline,
-            self._outline_mainline_system_prompt(),
-            self._outline_mainline_user_prompt(request),
-            temperature=0.2,
-            selection=self._json_mode_selection(request.provider_selection, "outline"),
-        )
-        structure = request.partial_structure or self.provider.create_with_tools(
-            NovelAiOutlineStructure,
-            self._outline_structure_system_prompt(),
-            self._outline_structure_user_prompt(request, mainline),
-            temperature=0.2,
-            selection=self._json_mode_selection(request.provider_selection, "outline"),
-        )
-        index = request.partial_index or self.provider.create_with_tools(
-            NovelAiOutlineIndex,
-            self._outline_index_system_prompt(),
-            self._outline_index_user_prompt(request, mainline),
-            temperature=0.2,
-            selection=self._json_mode_selection(request.provider_selection),
-        )
-        return self._compose_outline_response(request, mainline, structure, index)
+        for event, payload in OutlinePipeline(self, request, streaming=False).run():
+            if event == "final":
+                return payload
+        raise AIProviderError("Outline pipeline did not return a final result.")
 
     def stream_ai_build_outline(self, request: NovelAiOutlineRequest) -> Iterator[tuple[str, object]]:
-        mainline = request.partial_mainline
-        if mainline is None:
-            yield ("status", "Building full-book mainline...")
-            mainline = yield from self._stream_structured_result(
-                NovelAiOutlineMainline,
-                self._outline_mainline_system_prompt(),
-                self._outline_mainline_user_prompt(request),
-                temperature=0.2,
-                selection=self._json_mode_selection(request.provider_selection, "outline"),
-                phase="outline_mainline",
-            )
-            yield ("checkpoint", {"stage": "mainline", "payload": mainline.model_dump(mode="json")})
-        else:
-            yield ("trace", {"phase": "outline_mainline", "level": "info", "title": "Resume checkpoint reused", "message": mainline.summary})
-
-        structure = request.partial_structure
-        if structure is None:
-            yield ("status", "Building chapter structure...")
-            structure = yield from self._stream_structured_result(
-                NovelAiOutlineStructure,
-                self._outline_structure_system_prompt(),
-                self._outline_structure_user_prompt(request, mainline),
-                temperature=0.2,
-                selection=self._json_mode_selection(request.provider_selection, "outline"),
-                phase="outline_structure",
-            )
-            yield ("checkpoint", {"stage": "structure", "payload": structure.model_dump(mode="json")})
-        else:
-            yield ("trace", {"phase": "outline_structure", "level": "info", "title": "Resume checkpoint reused", "message": f"Chapters {len(structure.chapters)}"})
-
-        index = request.partial_index
-        if index is None:
-            yield ("status", "Building character and location index...")
-            index = yield from self._stream_structured_result(
-                NovelAiOutlineIndex,
-                self._outline_index_system_prompt(),
-                self._outline_index_user_prompt(request, mainline),
-                temperature=0.2,
-                selection=self._json_mode_selection(request.provider_selection),
-                phase="outline_index",
-            )
-            yield ("checkpoint", {"stage": "index", "payload": index.model_dump(mode="json")})
-        else:
-            yield ("trace", {"phase": "outline_index", "level": "info", "title": "Resume checkpoint reused", "message": f"Characters {len(index.characters)}, locations {len(index.locations)}"})
-        yield ("final", self._compose_outline_response(request, mainline, structure, index))
+        # partial_mainline/structure/index remain readable for pre-patch projects.
+        yield from OutlinePipeline(self, request).run()
 
     @staticmethod
     def _compose_outline_response(
@@ -1597,8 +1537,7 @@ class NovelImportService:
         """Serialize authored input, never provider credentials/configuration."""
         return request.model_dump_json(include={
             "document_id", "title", "total_chars", "analyses",
-            "allow_branch_suggestions", "partial_mainline",
-            "partial_structure", "partial_index",
+            "allow_branch_suggestions",
         })
 
     @staticmethod

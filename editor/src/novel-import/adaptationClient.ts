@@ -11,6 +11,7 @@ import type {
   NovelAiChunkSummary,
   NovelAiChunkTimelineNotes,
   NovelAiOutline,
+  NovelAiOutlineBatchCheckpoint,
   NovelAiOutlineIndex,
   NovelAiOutlineMainline,
   NovelAiOutlineStructure,
@@ -272,8 +273,8 @@ async function postWs<T>(
   let socket: WebSocket | undefined;
   let heartbeat: number | undefined;
   let idleTimer: number | undefined;
+  let reconnectTimer: number | undefined;
   let reconnects = 0;
-  let jobRestarts = 0;
   let streamStarted = false;
 
   return new Promise<T>((resolve, reject) => {
@@ -281,6 +282,7 @@ async function postWs<T>(
       settled = true;
       if (heartbeat !== undefined) window.clearInterval(heartbeat);
       if (idleTimer !== undefined) window.clearTimeout(idleTimer);
+      if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
       if (socket && socket.readyState <= WebSocket.OPEN) socket.close();
     };
 
@@ -306,6 +308,8 @@ async function postWs<T>(
     };
 
     const connect = (resume: boolean) => {
+      if (settled) return;
+      reconnectTimer = undefined;
       armIdleTimer();
       socket = new WebSocket(`${baseUrl}/api/ws/novel`);
       socket.onopen = () => {
@@ -327,6 +331,7 @@ async function postWs<T>(
         if (!settled && lastSeq > 0) reconnect();
       };
       socket.onmessage = (message) => {
+        if (settled) return;
         const event = parseWsEvent(message);
         if (!event) return;
         if (event.type === "connected" || event.type === "pong") return;
@@ -391,28 +396,10 @@ async function postWs<T>(
         }
         if (event.type === "error") {
           const messageText = payloadMessage(event.payload, "streaming model call failed");
-          if (resume && /job not found/i.test(messageText) && jobRestarts < 2 && socket?.readyState === WebSocket.OPEN) {
-            jobRestarts += 1;
-            lastSeq = 0;
-            streamStarted = false;
-            handlers.onTrace?.({
-              id: `${jobId}-restart-${jobRestarts}`,
-              phase: "websocket",
-              level: "warning",
-              title: "Restarting interrupted novel AI job",
-              message: "The backend restarted and lost the in-memory job. The same real model request is being started again.",
-              details: { operation, attempt: jobRestarts, maximumAttempts: 2 },
-            });
-            handlers.onStatus?.("Restarting the interrupted novel AI job with the same model request...");
-            markProgress();
-            socket.send(JSON.stringify({
-              command: "start_novel_job",
-              requestId,
-              jobId,
-              operation,
-              payload: normalizePayload(payload),
-              lastSeq: 0,
-            }));
+          if (resume && /job not found/i.test(messageText)) {
+            const reason = "后端任务已失去连接记录。已保存断点保留，请点击继续解析；未自动重新提交模型请求。";
+            handlers.onError?.(reason);
+            fail(reason, false);
             return;
           }
           handlers.onError?.(messageText);
@@ -428,7 +415,8 @@ async function postWs<T>(
         fail("WebSocket stream disconnected and could not resume.", false);
         return;
       }
-      window.setTimeout(() => connect(true), Math.min(1000 * reconnects, 3000));
+      if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
+      reconnectTimer = window.setTimeout(() => connect(true), Math.min(1000 * reconnects, 3000));
     };
 
     connect(false);
@@ -563,6 +551,8 @@ export async function aiBuildNovelOutlineStream(payload: {
   partial_mainline?: NovelAiOutlineMainline;
   partial_structure?: NovelAiOutlineStructure;
   partial_index?: NovelAiOutlineIndex;
+  partial_batches?: NovelAiOutlineBatchCheckpoint[];
+  partial_source_hash?: string;
   provider_selection?: ProviderSelectionPayload;
 }, handlers?: NovelAiStreamHandlers): Promise<NovelAiOutline> {
   // modelName is local provenance, not part of the strict model-output schema.

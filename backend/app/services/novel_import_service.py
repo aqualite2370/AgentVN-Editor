@@ -385,6 +385,12 @@ class NovelImportService:
         index: NovelAiOutlineIndex,
     ) -> NovelAiOutlineResponse:
         chapters = NovelImportService._repair_outline_chapter_ranges(request, structure.chapters)
+        covered = sum(c.end_offset - c.start_offset for c in chapters)
+        incomplete = covered < request.total_chars
+        range_warnings = (
+            ["章节候选未覆盖全部原文；未拉伸章节填补空隙，请在审核时补齐未覆盖内容。"]
+            if incomplete else []
+        )
         return NovelAiOutlineResponse(
             document_id=mainline.document_id,
             title=mainline.title,
@@ -396,9 +402,10 @@ class NovelImportService:
             locations=index.locations,
             branch_or_foreshadowing=structure.branch_or_foreshadowing,
             conflict_points=structure.conflict_points,
-            warnings=[*mainline.warnings, *structure.warnings, *index.warnings],
-            needs_review=mainline.needs_review,
-            coverage_confidence=mainline.coverage_confidence,
+            warnings=[*mainline.warnings, *structure.warnings, *index.warnings, *range_warnings],
+            needs_review=mainline.needs_review or incomplete,
+            coverage_confidence=min(mainline.coverage_confidence,
+                covered / request.total_chars if request.total_chars else 1),
         )
 
     @staticmethod
@@ -419,11 +426,15 @@ class NovelImportService:
         if model_ranges_are_valid:
             return ordered
 
+        valid_model_candidates = [
+            chapter for chapter in chapters
+            if 0 <= chapter.start_offset < chapter.end_offset <= total_chars
+        ]
         source_candidates = sorted(
             (
                 candidate
-                for analysis in request.analyses
-                for candidate in analysis.chapter_candidates
+                for candidate in (valid_model_candidates if len(valid_model_candidates) == len(chapters)
+                                  else [c for a in request.analyses for c in a.chapter_candidates])
                 if 0 <= candidate.start_offset < candidate.end_offset <= total_chars
             ),
             key=lambda candidate: (candidate.start_offset, candidate.end_offset, candidate.index),
@@ -436,15 +447,17 @@ class NovelImportService:
         for candidate in source_candidates:
             if candidate.end_offset <= cursor:
                 continue
-            start = cursor
+            start = max(cursor, candidate.start_offset)
             end = candidate.end_offset
             metadata = dict(candidate.metadata)
             metadata["source_range_repaired"] = True
-            metadata["source_range_origin"] = "scan_chapter_candidate"
+            metadata["source_range_origin"] = (
+                "outline_chapter" if len(valid_model_candidates) == len(chapters)
+                else "scan_chapter_candidate"
+            )
             repaired.append(
                 candidate.model_copy(
                     update={
-                        "chapter_id": f"chapter_{len(repaired) + 1}",
                         "index": len(repaired),
                         "start_offset": start,
                         "end_offset": end,
@@ -456,17 +469,6 @@ class NovelImportService:
             cursor = end
         if not repaired:
             raise ValueError("Scan chapter candidates did not yield any non-empty source ranges.")
-        if cursor < total_chars:
-            last = repaired[-1]
-            metadata = dict(last.metadata)
-            metadata["source_range_extended_to_document_end"] = True
-            repaired[-1] = last.model_copy(
-                update={
-                    "end_offset": total_chars,
-                    "char_count": total_chars - last.start_offset,
-                    "metadata": metadata,
-                }
-            )
         return repaired
 
     @staticmethod
@@ -1567,8 +1569,10 @@ class NovelImportService:
         )
 
     @staticmethod
-    def _outline_structure_user_prompt(request: NovelAiOutlineRequest, mainline: NovelAiOutlineMainline) -> str:
-        return f"""
+    def _outline_structure_user_prompt(
+        request: NovelAiOutlineRequest, mainline: NovelAiOutlineMainline, *, legacy_ranges=False,
+    ) -> str:
+        prompt = f"""
 Hard source-range requirements:
 - every chapter must include start_offset and end_offset copied from the scan analyses
 - every chapter range must satisfy 0 <= start_offset < end_offset <= {request.total_chars}
@@ -1589,6 +1593,32 @@ Hard source-range requirements:
 分块分析数据:
 {NovelImportService._outline_story_json(request)}
 """
+        if legacy_ranges:
+            # Exact historical bytes are used only to find already validated
+            # paid checkpoints. New requests never send this conflicting rule.
+            return prompt
+        ranges = OutlinePipeline.coverage_ranges(request.analyses)
+        required_chapters = [
+            {"chapter_id": c.chapter_id, "start_offset": c.start_offset, "end_offset": c.end_offset}
+            for row in request.analyses for c in row.chapter_candidates
+            if c.end_offset > c.start_offset
+        ]
+        return prompt.replace(
+            "- chapter ranges must follow source order and must not overlap",
+            "- chapter ranges must follow source order; overlapping scan candidates may remain overlapping",
+        ).replace(
+            "- never return 0-0 placeholder ranges",
+            "- never return empty or 0-0 placeholder ranges\n"
+            "- 扫描范围允许重叠，这是分块上下文重叠，不代表可删除其中独有的剧情；"
+            "保留每个有效候选的剧情与范围，重叠会在全批合成后统一处理。\n"
+            "- 零长度候选不生成空章节；不要为了消除重叠缩短或遗漏有效范围。\n"
+            f"- 本批必须完整覆盖以下区间的每一个位置（左闭右开）：{ranges}；"
+            "不得把区间间的空隙视为已扫描内容。\n"
+            f"- chapters 必须逐项对应以下 {len(required_chapters)} 个有效候选，"
+            "保留各自 chapter_id、start_offset、end_offset；"
+            "本阶段只整理标题、摘要和冲突，不合并、不缩短、不跳过短章节或重叠章节。\n"
+            f"- 必须返回的章节清单：{required_chapters}",
+        )
 
     @staticmethod
     def _outline_index_system_prompt() -> str:

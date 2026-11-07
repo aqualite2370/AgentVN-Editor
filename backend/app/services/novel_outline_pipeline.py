@@ -45,12 +45,15 @@ class OutlinePipeline:
             "branches": request.allow_branch_suggestions})
         self.reuse_full = not request.partial_source_hash or request.partial_source_hash == self.source_hash
 
-    def prompts(self, stage, rows, mainline=None):
+    def prompts(self, stage, rows, mainline=None, *, legacy_ranges=False):
         local = self.request.model_copy(update={"analyses": rows, "partial_mainline": None,
             "partial_structure": None, "partial_index": None, "partial_batches": []})
         system = getattr(self.service, f"_outline_{stage}_system_prompt")()
         method = getattr(self.service, f"_outline_{stage}_user_prompt")
-        user = method(local) if stage == "mainline" else method(local, mainline)
+        if stage == "structure" and legacy_ranges:
+            user = method(local, mainline, legacy_ranges=True)
+        else:
+            user = method(local) if stage == "mainline" else method(local, mainline)
         # Concrete bounds leave room for complete JSON, never trim validated results.
         system += (
             "\n控制本批输出规模：summary最多300字，main_plot最多1200字；"
@@ -58,6 +61,20 @@ class OutlinePipeline:
             "不要重复逐段警告。保留所有本批章节范围，不能为了简短遗漏章节。"
         )
         return system, user
+
+    @staticmethod
+    def coverage_ranges(rows):
+        """Union valid candidate intervals without filling unscanned gaps."""
+        ranges = sorted((c.start_offset, c.end_offset)
+                        for row in rows for c in row.chapter_candidates
+                        if c.end_offset > c.start_offset)
+        merged = []
+        for start, end in ranges:
+            if merged and start <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], end)
+            else:
+                merged.append([start, end])
+        return merged
 
     def selection(self, stage):
         selection = self.service._json_mode_selection(self.request.provider_selection, "outline")
@@ -131,8 +148,15 @@ class OutlinePipeline:
         model = MODELS[stage]
         system, user = self.prompts(stage, rows, mainline)
         key = digest({"version": VERSION, "stage": stage, "system": system, "user": user})
-        cached = self.cached.get(key)
-        if cached and cached.stage == stage:
+        cache_keys = [key]
+        if stage == "structure":
+            old_system, old_user = self.prompts(stage, rows, mainline, legacy_ranges=True)
+            cache_keys.append(digest({"version": VERSION, "stage": stage,
+                                     "system": old_system, "user": old_user}))
+        for cache_key in dict.fromkeys(cache_keys):
+            cached = self.cached.get(cache_key)
+            if not cached or cached.stage != stage:
+                continue
             try:
                 result = model.model_validate(cached.payload)
                 self.validate(stage, rows, result)
@@ -143,7 +167,7 @@ class OutlinePipeline:
                     self.remember_mainline(result)
                 yield "trace", {"phase": f"outline_{stage}", "level": "info",
                     "title": "复用已保存批次", "message": f"{LABELS[stage]} {number}/{total}",
-                    "details": {"batchKey": key}}
+                    "details": {"batchKey": cache_key}}
                 return result
         selection, output, _ = self.selection(stage)
         yield "status", f"正在合成{LABELS[stage]} {number}/{total}"
@@ -159,6 +183,13 @@ class OutlinePipeline:
             else:
                 result = self.service.provider.create_with_tools(
                     model, system, user, temperature=.2, selection=selection)
+            if stage == "structure":
+                # Range-only diagnostics survive a failed validation without
+                # exposing source prose or discarding the rejected model output.
+                yield "trace", {"phase": "outline_ranges", "level": "info",
+                    "title": "核对章节覆盖范围", "message": f"章节结构 {number}/{total}",
+                    "details": {"batchKey": key, "required": self.coverage_ranges(rows),
+                        "returned": [[c.start_offset, c.end_offset] for c in result.chapters]}}
             self.validate(stage, rows, result)
         except AIProviderError as exc:
             raise AIProviderError(
@@ -183,20 +214,27 @@ class OutlinePipeline:
             return
         start, end = min(c.start_offset for c in source), max(c.end_offset for c in source)
         chapters = sorted(result.chapters, key=lambda c: c.start_offset)
-        if not chapters or chapters[0].start_offset != start or chapters[-1].end_offset != end:
+        if not chapters or chapters[0].start_offset != start or max(c.end_offset for c in chapters) != end:
             raise AIProviderError("章节覆盖不完整；未用拉伸原文范围掩盖缺失章节。")
         if any(c.end_offset <= c.start_offset or c.start_offset < start or c.end_offset > end
                for c in chapters):
             raise AIProviderError("章节原文范围超出本批或为空。")
+        missing = []
         for candidate in source:
             covered_to = candidate.start_offset
             for chapter in chapters:
                 if chapter.start_offset > covered_to:
+                    if covered_to < candidate.end_offset:
+                        missing.append([covered_to, min(chapter.start_offset, candidate.end_offset)])
+                    covered_to = min(chapter.start_offset, candidate.end_offset)
+                if covered_to >= candidate.end_offset:
                     break
                 if chapter.end_offset > covered_to:
                     covered_to = chapter.end_offset
             if covered_to < candidate.end_offset:
-                raise AIProviderError("章节原文范围有遗漏，未写入断点。")
+                missing.append([covered_to, candidate.end_offset])
+        if missing:
+            raise AIProviderError(f"章节原文范围有遗漏，未写入断点。缺失区间（左闭右开）：{missing[:12]}")
 
     def mainline(self):
         old = self.request.partial_mainline if self.reuse_full else None

@@ -191,3 +191,83 @@ def test_index_batch_bounds_character_output(monkeypatch):
     monkeypatch.setattr(service.provider, "stream_with_tools", bounded)
     list(service.stream_ai_build_outline(payload))
     assert sum(counts) == 225 and max(counts) <= 16
+
+
+def test_structure_prompt_accounts_for_overlapping_scan_ranges():
+    """Synthetic ranges reproduce the live fourth batch without private prose."""
+    from app.services.novel_outline_pipeline import OutlinePipeline
+    payload = request(9, total_chars=40000)
+    bounds = [[(21150, 22900), (22900, 24190), (24150, 24190)],
+              [(24000, 26400), (26400, 26574)],
+              [(26450, 28600), (28601, 29950), (29951, 30128), (30128, 30128)]]
+    rows = payload.analyses[:3]
+    for i, (row, ranges) in enumerate(zip(rows, bounds)):
+        row.chapter_candidates = [ChapterCandidate(chapter_id=f"range_{i}_{j}", title="范围测试",
+            index=j, start_offset=a, end_offset=b, summary="受控剧情")
+            for j, (a, b) in enumerate(ranges)]
+    pipeline = OutlinePipeline(NovelImportService(), payload)
+    mainline = NovelAiOutlineMainline(document_id=payload.document_id, title=payload.title,
+        summary="测试", main_plot="测试")
+    _, user = pipeline.prompts("structure", rows, mainline)
+    assert "must not overlap" not in user
+    assert "扫描范围允许重叠" in user
+    assert "[21150, 28600]" in user
+    assert "[28601, 29950]" in user
+    assert "[29951, 30128]" in user
+    assert "[30128, 30128]" not in user.split("主线总览:", 1)[0]
+    complete = NovelAiOutlineStructure(chapters=[c for r in rows for c in r.chapter_candidates
+                                                if c.end_offset > c.start_offset])
+    pipeline.validate("structure", rows, complete)
+    missing = complete.model_copy(update={"chapters": [
+        c for c in complete.chapters if (c.start_offset, c.end_offset) != (22900, 24190)]})
+    with pytest.raises(AIProviderError, match="遗漏"):
+        pipeline.validate("structure", rows, missing)
+    with pytest.raises(AIProviderError, match=r"\[22900, 24000\]"):
+        pipeline.validate("structure", rows, missing)
+
+
+def test_structure_prompt_update_reuses_validated_legacy_batches(monkeypatch):
+    from app.services.novel_outline_pipeline import OutlinePipeline
+    service, payload = NovelImportService(), request(9)
+    old_prompt = service._outline_structure_user_prompt
+    monkeypatch.setattr(service, "_outline_structure_user_prompt",
+        lambda r, m, **kwargs: old_prompt(r, m, legacy_ranges=True))
+    monkeypatch.setattr(service.provider, "stream_with_tools", fake_model([]))
+    events = list(service.stream_ai_build_outline(payload))
+    batches = [v["payload"] for e, v in events if e == "checkpoint" and v["stage"] == "batch"]
+    mainline = next(v["payload"] for e, v in events if e == "checkpoint" and v["stage"] == "mainline")
+    monkeypatch.setattr(service, "_outline_structure_user_prompt", old_prompt)
+    calls = []
+    monkeypatch.setattr(service.provider, "stream_with_tools", fake_model(calls))
+    resumed = request(9, partial_mainline=mainline, partial_batches=batches)
+    result = list(service.stream_ai_build_outline(resumed))[-1][1]
+    assert len(result.chapters) == 9
+    assert calls == [], "A prompt clarification must not recharge validated legacy work"
+
+
+def test_overlap_composition_does_not_fill_unscanned_gaps_or_document_tail():
+    service, payload = NovelImportService(), request(9, total_chars=2000)
+    rows = [
+        ChapterCandidate(chapter_id="first", index=0, title="一", summary="测试", start_offset=100, end_offset=300),
+        ChapterCandidate(chapter_id="second", index=1, title="二", summary="测试", start_offset=250, end_offset=400),
+        ChapterCandidate(chapter_id="third", index=2, title="三", summary="测试", start_offset=500, end_offset=600),
+    ]
+    payload.analyses[0].chapter_candidates = rows
+    for row in payload.analyses[1:]:
+        row.chapter_candidates = []
+    result = service._repair_outline_chapter_ranges(payload, rows)
+    assert [(c.start_offset, c.end_offset) for c in result] == [(100, 300), (300, 400), (500, 600)]
+    assert [c.chapter_id for c in result] == ["first", "second", "third"]
+    assert [c.title for c in result] == ["一", "二", "三"]
+
+
+def test_nested_tail_does_not_falsely_report_incomplete_coverage():
+    from app.services.novel_outline_pipeline import OutlinePipeline
+    payload = request(9, total_chars=80000)
+    bounds = [(61508, 65000), (65000, 65414), (65300, 66900), (66901, 67132),
+              (67010, 70480), (70480, 70504), (70182, 74519)]
+    rows = payload.analyses[:1]
+    rows[0].chapter_candidates = [ChapterCandidate(chapter_id=f"nested_{i}", index=i,
+        title="范围测试", summary="受控", start_offset=a, end_offset=b) for i, (a, b) in enumerate(bounds)]
+    result = NovelAiOutlineStructure(chapters=rows[0].chapter_candidates)
+    OutlinePipeline(NovelImportService(), payload).validate("structure", rows, result)

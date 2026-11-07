@@ -138,7 +138,12 @@ def test_outline_prompts_only_serialize_story_fields(method):
     assert "AUTH-CONFIG-MUST-NOT-BECOME-STORY" not in prompt
     assert "not-used.invalid" not in prompt
     assert request.title in prompt and request.document_id in prompt
-    assert "原有主线保留" in prompt
+    if method in {"_outline_structure_user_prompt", "_outline_index_user_prompt"}:
+        assert "原有主线保留" in prompt
+    else:
+        # A mainline request derives its result from scans; it must not
+        # serialize partial checkpoints (including their unbounded payloads).
+        assert "partial_mainline" not in prompt
     assert '"allow_branch_suggestions":true' in prompt
     assert request.model_dump_json() == original
     assert json.loads(original)["provider_selection"]["api_key"] == SENTINEL
@@ -200,7 +205,15 @@ def test_real_outline_http_transport_keeps_auth_out_of_model_messages(boundary_c
     try:
         response = client.post("/api/novel/import/ai_build_outline" + ("_stream" if streaming else ""), json={
             "document_id": "http-boundary", "title": "两章来源", "total_chars": 100,
-            "analyses": [], "provider_selection": {
+            "analyses": [{
+                "chunk_id": "scan-auth-boundary", "index": 0, "summary": "两章内容",
+                "chapter_candidates": [
+                    {"chapter_id": "ch1", "title": "第一章", "index": 0,
+                     "start_offset": 0, "end_offset": 50, "summary": "前半"},
+                    {"chapter_id": "ch2", "title": "第二章", "index": 1,
+                     "start_offset": 50, "end_offset": 100, "summary": "后半"},
+                ],
+            }], "provider_selection": {
                 "connection_id": "qa_connection", "model_id": "qa-model",
                 "base_url": f"http://127.0.0.1:{server.server_port}/v1", "api_key": SENTINEL,
                 "parameters": {"structured_mode": "json_object"},

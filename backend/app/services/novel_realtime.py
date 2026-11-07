@@ -126,7 +126,7 @@ class NovelRealtimeJob:
                 pass
             queue.put_nowait(event)
             return
-        merged = str(event.get("payload", {}).get("delta", ""))
+        deltas: list[str] = []
         retained: list[dict[str, Any]] = []
         while True:
             try:
@@ -135,12 +135,13 @@ class NovelRealtimeJob:
                 # error-log-ignore: 已读完待合并事件，用空队列作为循环结束条件。
                 break
             if existing["type"] in {"message_delta", "agent_delta"}:
-                merged = f"{existing.get('payload', {}).get('delta', '')}{merged}"
+                deltas.append(str(existing.get("payload", {}).get("delta", "")))
             else:
                 retained.append(existing)
         for existing in retained[-max(0, queue.maxsize - 1):]:
             queue.put_nowait(existing)
-        queue.put_nowait({**event, "payload": {**event.get("payload", {}), "delta": merged}})
+        deltas.append(str(event.get("payload", {}).get("delta", "")))
+        queue.put_nowait({**event, "payload": {**event.get("payload", {}), "delta": "".join(deltas)}})
 
     def replay_after(self, last_seq: int) -> list[dict[str, Any]] | None:
         with self.lock:

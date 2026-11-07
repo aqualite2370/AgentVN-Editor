@@ -8,13 +8,14 @@ const { startEditorAcceptance } = require("./lib/editor-ui-acceptance.cjs");
 const { settleEditor } = require("./lib/installed-acceptance.cjs");
 const { jsonAfter } = require("./lib/controlled-novel-default-provider.cjs");
 const output = process.env.AGENTVN_WORKSPACE_OUTPUT;
+const rangeCase = process.argv.includes("--ranges");
 assert(output && process.env.AGENTVN_TEST_PROJECT);
 const matrix = process.argv.includes("--single") ? [[1920, 1080, 1, false]]
   : process.argv.includes("--pair") ? [[1920,1080,1,false], [1920,1080,1,true]]
   : [[1920,1080],[2560,1440],[3840,2160]].flatMap(([w,h]) =>
     [1,2].flatMap(dpr => [false,true].map(reduced => [w,h,dpr,reduced])));
 const report = { status: "RUNNING", scope: "SOURCE_REAL_BACKEND_CONTROLLED_HTTP_SEEDED_SCAN_CHECKPOINTS",
-  realModelRequests: 0, requests: [], cases: [], cleanup: {} };
+  rangeCase, realModelRequests: 0, requests: [], cases: [], cleanup: {} };
 let env, browser, server, activeCase, failOnce, structureCalls;
 const sockets = new Set();
 const sha = b => crypto.createHash("sha256").update(b).digest("hex");
@@ -66,6 +67,11 @@ async function model() {
       const data = jsonAfter(user, "分块分析数据:");
       assert(data.analyses.length <= 4 && data.analyses.length > 0);
       const structure = system.includes("整理成章节结构");
+      if (rangeCase && structure) {
+        assert(!user.includes("must not overlap"));
+        assert(user.includes("扫描范围允许重叠"));
+        assert(user.includes("本批必须完整覆盖以下区间"));
+      }
       assert(structure || system.includes("合并人物和地点索引"), "Saved mainline and scans must not replay");
       const row = { case: activeCase, phase: structure ? "structure" : "index",
         ids: data.analyses.map(a => a.chunk_id), max_tokens: p.max_tokens };
@@ -74,7 +80,8 @@ async function model() {
       const fail = structure && ++structureCalls === 2 && failOnce;
       if (fail) failOnce = false;
       const result = structure
-        ? { chapters: data.analyses.flatMap(a => a.chapter_candidates),
+        ? { chapters: data.analyses.flatMap(a => a.chapter_candidates)
+            .filter(c => !rangeCase || c.end_offset > c.start_offset),
           timeline: ["先后顺序保持"], branch_or_foreshadowing: [], conflict_points: [], warnings: [] }
         : { characters: [], locations: ["测试地点"], warnings: [] };
       const text = fail ? '{"chapters":[' : JSON.stringify(result);
@@ -167,7 +174,7 @@ async function model() {
           await panel.locator('[data-help-key="novel.continueDirect"]').click();
           // Seed completed scans as an explicit controlled fixture, not claims of
           // real model scanning. All subsequent outline traffic uses the real API.
-          await page.evaluate(async () => {
+          await page.evaluate(async rangeCase => {
             const store = (await import("/src/store/novelImportStore.ts")).useNovelImportStore;
             const n = store.getState(), doc = n.session.document;
             const chunks = Array.from({ length: 13 }, (_, i) => ({ chunk_id: `scan_${i}`,
@@ -177,10 +184,19 @@ async function model() {
               chapter_candidates: [{ chapter_id: `chapter_${c.index}`, index: c.index, title: `章节${c.index}`,
                 start_offset: c.start_offset, end_offset: c.end_offset, summary: `剧情${c.index}`, confidence: 1 }],
               characters: [], locations: [], timeline: [], foreshadowing: [], warnings: [], confidence: 1 }));
+            if (rangeCase) {
+              for (const a of analyses) {
+                a.chapter_candidates[0].start_offset = a.index === 7 ? 720 : Math.max(0, a.index * 100 - 20);
+              }
+              analyses[3].chapter_candidates.push({ ...analyses[3].chapter_candidates[0],
+                chapter_id: "empty-placeholder", start_offset: 400, end_offset: 400 });
+              analyses[12].chapter_candidates.push({ ...analyses[12].chapter_candidates[0],
+                chapter_id: "nested-tail", start_offset: 1250, end_offset: 1280 });
+            }
             store.setState({ session: { ...n.session, chunks, ai_chunk_analyses: analyses, outline_partials: {
               mainline: { document_id: doc.document_id, title: doc.title, summary: "完整主线摘要",
                 main_plot: "从开始到结尾", needs_review: false, coverage_confidence: 1, warnings: [] } } } });
-          });
+          }, rangeCase);
           const before = await state(page);
           await panel.locator('[data-help-key="novel.aiStart"]').click();
           await page.waitForFunction(() => {
@@ -246,6 +262,15 @@ async function model() {
           assert.equal(done.session.ai_outline.chapters.length, 13);
           assert.deepEqual(done.session.ai_outline.chapters.map(c => c.chapter_id),
             Array.from({ length: 13 }, (_, i) => `chapter_${i}`));
+          if (rangeCase) {
+            const chapters = done.session.ai_outline.chapters;
+            assert.deepEqual(chapters.map(c => [c.start_offset, c.end_offset]),
+              Array.from({ length: 13 }, (_, i) => [i === 7 ? 720 : i * 100, (i + 1) * 100]));
+            assert(done.session.ai_outline.needs_review);
+            assert(done.session.ai_outline.coverage_confidence < 1);
+            assert(done.session.ai_outline.warnings.some(w => w.includes("未覆盖全部原文")));
+            item.steps.push("nested-tail-accepted-overlap-normalized-ids-preserved-empty-omitted-gap-not-stretched-review-required");
+          }
           assert.deepEqual(done.session.ai_chunk_analyses, failed.session.ai_chunk_analyses);
           const requests = report.requests.filter(r => r.case === activeCase);
           assert.equal(requests.filter(r => r.phase === "structure" && r.ids.includes("scan_0")).length, 1);
@@ -268,7 +293,7 @@ async function model() {
       } finally { await context.close(); }
     }
     assert.equal(report.cases.length, matrix.length);
-    assert(report.cases.every(c => c.status === "PASS" && c.steps.length === 2));
+    assert(report.cases.every(c => c.status === "PASS" && c.steps.length === (rangeCase ? 3 : 2)));
     report.status = "PASS";
   } catch (error) {
     report.status = "FAILED"; report.error = String(error.stack || error); process.exitCode = 1;

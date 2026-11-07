@@ -12,12 +12,15 @@ const freePort = () => new Promise((resolve, reject) => {
 const { settleEditor } = require("./lib/installed-acceptance.cjs");
 const { jsonAfter } = require("./lib/controlled-novel-default-provider.cjs");
 const base = path.resolve(process.argv[2]);
-assert(["41", "42"].some(n => base === `F:\\AgentVN\\QA\\Windows-Isolated-1944-20261107-${n}`));
+assert(["41", "42"].some(n => base === `F:\\AgentVN\\QA\\Windows-Isolated-1944-20261107-${n}`)
+  || base === "F:\\AgentVN\\QA\\Windows-Isolated-1944-20261108-01");
 const read = p => JSON.parse(fs.readFileSync(p, "utf8").replace(/^\uFEFF/, ""));
+const rangeCase = base === "F:\\AgentVN\\QA\\Windows-Isolated-1944-20261108-01";
 const owner = read(path.join(base, "account-controller.json"));
 assert.equal(require("node:os").userInfo().username, owner.account.name);
 const out = path.join(base, "recovery-01"); fs.mkdirSync(out);
-const report = { status: "RUNNING", version: "1.9.53", scope: "INSTALLED_STANDARD_QA_EXPLICIT_BACKEND_PORT_CONTROLLED_MODEL",
+const report = { status: "RUNNING", version: rangeCase ? "1.9.54" : "1.9.53",
+  scope: "INSTALLED_STANDARD_QA_EXPLICIT_BACKEND_PORT_CONTROLLED_MODEL", rangeCase, rangeTraces: [],
   launches: [], cleanups: [], errors: [], screenshots: [], requests: [], stages: [], realModelRequests: 0 };
 const save = () => fs.writeFileSync(path.join(out, "report.json"), JSON.stringify(report, null, 2));
 let session, server, failOnce = true, structureCalls = 0;
@@ -59,7 +62,11 @@ async function api(route, value, type = "application/json") {
         if (fail) failOnce = false;
         report.requests.push({ phase: structure ? "structure" : "index", truncated: fail,
           ids: data.analyses.map(a => a.chunk_id) }); assert(report.requests.length <= 9);
-        const result = structure ? { chapters: data.analyses.flatMap(a => a.chapter_candidates),
+        if (rangeCase && structure) {
+          assert(user.includes("chapters 必须逐项对应") && user.includes("本批必须完整覆盖以下区间"));
+        }
+        const result = structure ? { chapters: data.analyses.flatMap(a => a.chapter_candidates)
+          .filter(c => !rangeCase || c.end_offset > c.start_offset),
           timeline: [], branch_or_foreshadowing: [], conflict_points: [], warnings: [] }
           : { characters: [], locations: [], warnings: [] };
         res.writeHead(200, { "content-type": "text/event-stream" });
@@ -78,8 +85,17 @@ async function api(route, value, type = "application/json") {
       return defaultEditorSession({ installation, out, report, save, label,
         expectedQaUser: owner.account.name, isolatedBackendPort: report.backendPort });
     }
+    function observeRanges(page) {
+      page.on("websocket", s => s.on("framereceived", e => {
+        const data = JSON.parse(String(e.payload));
+        if (data.type === "tool_event" && data.payload.phase === "outline_ranges") {
+          report.rangeTraces.push(data.payload.details); save();
+        }
+      }));
+    }
     session = newSession("failure");
     let page = await session.start();
+    observeRanges(page);
     // The shared helper normally blocks paid task submission; this run instead
     // permits only the locally configured synthetic provider via the packaged API.
     await page.context().unrouteAll({ behavior: "wait" });
@@ -104,7 +120,7 @@ async function api(route, value, type = "application/json") {
     await panel.locator('[data-help-key="novel.importFile"] input').setInputFiles({
       name: "安装恢复.txt", mimeType: "text/plain", buffer: Buffer.from("甲".repeat(1300)) });
     await panel.locator('[data-help-key="novel.continueDirect"]').click();
-    await page.evaluate(() => {
+    await page.evaluate(rangeCase => {
       const store = window.__AGENTVN_NOVEL_IMPORT_STORE__, n = store.getState(), doc = n.session.document;
       const chunks = Array.from({ length: 13 }, (_, i) => ({ chunk_id: `scan_${i}`, document_id: doc.document_id,
         index: i, start_offset: i * 100, end_offset: (i + 1) * 100,
@@ -113,10 +129,18 @@ async function api(route, value, type = "application/json") {
         chapter_candidates: [{ chapter_id: `chapter_${c.index}`, index: c.index, title: `章节${c.index}`,
           start_offset: c.start_offset, end_offset: c.end_offset, summary: `剧情${c.index}`, confidence: 1 }],
         characters: [], locations: [], timeline: [], foreshadowing: [], warnings: [], confidence: 1 }));
+      if (rangeCase) {
+        for (const a of analyses)
+          a.chapter_candidates[0].start_offset = a.index === 7 ? 720 : Math.max(0, a.index * 100 - 20);
+        analyses[3].chapter_candidates.push({ ...analyses[3].chapter_candidates[0],
+          chapter_id: "empty-placeholder", start_offset: 400, end_offset: 400 });
+        analyses[12].chapter_candidates.push({ ...analyses[12].chapter_candidates[0],
+          chapter_id: "nested-tail", start_offset: 1250, end_offset: 1280 });
+      }
       store.setState({ session: { ...n.session, chunks, ai_chunk_analyses: analyses, outline_partials: {
         mainline: { document_id: doc.document_id, title: doc.title, summary: "完整主线",
           main_plot: "从开始到结尾", needs_review: false, coverage_confidence: 1, warnings: [] } } } });
-    });
+    }, rangeCase);
     await stage("truncation-terminal-and-durable-checkpoint", async () => {
       await panel.locator('[data-help-key="novel.aiStart"]').click();
       await page.waitForFunction(() => {
@@ -133,6 +157,7 @@ async function api(route, value, type = "application/json") {
     });
     await stage("natural-host-and-backend-exit", () => session.naturalClose());
     session = newSession("resume"); page = await session.start();
+    observeRanges(page);
     await page.context().unrouteAll({ behavior: "wait" });
     await page.locator(".recent-project-open:not(:disabled):visible").filter({ hasText: project.title }).click();
     await page.locator(".editor-toolbar").waitFor(); await settleEditor(page);
@@ -151,6 +176,14 @@ async function api(route, value, type = "application/json") {
       assert.deepEqual(done.ai_outline.chapters.map(c => c.chapter_id),
         Array.from({ length: 13 }, (_, i) => `chapter_${i}`));
       assert.equal(done.outline_partials.batches.length, 8); assert.equal(report.requests.length, 9);
+      if (rangeCase) {
+        assert.equal(done.ai_outline.chapters[6].end_offset, 700);
+        assert.equal(done.ai_outline.chapters[7].start_offset, 720);
+        assert.equal(done.ai_outline.chapters[12].end_offset, 1300);
+        assert.equal(done.ai_outline.needs_review, true);
+        assert(done.ai_outline.warnings.length > 0);
+        assert(report.rangeTraces.some(t => t.returned.some(([a,b]) => a === 1250 && b === 1280)));
+      }
       assert.equal(report.requests.filter(r => r.phase === "structure" && r.ids.includes("scan_0")).length, 1);
       assert(!report.modelError, report.modelError); await session.shot("installed-recovered");
       return { chapters: 13, checkpoints: 8, controlledRequests: 9 };

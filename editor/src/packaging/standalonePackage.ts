@@ -200,7 +200,17 @@ function isTauriRuntime(): boolean {
 
 async function invokeTauri<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<T>(command, args);
+  try {
+    return await invoke<T>(command, args);
+  } catch (error) {
+    // Rust Err(String) rejects with a string, while publishing UI uses Error
+    // branches. Normalize at the native boundary so the actual cause survives.
+    if (error instanceof Error) throw error;
+    const detail = typeof error === "string" ? error
+      : error && typeof error === "object" && "message" in error && typeof error.message === "string"
+        ? error.message : "";
+    throw Object.assign(new Error(detail.trim() ? detail : `桌面打包操作失败（${command}）`), { cause: error });
+  }
 }
 
 function errorMessage(error: unknown): string {

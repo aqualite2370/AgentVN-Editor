@@ -280,8 +280,8 @@ function Add-AndroidSymlinkEnvironmentCheck {
     # that needs it.
     $script:SymlinkElevation.status = "DEFERRED_TO_BUILD"
     $script:SymlinkElevation.reason = "The normal desktop process cannot create symbolic links; the Android build will request one-time administrator elevation."
-    $script:Warnings.Add("ANDROID_BUILD_ELEVATION_REQUIRED: Android tooling is installed. The first Android build will request one-time administrator permission for symbolic links.") | Out-Null
-    Add-Check "windows_symlink_capability" "Windows symbolic-link capability" "PASS" $ProbeRoot "Android tooling is ready. The actual Android build will perform the elevated symbolic-link probe before Tauri starts." "Approve the one-time administrator prompt when the Android build begins."
+    $script:Warnings.Add("ANDROID_BUILD_ELEVATION_REQUIRED: Symbolic-link permission will be checked with one-time administrator elevation when the Android build starts.") | Out-Null
+    Add-Check "windows_symlink_capability" "Windows symbolic-link capability" "PASS" $ProbeRoot "Symbolic-link permission is deferred to the real Android build. SDK, JDK, NDK and Rust checks are reported separately." "Approve the one-time administrator prompt when the Android build begins."
     return
   }
 

@@ -816,9 +816,11 @@ export function ExportCartridgePanel({ onClose }: { onClose: () => void }) {
       for (const item of result.missing ?? []) appendConsole("warning", "android-env", `缺失：${item}`);
       for (const item of result.warnings ?? []) appendConsole("warning", "android-env", item);
       if (result.symlinkElevation?.status === "PASS") {
-        appendConsole("success", "android-env", "已通过一次性管理员探针确认 Windows 符号链接能力，后续构建无需重复补齐环境。");
+        appendConsole("success", "android-env", "已通过一次性管理员探针确认 Windows 符号链接能力。");
       } else if (result.symlinkElevation?.status === "DEFERRED_TO_BUILD") {
-        appendConsole("info", "android-env", "Android 工具链已就绪；Android 独立包构建默认需要管理员权限，开始构建时会请求 UAC 授权。");
+        appendConsole("info", "android-env", result.status === "PASS"
+          ? "Android 工具链已就绪；Android 独立包构建默认需要管理员权限，开始构建时会请求 UAC 授权。"
+          : "符号链接权限将在实际构建时检查；当前环境检测尚未通过。");
       } else if (result.symlinkElevation?.status === "UAC_CANCELLED") {
         appendConsole("warning", "android-env", "用户取消了管理员权限请求；Android 工具链已保留，下次构建仍会再次请求一次权限。");
       }
@@ -826,7 +828,7 @@ export function ExportCartridgePanel({ onClose }: { onClose: () => void }) {
       if (result.logPath) appendConsole("info", "android-env", `环境日志：${result.logPath}`);
       if (result.commandLogPath) appendConsole("info", "android-env", `命令日志：${result.commandLogPath}`);
       for (const item of visiblePackageEnvironmentManualFix(result)) appendConsole("warning", "android-env", item);
-      const deferredElevation = result.symlinkElevation?.status === "DEFERRED_TO_BUILD";
+      const deferredElevation = result.status === "PASS" && result.symlinkElevation?.status === "DEFERRED_TO_BUILD";
       completeEnvironmentOperation("android", install ? "install" : "check", result, deferredElevation
         ? "Android 构建环境已通过检测；Android 独立包构建默认需要管理员权限，开始构建时会请求 UAC 授权。"
         : install

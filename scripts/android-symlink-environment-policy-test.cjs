@@ -117,6 +117,11 @@ try {
     report.normalUserPrivilegeRequired.warnings.join("\n"),
     /ANDROID_BUILD_ELEVATION_REQUIRED/,
   );
+  assert.doesNotMatch(
+    report.normalUserPrivilegeRequired.warnings.join("\n") + report.normalUserPrivilegeRequired.check.detail,
+    /Android tooling is (installed|ready)/,
+    "A permission-only check cannot claim the SDK/JDK/NDK toolchain is ready",
+  );
   assert.equal(report.elevatedPrivilegeDenied.check.status, "BLOCKED");
   assert.equal(report.unsupportedFilesystem.check.status, "BLOCKED");
 } finally {

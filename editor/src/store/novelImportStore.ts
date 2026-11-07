@@ -2999,7 +2999,16 @@ export const useNovelImportStore = create<NovelImportStore>((set, get) => ({
       return;
     }
 
-    const chunks = chunksMatchDocument(state.session.chunks, document)
+    const savedChunksMatch = chunksMatchDocument(state.session.chunks, document);
+    if (!savedChunksMatch && state.session.ai_chunk_analyses.length > 0) {
+      set({
+        isProcessing: false,
+        progress: undefined,
+        errors: ["已有扫描与当前文本分块不匹配，未自动重扫，也未调用模型。请检查文本修改，或重新导入后开始新任务；原扫描和大纲断点保持。"],
+      });
+      return;
+    }
+    const chunks = savedChunksMatch
       ? state.session.chunks
       : chunkDocumentText(document.document_id, document.normalized_text, state.session.import_options);
     const chunkIds = new Set(chunks.map((chunk) => chunk.chunk_id));

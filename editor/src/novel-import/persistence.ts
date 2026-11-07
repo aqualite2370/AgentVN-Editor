@@ -20,7 +20,7 @@ import type {
   TextChunk,
   TokenUsageRecord,
 } from "./types";
-import { estimateTokens } from "./textChunker";
+import { chunkText, estimateTokens } from "./textChunker";
 
 export const novelPersistenceSchemaVersion = "1.0.0" as const;
 export const novelPromptVersion = "novel-import-v1";
@@ -838,10 +838,36 @@ export function findSameNameDifferentHash(persistence: NovelPersistenceState, do
 }
 
 export function chunksMatchDocument(chunks: TextChunk[], document: SourceDocument): boolean {
-  return chunks.length > 0 && chunks.every((chunk) =>
+  if (!chunks.length || !chunks.every((chunk) =>
     chunk.document_id === document.document_id &&
+    Number.isInteger(chunk.start_offset) &&
+    Number.isInteger(chunk.end_offset) &&
     chunk.start_offset >= 0 &&
-    chunk.end_offset <= document.normalized_text.length &&
-    textHash(document.normalized_text.slice(chunk.start_offset, chunk.end_offset)) === textHash(chunk.text)
-  );
+    chunk.end_offset >= chunk.start_offset &&
+    chunk.end_offset <= document.normalized_text.length
+  )) return false;
+  if (chunks.every((chunk) =>
+    document.normalized_text.slice(chunk.start_offset, chunk.end_offset) === chunk.text
+  )) return true;
+
+  // The paragraph producer joins paragraphs and its overlap with "\n\n".
+  // Therefore its saved text is not necessarily a literal source slice.
+  // Verify legacy chunks by reproducing the WHOLE partition, including every
+  // offset and character, instead of weakening the comparison to whitespace.
+  const overlap = chunks.length > 1 ? chunks[0].end_offset - chunks[1].start_offset : 240;
+  if (!Number.isInteger(overlap) || overlap < 0 || overlap > 720) return false;
+  const sizes = new Set([2600, 6000, 8000]);
+  // Workspace chunk budgets used floor(size * .08) for the overlap. Infer
+  // the bounded range; do not depend on the currently selected model budget.
+  for (let size = Math.max(2600, Math.ceil(overlap / .08));
+    size <= Math.min(8000, Math.ceil((overlap + 1) / .08) - 1); size += 1) sizes.add(size);
+  return [...sizes].some((size) => {
+    const recreated = chunkText(document.document_id, document.normalized_text, size, overlap);
+    return recreated.length === chunks.length && recreated.every((chunk, index) =>
+      chunk.index === chunks[index].index &&
+      chunk.start_offset === chunks[index].start_offset &&
+      chunk.end_offset === chunks[index].end_offset &&
+      chunk.text === chunks[index].text
+    );
+  });
 }

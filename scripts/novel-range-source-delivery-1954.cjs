@@ -2,9 +2,12 @@
 // Explicit public files only. Never stage the user's real index or private QA data.
 const fs = require("node:fs"), path = require("node:path"), crypto = require("node:crypto");
 const cp = require("node:child_process"), assert = require("node:assert/strict");
-const root = path.resolve(__dirname, ".."), base = "F:/AgentVN/QA/Source-Delivery-1954-20261108-01";
-const parent = "8279619dd1db2571d9c219a5496f709f3a03185f";
-const branch = "codex/novel-range-recovery-1954-20261108";
+const guidance = process.argv[3] === "preflight-guidance";
+assert(process.argv[3] === undefined || guidance);
+const root = path.resolve(__dirname, ".."), base = guidance
+  ? "F:/AgentVN/QA/Source-Delivery-1955-20261108-01" : "F:/AgentVN/QA/Source-Delivery-1954-20261108-01";
+const parent = guidance ? "8c743c41ec496976a9a270ac083fe7bf1fca1259" : "8279619dd1db2571d9c219a5496f709f3a03185f";
+const branch = guidance ? "codex/preflight-guidance-1955-20261108" : "codex/novel-range-recovery-1954-20261108";
 const action = process.argv[2]; assert(["prepare", "publish", "verify"].includes(action));
 const read = p => JSON.parse(fs.readFileSync(p, "utf8").replace(/^\uFEFF/, ""));
 const sha = p => crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex");
@@ -23,10 +26,20 @@ const output = path.join(base, action + ".json"); assert(!fs.existsSync(output))
 const report = { status: "RUNNING", action, branch, parent, before: state(), at: new Date().toISOString() };
 try {
   if (action === "prepare") {
-    const build = read("F:/AgentVN/QA/Novel-Range-Release-1954-20261108-02/report.json");
+    const build = read(guidance ? "F:/AgentVN/QA/Preflight-Guidance-Release-1955-20261108-01/report.json"
+      : "F:/AgentVN/QA/Novel-Range-Release-1954-20261108-02/report.json");
     assert.equal(build.status, "BUILD_AND_PAYLOAD_PASS_INSTALLATION_PENDING_LIVE_DEV_PRESERVED");
     for (const f of build.sources) assert.equal(sha(f.path), f.sha256);
-    const files = [
+    const files = (guidance ? [
+      "editor/package.json", "editor/package-lock.json", "editor/src-tauri/Cargo.toml",
+      "editor/src-tauri/Cargo.lock", "editor/src-tauri/tauri.conf.json", "editor/src/cartridge/preflight.ts",
+      "scripts/preflight-optional-guidance-test.cjs", "scripts/preflight-optional-guidance-playwright.cjs",
+      "scripts/preflight-guidance-installed-1955.cjs", "scripts/preflight-guidance-installed-stage-1955.cjs",
+      "scripts/preflight-guidance-terminal-1955.ps1", "scripts/animation-install-1945.ps1",
+      "scripts/novel-range-release-1954.cjs", "scripts/novel-range-source-delivery-1954.cjs",
+      "scripts/dev-delivery-1954.cjs", "scripts/dev-range-restart-1954.cjs", "plans/ACCEPTANCE_LESSONS.md",
+      "plans/Preflight-Optional-Guidance-20261108-RESULTS.md",
+    ] : [
       "editor/package.json", "editor/package-lock.json", "editor/src-tauri/Cargo.toml",
       "editor/src-tauri/Cargo.lock", "editor/src-tauri/tauri.conf.json",
       "backend/app/services/novel_import_service.py", "backend/app/services/novel_outline_pipeline.py",
@@ -37,7 +50,7 @@ try {
       "scripts/novel-range-installed-stage-1954.cjs", "scripts/novel-range-source-delivery-1954.cjs",
       "scripts/novel-range-disk-check.py", "scripts/novel-range-export-check.cjs",
       "scripts/novel-recover-validated-batch.py",
-    ].sort();
+    ]).sort();
     const indexEnv = { ...env, GIT_INDEX_FILE: path.join(base, "alternate-index") };
     git(["read-tree", parent], { env: indexEnv }); report.files = [];
     for (const relative of files) {
@@ -51,14 +64,23 @@ try {
     assert.deepEqual(git(["diff", "--cached", "--name-only", parent], { env: indexEnv }).split("\n").sort(), files);
     report.tree = git(["write-tree"], { env: indexEnv });
     report.commit = git(["commit-tree", report.tree, "-p", parent],
-      { input: "Fix overlapping novel outline ranges and preserve streamed token order\n\nRelease Editor 1.9.54; validate nested coverage and keep real gaps reviewable.\n" });
+      { input: guidance
+        ? "Give optional asset preflight issues resource-specific guidance\n\nRelease Editor 1.9.55; preserve optional warnings and required resource blockers.\n"
+        : "Fix overlapping novel outline ranges and preserve streamed token order\n\nRelease Editor 1.9.54; validate nested coverage and keep real gaps reviewable.\n" });
   } else {
     const prepared = read(path.join(base, "prepare.json")); assert.equal(prepared.status, "PASS");
     for (const f of prepared.files) assert.equal(sha(f.source.path), f.source.sha256);
     report.commit = prepared.commit;
     if (action === "publish") {
-      const installed = read("F:/AgentVN/QA/Windows-Isolated-1944-20261108-01/recovery-01/report.json");
-      assert.equal(installed.status, "PASS_LIMITED_INSTALLED_RECOVERY"); assert.equal(installed.cleanup, "PASS");
+      if (guidance) {
+        const installed = read("F:/AgentVN/QA/Windows-Isolated-1944-20261108-11/guidance-01/report.json");
+        assert.equal(installed.status, "PASS_INSTALLED_PREFLIGHT_GUIDANCE"); assert.equal(installed.cleanupStatus, "PASS");
+        assert.equal(read("F:/AgentVN/QA/Preflight-Guidance-Release-1955-20261108-01/installed-terminal-audit.json").status,
+          "PASS_INSTALLED_PREFLIGHT_GUIDANCE_TERMINAL");
+      } else {
+        const installed = read("F:/AgentVN/QA/Windows-Isolated-1944-20261108-01/recovery-01/report.json");
+        assert.equal(installed.status, "PASS_LIMITED_INSTALLED_RECOVERY"); assert.equal(installed.cleanup, "PASS");
+      }
       assert.equal(git(["ls-remote", "--heads", "origin", branch]), "");
       report.push = git(["push", "origin", `${report.commit}:refs/heads/${branch}`]);
       assert(git(["ls-remote", "--heads", "origin", branch]).startsWith(report.commit + "\t"));

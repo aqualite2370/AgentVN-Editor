@@ -1,17 +1,24 @@
 "use strict";
-// One frozen Editor-only delivery for the range/stream recovery fixes.
+// One frozen Editor-only delivery with explicit slice-specific prerequisites.
 const fs = require("node:fs"), path = require("node:path"), crypto = require("node:crypto");
 const assert = require("node:assert/strict"), { spawn, execFileSync } = require("node:child_process");
 const root = path.resolve(__dirname, ".."), action = process.argv[2];
 assert(["checkpoint", "build"].includes(action));
-const base = "F:/AgentVN/QA/Novel-Range-Release-1954-20261108-02";
-const checkpoint = "F:/AgentVN/Checkpoints/Novel-Range-Release-1954-20261108-02";
+const guidance = process.argv[3] === "preflight-guidance";
+assert(process.argv[3] === undefined || guidance, "Explicit reviewed release slice required");
+const version = guidance ? "1.9.55" : "1.9.54";
+const base = guidance ? "F:/AgentVN/QA/Preflight-Guidance-Release-1955-20261108-01"
+  : "F:/AgentVN/QA/Novel-Range-Release-1954-20261108-02";
+const checkpoint = guidance ? "F:/AgentVN/Checkpoints/Preflight-Guidance-Release-1955-20261108-01"
+  : "F:/AgentVN/Checkpoints/Novel-Range-Release-1954-20261108-02";
 const read = p => JSON.parse(fs.readFileSync(p, "utf8").replace(/^\uFEFF/, ""));
 const desc = p => ({ path: path.resolve(p), bytes: fs.statSync(p).size,
   sha256: crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex") });
 const versions = ["editor/package.json", "editor/package-lock.json", "editor/src-tauri/tauri.conf.json",
   "editor/src-tauri/Cargo.toml", "editor/src-tauri/Cargo.lock"];
-const sources = ["backend/app/services/novel_import_service.py", "backend/app/services/novel_outline_pipeline.py",
+const sources = guidance ? ["editor/src/cartridge/preflight.ts", "scripts/preflight-optional-guidance-test.cjs",
+  "scripts/preflight-optional-guidance-playwright.cjs", "scripts/novel-range-release-1954.cjs"]
+  : ["backend/app/services/novel_import_service.py", "backend/app/services/novel_outline_pipeline.py",
   "backend/app/services/novel_realtime.py", "backend/tests/test_novel_outline_recovery.py",
   "backend/tests/test_novel_realtime_backpressure.py", "backend/tests/test_credential_boundaries.py",
   "editor/src/novel-import/persistence.ts", "editor/src/store/novelImportStore.ts",
@@ -25,7 +32,7 @@ const gitIdentity = () => ({
 if (action === "checkpoint") {
   assert(!fs.existsSync(checkpoint)); fs.mkdirSync(checkpoint, { recursive: true });
   const saved = [...new Set([...versions, ...sources, "AgentVN Dev.exe", "AGENTS.md",
-    "plans/ACTIVE_TASKS.md"])].map(relative => {
+    "plans/ACTIVE_TASKS.md", "plans/ACCEPTANCE_LESSONS.md"])].map(relative => {
     const source = path.join(root, relative), backup = path.join(checkpoint, relative);
     fs.mkdirSync(path.dirname(backup), { recursive: true });
     fs.copyFileSync(source, backup, fs.constants.COPYFILE_EXCL);
@@ -43,8 +50,9 @@ if (action === "checkpoint") {
 }
 const prior = read(path.join(checkpoint, "checkpoint.json")); assert.equal(prior.status, "PASS");
 assert(!fs.existsSync(base)); fs.mkdirSync(base);
-const report = { status: "RUNNING", version: "1.9.54", startedAt: new Date().toISOString(),
-  scope: "EDITOR_RANGE_AND_STREAM_FIX_NO_PLAYER_INSTALLER_NO_LIVE_D_DEV_RESTART",
+const report = { status: "RUNNING", version, startedAt: new Date().toISOString(),
+  scope: guidance ? "EDITOR_OPTIONAL_GUIDANCE_ONLY_NO_RUNTIME_PRODUCT_CHANGE"
+    : "EDITOR_RANGE_AND_STREAM_FIX_NO_PLAYER_INSTALLER_NO_LIVE_D_DEV_RESTART",
   commands: [], sources: sources.map(f => desc(path.join(root, f))), modelRequests: 0, checkpoint };
 const save = () => fs.writeFileSync(path.join(base, "report.json"), JSON.stringify(report, null, 2));
 fs.copyFileSync(__filename, path.join(base, "executed.cjs"), fs.constants.COPYFILE_EXCL);
@@ -64,6 +72,20 @@ async function run(name, exe, args) {
   finally { fs.closeSync(fd); row.finishedAt = new Date().toISOString(); row.output = desc(row.log); save(); }
 }
 (async () => {
+  if (guidance) {
+    const directFile = "F:/AgentVN/QA/Preflight-Optional-Guidance-20261108-01/green-04/report.json";
+    const direct = read(directFile);
+    assert.equal(direct.status, "PASS"); assert.equal(direct.cases.length, 8);
+    assert(direct.cases.every(c => c.status === "PASS"));
+    for (const source of direct.sources) assert.equal(desc(source.path).sha256, source.sha256);
+    const coverageFile = "F:/AgentVN/QA/Preflight-Optional-Guidance-20261108-01/browser-coverage-01.json";
+    const coverage = read(coverageFile);
+    assert.equal(coverage.status, "PASS"); assert.equal(coverage.uniqueConditions, 12);
+    assert.equal(coverage.ownedProcessesAndPorts, "PASS");
+    assert.equal(coverage.sourceSha256, desc(path.join(root, "editor/src/cartridge/preflight.ts")).sha256);
+    for (const evidence of coverage.reports) assert.equal(desc(evidence.path).sha256, evidence.sha256);
+    report.behavior = desc(directFile); report.browser = desc(coverageFile);
+  } else {
   const browserPath = "F:/AgentVN/QA/Novel-Outline-Ranges-Browser-20261108-03/report.json";
   const b = read(browserPath);
   assert.equal(b.status, "PASS"); assert.equal(b.cases.length, 2); assert.equal(b.requests.length, 18);
@@ -77,15 +99,25 @@ async function run(name, exe, args) {
   assert.equal(live.operations.length, 1); assert.equal(live.operations[0].operation, "build_outline");
   assert.equal(live.preflight.scans, 85); assert(live.terminal.chapters > 0 && !live.terminal.busy);
   report.liveSource = desc(livePath);
+  }
   for (const f of versions.slice(0, 3)) assert.equal(read(path.join(root, f)).version, report.version);
   assert.equal(read(path.join(root, versions[1])).packages[""].version, report.version);
+  for (const f of versions.slice(3)) {
+    const text = fs.readFileSync(path.join(root, f), "utf8");
+    const actual = f.endsWith("Cargo.lock")
+      ? text.match(/\[\[package\]\]\s+name = "agentvn-editor"\s+version = "([^"]+)"/)?.[1]
+      : text.match(/\[package\]\s+name = "agentvn-editor"\s+version = "([^"]+)"/)?.[1];
+    assert.equal(actual, report.version, f);
+  }
   report.versions = versions.map(f => desc(path.join(root, f)));
   report.playerBefore = desc(path.join(root, "editor/src-tauri/binaries/agentvn-player.exe"));
   report.liveDevBefore = desc("D:/AgentVN/AgentVN Dev.exe");
   const npm = path.join(path.dirname(process.execPath), "node_modules/npm/bin/npm-cli.js");
-  await run("transport", process.execPath, ["scripts/novel-outline-transport-test.cjs"]);
-  await run("core", process.execPath, ["scripts/novel-processing-core-test.cjs"]);
-  await run("facts", process.execPath, ["scripts/novel-phase-facts-test.cjs"]);
+  if (!guidance) {
+    await run("transport", process.execPath, ["scripts/novel-outline-transport-test.cjs"]);
+    await run("core", process.execPath, ["scripts/novel-processing-core-test.cjs"]);
+    await run("facts", process.execPath, ["scripts/novel-phase-facts-test.cjs"]);
+  }
   await run("typecheck", process.execPath, [npm, "--prefix", "editor", "run", "typecheck"]);
   await run("editor-build", process.execPath, [npm, "--prefix", "editor", "run", "build"]);
   await run("gamecli-build", process.execPath, [npm, "--prefix", "GameCli_framework", "run", "build"]);
@@ -94,7 +126,7 @@ async function run(name, exe, args) {
   report.workspaceDev = desc(path.join(root, "AgentVN Dev.exe"));
   assert.equal(report.workspaceDev.sha256,
     desc(path.join(root, "editor/src-tauri/target/debug/agentvn-editor.exe")).sha256);
-  const releaseRoot = "releases/novel-range-1954-20261108";
+  const releaseRoot = guidance ? "releases/preflight-guidance-1955-20261108" : "releases/novel-range-1954-20261108";
   await run("editor-nsis", "powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
     "scripts/package-installers.ps1", "-Target", "editor", "-Version", report.version,
     "-ReleaseRoot", releaseRoot, "-ExpectedRoot", root, "-SkipClean"]);
@@ -104,7 +136,8 @@ async function run(name, exe, args) {
   const retained = path.join(base, installers[0]);
   fs.copyFileSync(path.join(release, installers[0]), retained, fs.constants.COPYFILE_EXCL);
   report.installer = desc(retained);
-  const payloadDir = "F:/AgentVN/QA/Novel-Range-Payload-1954-20261108-01";
+  const payloadDir = guidance ? "F:/AgentVN/QA/Preflight-Guidance-Payload-1955-20261108-01"
+    : "F:/AgentVN/QA/Novel-Range-Payload-1954-20261108-01";
   await run("payload", process.execPath, ["scripts/editor-installer-resources-acceptance.cjs",
     payloadDir, report.version, release]);
   const payload = path.join(payloadDir, "installer-resource-report.json");

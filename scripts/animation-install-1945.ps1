@@ -16,9 +16,11 @@ $expectedVersion = switch ($SessionRoot) {
     'F:\AgentVN\QA\Windows-Isolated-1944-20261107-41' { '1.9.53' }
     'F:\AgentVN\QA\Windows-Isolated-1944-20261107-42' { '1.9.53' }
     'F:\AgentVN\QA\Windows-Isolated-1944-20261108-01' { '1.9.54' }
+    'F:\AgentVN\QA\Windows-Isolated-1944-20261108-10' { '1.9.55' }
+    'F:\AgentVN\QA\Windows-Isolated-1944-20261108-11' { '1.9.55' }
     default { throw 'Exact owned session required' }
 }
-if ($expectedVersion -in @('1.9.49','1.9.50','1.9.51','1.9.52','1.9.53','1.9.54')) {
+if ($expectedVersion -in @('1.9.49','1.9.50','1.9.51','1.9.52','1.9.53','1.9.54','1.9.55')) {
     $owner = Get-Content -LiteralPath "$SessionRoot\account-controller.json" -Raw -Encoding UTF8 | ConvertFrom-Json
     if (!$owner.account.createdByThisRun -or $owner.account.name -notmatch '^AVNQA[0-9A-F]{8}$' -or
         [Security.Principal.WindowsIdentity]::GetCurrent().User.Value -cne $owner.account.sid -or
@@ -32,7 +34,8 @@ function Sha($file) { (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.T
 function Save($value) { [IO.File]::WriteAllText($receipt,($value|ConvertTo-Json -Depth 20),[Text.UTF8Encoding]::new($false)) }
 if ((Sha $seal.installer.path) -cne $seal.installer.sha256) { throw 'Installer bytes changed' }
 if ($seal.version -cne $expectedVersion -or (Get-Item -LiteralPath $seal.installer.path).VersionInfo.ProductVersion -cne $expectedVersion) { throw 'Sealed candidate version required' }
-if ($expectedVersion -in @('1.9.49','1.9.50','1.9.51','1.9.52','1.9.53','1.9.54')) {
+if ($expectedVersion -in @('1.9.49','1.9.50','1.9.51','1.9.52','1.9.53','1.9.54','1.9.55')) {
+    if ((Sha $seal.payloadReport.path) -cne $seal.payloadReport.sha256) { throw 'Payload report bytes changed' }
     $payloadSeal = Get-Content -LiteralPath $seal.payloadReport.path -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($payloadSeal.status -cne 'PASS' -or $payloadSeal.version -cne $expectedVersion -or
         $payloadSeal.installers.Count -ne 1 -or $payloadSeal.installers[0].sha256 -cne $seal.installer.sha256) {
@@ -47,7 +50,7 @@ if ($expectedVersion -in @('1.9.49','1.9.50','1.9.51','1.9.52','1.9.53','1.9.54'
     }
 }
 $products = @(Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^(AgentVN Dev|agentvn-editor|agentvn-player|creator-backend)\.exe$' })
-if ($expectedVersion -in @('1.9.53','1.9.54')) {
+if ($expectedVersion -in @('1.9.53','1.9.54','1.9.55')) {
     foreach ($product in $products) {
         $productOwner = Invoke-CimMethod -InputObject $product -MethodName GetOwnerSid -ErrorAction Stop
         if ($productOwner.Sid -ceq $owner.account.sid) { throw 'Product already active in this QA account' }

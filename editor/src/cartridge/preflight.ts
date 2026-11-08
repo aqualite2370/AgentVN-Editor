@@ -99,7 +99,7 @@ const issueSolutions: Record<string, string> = {
   scene_background_missing_final: "为该场景补充最终背景素材，或把 background_id 改为素材库中已有的背景。",
   character_sprite_missing: "为该角色导入立绘素材，并在立绘命令中选择正确的 sprite_id。",
   character_portrait_missing: "为该角色导入头像素材，并在对白命令中选择正确的 portrait。",
-  optional_audio_performance_missing: "按演出需要补充对应音频；如果该音频确实不需要，可保留为警告但发布前应人工确认。",
+  optional_audio_performance_missing: "此项可选；按场景需要配置对应素材或演出，不需要时可保持未配置。",
   character_reference_missing: "在对白或立绘命令中选择具体角色，确保 character_id 不为空。",
   character_reference_invalid: "在角色列表中补齐该角色，或把事件里的 character_id 改为现有角色。",
   scene_background_missing: "在场景开头添加背景事件，避免玩家端沿用旧背景或显示默认背景。",
@@ -571,13 +571,26 @@ function validateVisualAssetReadiness(nodes: EditorNode[], assets: AssetRef[]): 
 
 function validateOptionalAudioPerformance(nodes: EditorNode[], assets: AssetRef[]): PreflightIssue[] {
   const audit = buildProjectAssetAudit(nodes, assets, { includeOptional: true });
-  return audit.optional_audio_performance.map((item) => issue(
-    "assets",
-    "warning",
-    "optional_audio_performance_missing",
-    pendingVisualAssetLocation(item) + " 可选项未配置：" + item.label + "。" + item.reason,
-    pendingVisualAssetSubject(item),
-  ));
+  const solutions: Partial<Record<NonNullable<PendingVisualAsset["asset_type"]>, string>> = {
+    background: "可选：在该场景的背景事件中选择背景图；需要沿用前一场景画面时无需添加。",
+    sprite: "可选：在该角色的立绘事件中选择角色图像；画外对白无需添加立绘。",
+    portrait: "可选：在对应对白中选择头像；需要无头像对白时可保持未配置。",
+    bgm: "可选：在该场景的背景音乐事件中选择音乐素材；需要安静场景时无需添加。",
+    voice: "可选：在对应对白中选择语音文件；不需要配音时可保持未配置。",
+    sfx: "可选：在该场景的音效事件中选择音效素材；不需要音效时可保持未配置。",
+  };
+  return audit.optional_audio_performance.map((item) => ({
+    ...issue(
+      "assets",
+      "warning",
+      "optional_audio_performance_missing",
+      pendingVisualAssetLocation(item) + " 可选项未配置：" + item.label + "。" + item.reason,
+      pendingVisualAssetSubject(item),
+    ),
+    solution: item.kind === "performance"
+      ? "可选：在该场景的事件工作台添加镜头、转场或角色入场演出；不需要时可保持未配置。"
+      : (item.asset_type && solutions[item.asset_type]) || issueSolutions.optional_audio_performance_missing,
+  }));
 }
 
 function validateCharacterReferences(script: RuntimeScript): PreflightIssue[] {

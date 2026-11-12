@@ -13,11 +13,11 @@ import { novelImportStatusLabel } from "../../novel-import/displayLabels";
 import { inspectNovelEntryConnection } from "../../novel-import/entryConnection";
 import { estimateTokens } from "../../novel-import/textChunker";
 import { buildProjectAssetAudit } from "../../utils/assetAudit";
-import { assetTypeDisplayLabel } from "../../../../shared/cartridge/assetTaxonomy";
 import { GlassSelectionGroup } from "../common/GlassSelectionGroup";
 import { RoseTwoLoader } from "../common/RoseTwoLoader";
 import { RichSelect } from "../common/RichSelect";
 import { NovelDetails } from "./NovelDetails";
+import { NovelAssetReviewPanel } from "./NovelAssetReviewPanel";
 import "./novel-workbench-usability.css";
 import { requestAdvancedTools } from "../advanced/advancedToolsBridge";
 
@@ -1747,7 +1747,6 @@ function NovelImportReportPanel() {
   const retryQualityCheck = useNovelImportStore((state) => state.retryQualityCheck);
   const continueWithQualityRisk = useNovelImportStore((state) => state.continueWithQualityRisk);
   const nodes = useEditorStore((state) => state.nodes);
-  const selectNode = useEditorStore((state) => state.selectNode);
   const edges = useEditorStore((state) => state.edges);
   const connectImportedLineToEntry = useNovelImportStore((state) => state.connectImportedLineToEntry);
   const [entryError, setEntryError] = useState<string>();
@@ -1770,11 +1769,11 @@ function NovelImportReportPanel() {
         <div><dt>已写入节点</dt><dd>{session.adapted_scenes.length}</dd></div>
         <div><dt>失败场景</dt><dd>{importJob?.failedSceneIds.length ?? 0}</dd></div>
         <div><dt>待复核</dt><dd>{session.adapted_scenes.filter((scene) => scene.needs_review).length}</dd></div>
-        <div><dt>待补视觉资产</dt><dd>{assetAudit.pending.filter((item) => !item.optional).length}</dd></div>
+        <div><dt>必补资源</dt><dd>{assetAudit.pending.filter((item) => !item.optional).length}</dd></div>
         <div><dt>缺背景场景</dt><dd>{assetAudit.missing_background_scenes.length}</dd></div>
         <div><dt>缺立绘角色</dt><dd>{assetAudit.missing_sprite_characters.length}</dd></div>
         <div><dt>缺头像角色</dt><dd>{assetAudit.missing_portrait_characters.length}</dd></div>
-        <div><dt>音频/演出可选</dt><dd>{assetAudit.optional_audio_performance.length}</dd></div>
+        <div><dt>可选建议</dt><dd>{assetAudit.pending.filter(item => item.optional).length}</dd></div>
         <div><dt>警告</dt><dd>{warnings.length + (session.ai_outline?.warnings.length ?? 0)}</dd></div>
       </dl>
       {session.quality_report && (
@@ -1787,17 +1786,7 @@ function NovelImportReportPanel() {
           onContinue={() => void continueWithQualityRisk()}
         />
       )}
-      {assetAudit.pending.length > 0 && (
-        <div className="novel-missing-asset-list">
-          {assetAudit.pending.slice(0, 8).map((item) => (
-            <button type="button" key={item.id} data-help-key="novel.assetAuditItem" disabled={!item.node_id} onClick={() => item.node_id && selectNode(item.node_id)}>
-              <span>{item.optional ? "可选" : item.placeholder ? "占位" : "缺失"}</span>
-              <strong>{item.scene_title}</strong>
-              <small>{item.label}{item.character_id ? ` · ${item.character_id}` : ""}{item.asset_id ? ` · ${item.asset_id}` : ` · ${assetTypeDisplayLabel(item.asset_type ?? item.kind)}`}</small>
-            </button>
-          ))}
-        </div>
-      )}
+      <NovelAssetReviewPanel key={session.session_id} pending={assetAudit.pending} />
       <div data-testid="novel-entry-connection" role="status">
         <p>{entry.message}</p>
         {entry.status === "available" && (

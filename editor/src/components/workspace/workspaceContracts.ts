@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { PendingVisualAsset } from "../../types/assets";
 
 export type WorkspaceSurface =
   | "edit"
@@ -60,6 +61,13 @@ export const workspaceGenerationEventName = "agentvn:workspace-request-generatio
 export const workspaceSurfaceChangedEventName = "agentvn:workspace-surface-changed";
 export const canvasNodeFocusEventName = "agentvn:focus-canvas-node";
 export const novelTaskCardRevealEventName = "agentvn:novel-task-card-reveal";
+export const pendingAssetLocationEventName = "agentvn:locate-pending-asset";
+
+export interface PendingAssetLocationRequest {
+  item: PendingVisualAsset;
+  isCurrent: () => boolean;
+  handled: boolean;
+}
 
 /** Toolbar recovery is scoped to the current project; it never starts a task. */
 export function revealNovelTaskCard(projectId: string) {

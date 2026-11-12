@@ -4,6 +4,8 @@ import type { EditorNode } from "../types/nodes";
 import type { SceneBeat } from "../types/scene";
 import { assetTypeMatchesExpected } from "../../../shared/cartridge/assetTaxonomy";
 import { collectCommandAssetFields } from "./editorAssetReferences";
+import { commandLabels } from "./commandTools";
+import type { GameCommandType } from "../types/commands";
 
 export const DEFAULT_VISUAL_PLACEHOLDER_BACKGROUND_ID = "agentvn_placeholder_background";
 
@@ -111,7 +113,7 @@ export function ensureSceneHasBackgroundPlaceholder(scene: SceneBeat): { scene: 
 }
 
 function sceneTitle(scene: SceneBeat): string {
-  return scene.scene_display_name?.trim() || scene.title.trim() || scene.scene_id;
+  return scene.scene_display_name?.trim() || scene.title.trim() || "未命名场景";
 }
 
 function hashText(value: string): string {
@@ -159,11 +161,10 @@ function makePending(
 ): PendingVisualAsset {
   const sceneLabel = sceneTitle(scene);
   const commandLabel = input.command_index !== undefined && input.command_index >= 0 && input.command_type
-    ? "第 " + (input.command_index + 1) + " 条 " + input.command_type + (input.field ? "." + input.field : "")
-    : input.field;
+    ? `第${input.command_index + 1}个事件 · ${commandLabels[input.command_type as GameCommandType] ?? "事件"}${input.field ? ` · ${assetFieldLabels[input.field] ?? "素材"}` : ""}`
+    : input.field ? assetFieldLabels[input.field] ?? "素材" : undefined;
   const location = input.location ?? [
     "场景「" + sceneLabel + "」",
-    input.node_label ? "节点/卡片「" + input.node_label + "」" : input.node_id ? "节点/卡片「" + input.node_id + "」" : undefined,
     commandLabel,
   ].filter(Boolean).join(" / ");
   const key = [

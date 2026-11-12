@@ -37,7 +37,7 @@ import { reportFrontendError } from "../../../../shared/logging/frontendErrorLog
 import { analyzeAnimationNodeMigration } from "../../utils/animationNodeMigration";
 import { TimelineUnavailableError, writeProjectBackup } from "../../utils/projectTimeline";
 import { createDefaultCameraCommand } from "../../../../shared/camera/cameraMotion";
-import { workspaceGenerationEventName, type GenerationRequest } from "../workspace/workspaceContracts";
+import { workspaceGenerationEventName, pendingAssetLocationEventName, type PendingAssetLocationRequest, type GenerationRequest } from "../workspace/workspaceContracts";
 
 const inspectorExitDurationMs = 220;
 
@@ -457,21 +457,32 @@ export function InspectorPanel() {
   const [sceneAssetAudit, setSceneAssetAudit] = useState<SceneAssetAudit | undefined>();
   const auditSceneRef = useRef<unknown>(undefined);
 
-  function locatePendingAsset(item: PendingVisualAsset) {
+  function locatePendingAsset(item: PendingVisualAsset, fromNavigation = false): boolean {
     const scene = activeNode?.data.scene;
-    if (!scene || item.node_id !== activeNode.id || auditSceneRef.current !== scene) return;
+    if (!scene || item.node_id !== activeNode.id || (!fromNavigation && auditSceneRef.current !== scene)) return false;
     if (item.command_index !== undefined && item.command_index >= 0) {
-      if (scene.commands[item.command_index]?.type !== item.command_type) return;
+      if (scene.commands[item.command_index]?.type !== item.command_type) return false;
       setAssetTarget({ sceneId: scene.scene_id, index: item.command_index, field: item.field, nonce: performance.now() });
     } else {
       // Suggestions open the existing composer without creating or changing a command.
       const type = item.command_type;
       if (type !== "background" && type !== "sprite" && type !== "dialog"
-        && type !== "bgm" && type !== "sfx" && type !== "camera") return;
+        && type !== "bgm" && type !== "sfx" && type !== "camera") return false;
       setWorkbenchTarget({ sceneId: scene.scene_id, type, characterId: item.character_id, nonce: performance.now() });
       setWorkbenchOpen(true);
     }
+    return true;
   }
+
+  useEffect(() => {
+    const locate = (event: Event) => {
+      const request = (event as CustomEvent<PendingAssetLocationRequest>).detail;
+      if (request?.isCurrent() && request.item.node_id === activeNode?.id)
+        request.handled = locatePendingAsset(request.item, true);
+    };
+    window.addEventListener(pendingAssetLocationEventName, locate);
+    return () => window.removeEventListener(pendingAssetLocationEventName, locate);
+  }, [activeNode?.id, activeNode?.data.scene]);
 
   useEffect(() => {
     const timeout = nodes.length > 80 ? 260 : 120;

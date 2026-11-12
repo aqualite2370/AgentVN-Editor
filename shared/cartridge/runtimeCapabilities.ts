@@ -29,8 +29,14 @@ export const RENPY_TITLE_TEXT_RUNTIME_VERSION = "0.26.0";
 export const GAME_VIEWPORT_RUNTIME_VERSION = "0.27.0";
 export const NATIVE_ANIMATION_ASSET_RUNTIME_VERSION = "0.28.0";
 export const OPENING_PRESENTATION_RUNTIME_VERSION = "0.29.0";
+export const GALLERY_PRESENTATION_RUNTIME_VERSION = "0.30.0";
 
 export function minimumRuntimeVersionForLayout(scriptVersion: string, layout?: UISkinLayout): string {
+  if (layout?.screens.some(screen => screen.screen_id === "gallery"
+    && screen.components.some(component => component.component_type === "gallery_item"
+      || component.component_type === "gallery_pagination" || component.style?.rows !== undefined))
+    && compareSemver(scriptVersion, GALLERY_PRESENTATION_RUNTIME_VERSION) < 0)
+    scriptVersion = GALLERY_PRESENTATION_RUNTIME_VERSION;
   if (layout?.gameViewport && compareSemver(scriptVersion, GAME_VIEWPORT_RUNTIME_VERSION) < 0)
     scriptVersion = GAME_VIEWPORT_RUNTIME_VERSION;
   if (layout?.screens.some(screen => screen.screen_id === "player" && screen.components.some(component =>

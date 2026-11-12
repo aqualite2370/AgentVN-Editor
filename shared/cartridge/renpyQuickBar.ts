@@ -18,7 +18,9 @@ export function ensureRenpyQuickControls(layout: UISkinLayout): UISkinLayout {
         component_id, label, component_type: "quick_button", style: {
           backgroundColor: "transparent", color: "#888888", borderColor: "transparent",
           borderWidth: 0, borderRadius: 0, opacity: 1, backdropBlur: 0,
+          ...structuredClone(screen.components.find(component => component.component_id === "quick_save_load_button")?.style ?? {}),
         },
+        stateStyles: structuredClone(screen.components.find(component => component.component_id === "quick_save_load_button")?.stateStyles),
       }))],
   }) };
 }

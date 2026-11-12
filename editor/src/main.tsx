@@ -13,6 +13,8 @@ import "./styles/editor-publish.css";
 import "./styles/quick-menu-preview.css";
 import "./styles/asset-studio.css";
 import "./styles/nodes.css";
+import "./styles/editor-disclosures.css";
+import "./styles/editor-number-input.css";
 import { App } from "./app/App";
 import "../../shared/ui/slowFocusGlow.css";
 import { installGlobalErrorLogging } from "../../shared/logging/frontendErrorLogger";

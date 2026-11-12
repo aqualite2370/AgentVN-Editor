@@ -1,3 +1,4 @@
+import { NumberInput } from "../common/NumberInput";
 import type { UISkinLayout } from "../../../../shared/cartridge/uiSkin";
 import {
   DIALOG_PORTRAIT_FIELDS, updateDialogPortraitLayout, type DialogPortraitLayout,
@@ -30,7 +31,7 @@ export function DialogPortraitLayoutEditor({ draft, onChange }: {
         <RangeControl ariaLabel={`${label}滑块`} value={config[key] ?? fallback}
           min={DIALOG_PORTRAIT_FIELDS[key].min} max={DIALOG_PORTRAIT_FIELDS[key].max} step={1}
           onChange={value => edit(key, value)} />
-        <input type="number" aria-label={label} value={config[key] ?? ""}
+        <NumberInput emptyValue="" type="number" aria-label={label} value={config[key] ?? ""}
           placeholder={key === "size" ? "自动" : "0"} step={1}
           min={DIALOG_PORTRAIT_FIELDS[key].min} max={DIALOG_PORTRAIT_FIELDS[key].max}
           onChange={event => {

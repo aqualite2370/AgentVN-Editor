@@ -1,3 +1,4 @@
+import { NumberInput } from "../common/NumberInput";
 import {
   AlertTriangle,
   GripVertical,
@@ -1450,15 +1451,15 @@ export function CameraStudioDialog({
                 <section className="camera-number-grid">
                   <label>
                     横向中心
-                    <input data-help-key="editor.control" type="number" min="0" max="1" step="0.01" value={targetPose.center_x} onChange={(event) => updatePose({ ...targetPose, center_x: Number(event.target.value) })} />
+                    <NumberInput data-help-key="editor.control" type="number" min="0" max="1" step="0.01" value={targetPose.center_x} onChange={(event) => updatePose({ ...targetPose, center_x: Number(event.target.value) })} />
                   </label>
                   <label>
                     纵向中心
-                    <input data-help-key="editor.control" type="number" min="0" max="1" step="0.01" value={targetPose.center_y} onChange={(event) => updatePose({ ...targetPose, center_y: Number(event.target.value) })} />
+                    <NumberInput data-help-key="editor.control" type="number" min="0" max="1" step="0.01" value={targetPose.center_y} onChange={(event) => updatePose({ ...targetPose, center_y: Number(event.target.value) })} />
                   </label>
                   <label>
                     缩放倍数
-                    <input data-help-key="editor.control"
+                    <NumberInput data-help-key="editor.control"
                       type="number"
                       min={advanced ? 0.5 : 1}
                       max={advanced ? 4 : 2.5}
@@ -1536,7 +1537,7 @@ export function CameraStudioDialog({
             <section className="camera-number-grid">
               <label>
                 时长（毫秒）
-                <input data-help-key="editor.control"
+                <NumberInput data-help-key="editor.control"
                   type="number"
                   min="0"
                   max={draft.motion.kind === "reframe" || draft.motion.kind === "sequence" || draft.motion.kind === "reset" ? 10000 : 3000}
@@ -1583,7 +1584,7 @@ export function CameraStudioDialog({
                   ] as const).map(([label, index, minimum, maximum]) => (
                     <label key={label}>
                       {label}
-                      <input data-help-key="editor.control"
+                      <NumberInput data-help-key="editor.control"
                         type="number"
                         min={minimum}
                         max={maximum}

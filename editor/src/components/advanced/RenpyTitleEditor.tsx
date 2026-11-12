@@ -1,3 +1,4 @@
+import { NumberInput } from "../common/NumberInput";
 import { useEffect, useMemo, useState } from "react";
 import { RenpyTitleView } from "../../../../GameCli_framework/src/components/shell/RenpyTitleView";
 import { fontFamilyForAsset } from "../../../../GameCli_framework/src/uiSkin/uiSkinRuntime";
@@ -21,6 +22,7 @@ import { inspectFontCoverage } from "../../renpy/fontCoverageClient";
 import type { FontCoverageResult } from "../../renpy/fontCoverage";
 import { backendClient } from "../../api/backendClient";
 import { RenpyControlAppearanceEditor } from "./RenpyControlAppearanceEditor";
+import { GalleryGridSettings } from "./GalleryGridSettings";
 import { ControlPresentationEditor } from "./ControlPresentationEditor";
 import type { ControlPresentationSource } from "../../../../shared/cartridge/controlPresentation";
 import { useProjectStore } from "../../store/projectStore";
@@ -84,6 +86,8 @@ const regionLabels: Record<string, string> = {
   settings_group: "设置区域",
   history_list: "历史列表",
   gallery_grid: "画廊网格",
+  gallery_item: "画廊条目",
+  gallery_pagination: "画廊翻页按钮",
   about_panel: "关于面板",
   help_panel: "帮助面板",
   custom_component: "自定义组件",
@@ -136,7 +140,7 @@ export function RenpyTitleEditor({ draft, previewDraft = draft, title, fontCover
     onChange(next);
   };
   const field = (scope: "shared" | RenpyNavigationPage, key: keyof RenpyGUIStyle, label: string) => (
-    <label key={`${scope}-${key}`}>{label}<input type="number" aria-label={label}
+    <label key={`${scope}-${key}`}>{label}<NumberInput emptyValue="" type="number" aria-label={label}
       min={RENPY_GUI_LIMITS[key][0]} max={RENPY_GUI_LIMITS[key][1]}
       step={1}
       value={key === "saveColumns" || key === "saveGap"
@@ -383,7 +387,7 @@ export function RenpyTitleEditor({ draft, previewDraft = draft, title, fontCover
             <legend>{component.label}</legend>
             {(["x", "y", "width", "height"] as const).map((field) => (
               <label key={field}>{field}
-                <input type="number" min={field === "x" || field === "y" ? 0 : 2} max={100}
+                <NumberInput type="number" min={field === "x" || field === "y" ? 0 : 2} max={100}
                   value={component.rect?.[field] ?? 0}
                   onChange={(event) => updateProjectComponentRect(component.component_id, field, Number(event.currentTarget.value))} />
               </label>
@@ -542,7 +546,8 @@ export function RenpyTitleEditor({ draft, previewDraft = draft, title, fontCover
               </label>
               <small className="renpy-field-hint">留空使用默认文案，按钮操作保持不变。</small>
             </section>}
-          {selectedRegion?.rect && <details className="renpy-region-geometry">
+          {selectedRegion && <GalleryGridSettings component={selectedRegion} onChange={patchRegionStyle} />}
+          {selectedRegion?.rect && !["gallery_item", "gallery_pagination"].includes(selectedRegion.component_type) && <details className="renpy-region-geometry">
             <summary>位置与尺寸</summary><div className="renpy-region-fields">
             {([
               ["x", "区域 X"],
@@ -551,7 +556,7 @@ export function RenpyTitleEditor({ draft, previewDraft = draft, title, fontCover
               ["height", "区域高度"],
             ] as const).map(([fieldName, label]) => (
               <label key={fieldName}>{label}
-                <input type="number" min={fieldName === "x" || fieldName === "y" ? 0 : 2}
+                <NumberInput type="number" min={fieldName === "x" || fieldName === "y" ? 0 : 2}
                   max={100} step={0.5} disabled={selectedRegion.locked}
                   aria-label={label} value={selectedRegion.rect![fieldName]}
                   onChange={(event) => {

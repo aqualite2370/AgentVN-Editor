@@ -3,7 +3,7 @@
 import logging
 import math
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from typing import TypeVar
 
 from app.ai.novel_adapter import NovelAdapter
@@ -56,6 +56,9 @@ from app.models.novel_import import (
 from app.models.scene import SceneBeat
 from app.schemas.requests import ProviderSelectionRequest
 from app.services.novel_outline_pipeline import OutlinePipeline
+from app.services.novel_scene_grounding import chapter_scene_source, stream_chapter_source
+from app.services.novel_scene_pipeline import ScenePlanningPipeline, character_context
+from app.services.novel_retry import check_cancelled, retry_budget, retry_events, retry_scope, retryable
 from app.utils.ids import new_id
 
 
@@ -228,6 +231,84 @@ class NovelImportService:
         temperature: float,
         selection: ProviderSelectionRequest | None,
         phase: str,
+        validate_result: Callable[[T], object] | None = None,
+    ) -> Iterator[tuple[str, object]]:
+        limit = retry_budget.get()
+        validation_feedback = ""
+        for attempt in range(limit + 1):
+            check_cancelled()
+            yield "trace", {"phase": phase, "level": "info", "title": "模型请求开始",
+                "message": f"正在请求{response_model.__name__}（第{attempt + 1}次，最多{limit + 1}次）。",
+                "details": {"attempt": attempt + 1, "maxAttempts": limit + 1,
+                    "responseModel": response_model.__name__}}
+            try:
+                value = yield from self._stream_structured_attempt(
+                    response_model, system_prompt, user_prompt + validation_feedback, temperature=temperature,
+                    selection=selection, phase=phase, semantic_validation_pending=validate_result is not None)
+                check_cancelled()
+                if validate_result:
+                    try:
+                        validate_result(value)
+                    except ValueError as exc:
+                        validation_feedback = self._validation_retry_feedback(exc)
+                        logger.warning("Structured result validation failed (%s attempt %s/%s): %s",
+                                       response_model.__name__, attempt + 1, limit + 1, exc)
+                        yield "trace", {"phase": phase, "level": "warning", "title": "结果校验失败",
+                            "message": str(exc), "details": {"attempt": attempt + 1,
+                                "maxAttempts": limit + 1}}
+                        raise AIProviderError(f"结构化结果校验失败：{exc}") from exc
+                    yield "trace", {"phase": phase, "level": "success", "title": "原文覆盖校验通过",
+                        "message": "本批结构与原文范围均已校验，准备保存成功断点。"}
+                return value
+            except AIProviderError as exc:
+                if attempt >= limit or not retryable(exc):
+                    # Keep the original diagnostic in the exception chain.
+                    raise AIProviderError(
+                        f"模型请求失败；已自动重试 {attempt}/{limit} 次，成功断点保留。"
+                        f"{str(exc).replace('，未自动重试', '')}"
+                    ) from exc
+                yield from retry_events(attempt + 1, limit, phase)
+
+    @staticmethod
+    def _validation_retry_feedback(error: ValueError) -> str:
+        # Fits within the scene pipeline's reserved 512 input tokens. Never append
+        # previous JSON/source or stack traces, or recursively grow the request.
+        anchors = getattr(error, "retry_context", "")
+        return (f"\n\n上次结果校验未通过：{str(error)[:96]}。{anchors[:240]}"
+                "请按本批权威原文修正范围及逐字首尾引文；连续完整覆盖，不重叠、不遗漏。")
+
+    def _create_structured_result(self, response_model, system_prompt, user_prompt, *,
+                                  validate_result=None, **kwargs):
+        limit = retry_budget.get()
+        validation_feedback = ""
+        for attempt in range(limit + 1):
+            check_cancelled()
+            try:
+                value = self.provider.create_with_tools(
+                    response_model, system_prompt, user_prompt + validation_feedback, **kwargs)
+                check_cancelled()
+                if validate_result:
+                    try:
+                        validate_result(value)
+                    except ValueError as exc:
+                        validation_feedback = self._validation_retry_feedback(exc)
+                        logger.warning("Structured result validation failed (%s attempt %s/%s): %s",
+                                       response_model.__name__, attempt + 1, limit + 1, exc)
+                        raise AIProviderError(f"结构化结果校验失败：{exc}") from exc
+                return value
+            except AIProviderError as exc:
+                if attempt >= limit or not retryable(exc):
+                    raise AIProviderError(
+                        f"模型请求失败；已自动重试 {attempt}/{limit} 次，成功断点保留。"
+                        f"{str(exc).replace('，未自动重试', '')}"
+                    ) from exc
+                for _ in retry_events(attempt + 1, limit, "structured"):
+                    pass
+
+    def _stream_structured_attempt(
+        self, response_model: type[T], system_prompt: str, user_prompt: str, *,
+        temperature: float, selection: ProviderSelectionRequest | None, phase: str,
+        semantic_validation_pending: bool = False,
     ) -> Iterator[tuple[str, object]]:
         final_payload: T | None = None
         saw_delta = False
@@ -243,6 +324,13 @@ class NovelImportService:
                 continue
             if event == "delta":
                 saw_delta = True
+            if event == "trace" and isinstance(payload, dict):
+                if semantic_validation_pending and payload.get("phase") == "validation" and payload.get("level") == "success":
+                    payload = {**payload, "title": "JSON 结构校验通过",
+                               "message": "正在核验原文范围，尚未保存本批结果。"}
+                elif payload.get("level") == "error" and "未自动重试" in str(payload.get("message", "")):
+                    payload = {**payload, "message": str(payload["message"]).replace(
+                        "，未自动重试", "；是否继续由当前重试预算决定")}
             yield (event, payload)
         if final_payload is None:
             raise AIProviderError(f"{response_model.__name__} stream finished without a final structured payload.")
@@ -293,22 +381,23 @@ class NovelImportService:
             return self.ai_adapt_scene(NovelAiAdaptSceneRequest(**request.model_dump()))
         return self.adapter.adapt_scene(request)
 
+    @retry_scope
     def ai_scan_chunk(self, request: NovelAiChunkRequest) -> NovelAiChunkAnalysis:
-        summary = request.partial_summary or self.provider.create_with_tools(
+        summary = request.partial_summary or self._create_structured_result(
             NovelAiChunkSummary,
             self._scan_summary_system_prompt(),
             self._scan_summary_user_prompt(request),
             temperature=0.2,
             selection=self._json_mode_selection(request.provider_selection),
         )
-        entities = request.partial_entities or self.provider.create_with_tools(
+        entities = request.partial_entities or self._create_structured_result(
             NovelAiChunkEntityIndex,
             self._scan_entities_system_prompt(),
             self._scan_entities_user_prompt(request, summary),
             temperature=0.2,
             selection=self._json_mode_selection(request.provider_selection),
         )
-        timeline = request.partial_timeline or self.provider.create_with_tools(
+        timeline = request.partial_timeline or self._create_structured_result(
             NovelAiChunkTimelineNotes,
             self._scan_timeline_system_prompt(),
             self._scan_timeline_user_prompt(request, summary),
@@ -317,6 +406,7 @@ class NovelImportService:
         )
         return self._compose_chunk_analysis(summary, entities, timeline)
 
+    @retry_scope
     def stream_ai_scan_chunk(self, request: NovelAiChunkRequest) -> Iterator[tuple[str, object]]:
         summary = request.partial_summary
         if summary is None:
@@ -367,12 +457,14 @@ class NovelImportService:
         yield ("trace", {"phase": "chunk_timeline", "level": "success", "title": "Chunk timeline complete", "message": f"Timeline {len(timeline.timeline)}, foreshadowing {len(timeline.foreshadowing)}"})
         yield ("final", self._compose_chunk_analysis(summary, entities, timeline))
 
+    @retry_scope
     def ai_build_outline(self, request: NovelAiOutlineRequest) -> NovelAiOutlineResponse:
         for event, payload in OutlinePipeline(self, request, streaming=False).run():
             if event == "final":
                 return payload
         raise AIProviderError("Outline pipeline did not return a final result.")
 
+    @retry_scope
     def stream_ai_build_outline(self, request: NovelAiOutlineRequest) -> Iterator[tuple[str, object]]:
         # partial_mainline/structure/index remain readable for pre-patch projects.
         yield from OutlinePipeline(self, request).run()
@@ -512,30 +604,15 @@ class NovelImportService:
             )
         return None
 
+    @retry_scope
     def ai_plan_chapter(self, request: NovelAiPlanChapterRequest) -> NovelAiScenePlanResponse:
-        min_scene_count = self._min_scene_count_for_request(request)
-        scene_plan = self.provider.create_with_tools(
-            NovelAiChapterScenePlan,
-            self._chapter_scene_plan_system_prompt(),
-            self._chapter_scene_plan_user_prompt(request),
-            temperature=0.25,
-            selection=self._json_mode_selection(request.provider_selection, "outline"),
-        )
-        quality_error = self._scene_plan_quality_error(request, scene_plan, min_scene_count)
-        for _corrective_attempt in range(2):
-            if not quality_error:
+        events = ScenePlanningPipeline(self, request, streaming=False).run()
+        while True:
+            try:
+                next(events)
+            except StopIteration as finished:
+                scene_plan = finished.value
                 break
-            scene_plan = self.provider.create_with_tools(
-                NovelAiChapterScenePlan,
-                self._chapter_scene_plan_system_prompt(),
-                self._chapter_scene_plan_user_prompt(request, quality_error),
-                temperature=0.2,
-                selection=self._json_mode_selection(request.provider_selection, "outline"),
-            )
-            quality_error = self._scene_plan_quality_error(request, scene_plan, min_scene_count)
-        if quality_error:
-            scene_plan = self._plan_chapter_source_segments(request, min_scene_count, quality_error)
-        scene_plan = self._repair_scene_plan(request, scene_plan, min_scene_count)
         warnings = list(scene_plan.warnings)
         conflict_points = self._safe_ai_chapter_conflict_points(request, scene_plan, warnings)
         branch_suggestions = self._safe_ai_chapter_branch_suggestions(request, scene_plan, conflict_points, warnings)
@@ -548,44 +625,9 @@ class NovelImportService:
             needs_review=scene_plan.needs_review or bool(warnings),
         )
 
+    @retry_scope
     def stream_ai_plan_chapter(self, request: NovelAiPlanChapterRequest) -> Iterator[tuple[str, object]]:
-        min_scene_count = self._min_scene_count_for_request(request)
-        yield ("status", "Planning chapter scenes...")
-        scene_plan = yield from self._stream_structured_result(
-            NovelAiChapterScenePlan,
-            self._chapter_scene_plan_system_prompt(),
-            self._chapter_scene_plan_user_prompt(request),
-            temperature=0.25,
-            selection=self._json_mode_selection(request.provider_selection, "outline"),
-            phase="chapter_scene_plan",
-        )
-        quality_error = self._scene_plan_quality_error(request, scene_plan, min_scene_count)
-        for corrective_attempt in range(2):
-            if not quality_error:
-                break
-            yield ("status", "Retrying chapter scene plan after source-grounding quality gate...")
-            yield (
-                "trace",
-                {
-                    "phase": "chapter_scene_plan_quality_retry",
-                    "level": "warning",
-                    "title": "Chapter scene plan quality retry",
-                    "message": quality_error[:1200],
-                    "details": {"attempt": corrective_attempt + 1, "maximum_attempts": 2},
-                },
-            )
-            scene_plan = yield from self._stream_structured_result(
-                NovelAiChapterScenePlan,
-                self._chapter_scene_plan_system_prompt(),
-                self._chapter_scene_plan_user_prompt(request, quality_error),
-                temperature=0.2,
-                selection=self._json_mode_selection(request.provider_selection, "outline"),
-                phase="chapter_scene_plan_quality_retry",
-            )
-            quality_error = self._scene_plan_quality_error(request, scene_plan, min_scene_count)
-        if quality_error:
-            scene_plan = yield from self._stream_plan_chapter_source_segments(request, min_scene_count, quality_error)
-        scene_plan = self._repair_scene_plan(request, scene_plan, min_scene_count)
+        scene_plan = yield from ScenePlanningPipeline(self, request).run()
         yield ("checkpoint", {"stage": "scene_plan", "payload": scene_plan.model_dump(mode="json")})
         warnings = list(scene_plan.warnings)
         conflict_points = yield from self._stream_ai_chapter_conflict_points(request, scene_plan, warnings)
@@ -730,13 +772,14 @@ class NovelImportService:
                 "Return at least one non-graphic playable scene grounded only in this segment. "
                 f"Previous whole-chapter quality error: {previous_error}"
             )
-            segment_plan = self.provider.create_with_tools(
-                NovelAiChapterScenePlan,
-                self._chapter_scene_plan_system_prompt(),
-                self._chapter_scene_plan_user_prompt(segment_request, instruction),
-                temperature=0.2,
-                selection=self._json_mode_selection(request.provider_selection, "outline"),
-            )
+            with chapter_scene_source(segment_request):
+                segment_plan = self._create_structured_result(
+                    NovelAiChapterScenePlan,
+                    self._chapter_scene_plan_system_prompt(),
+                    self._chapter_scene_plan_user_prompt(segment_request, instruction),
+                    temperature=0.2,
+                    selection=self._json_mode_selection(request.provider_selection, "outline"),
+                )
             if not segment_plan.scenes:
                 raise ValueError(f"Source segment {index + 1}/{len(segments)} returned no scenes.")
             repaired = self._repair_scene_plan(segment_request, segment_plan, 1)
@@ -776,14 +819,14 @@ class NovelImportService:
                     "details": {"start_offset": start, "end_offset": end},
                 },
             )
-            segment_plan = yield from self._stream_structured_result(
-                NovelAiChapterScenePlan,
-                self._chapter_scene_plan_system_prompt(),
-                self._chapter_scene_plan_user_prompt(segment_request, instruction),
-                temperature=0.2,
-                selection=self._json_mode_selection(request.provider_selection, "outline"),
-                phase="chapter_scene_plan_segmented",
-            )
+            segment_plan = yield from stream_chapter_source(segment_request, self._stream_structured_result(
+                    NovelAiChapterScenePlan,
+                    self._chapter_scene_plan_system_prompt(),
+                    self._chapter_scene_plan_user_prompt(segment_request, instruction),
+                    temperature=0.2,
+                    selection=self._json_mode_selection(request.provider_selection, "outline"),
+                    phase="chapter_scene_plan_segmented",
+                ))
             if not segment_plan.scenes:
                 raise ValueError(f"Source segment {index + 1}/{len(segments)} returned no scenes.")
             repaired = self._repair_scene_plan(segment_request, segment_plan, 1)
@@ -908,7 +951,7 @@ class NovelImportService:
         warnings: list[str],
     ) -> list[ConflictPoint]:
         try:
-            result = self.provider.create_with_tools(
+            result = self._create_structured_result(
                 NovelAiConflictAnalysisResponse,
                 self._chapter_conflict_system_prompt(),
                 self._chapter_conflict_user_prompt(request, scene_plan),
@@ -931,7 +974,7 @@ class NovelImportService:
         if not request.allow_branch_suggestions or request.min_branch_suggestion_count <= 0:
             return []
         try:
-            result = self.provider.create_with_tools(
+            result = self._create_structured_result(
                 NovelAiBranchSuggestionResponse,
                 self._chapter_branch_suggestion_system_prompt(),
                 self._chapter_branch_suggestion_user_prompt(request, scene_plan, conflict_points),
@@ -1046,9 +1089,10 @@ class NovelImportService:
             yield ("trace", {"phase": "chapter_branch_suggestions", "level": "warning", "title": "章节分支建议已跳过", "message": message})
             return []
 
+    @retry_scope
     def ai_adapt_scene(self, request: NovelAiAdaptSceneRequest) -> AdaptSceneResponse:
         warnings: list[str] = []
-        scene_beat = self.provider.create_with_tools(
+        scene_beat = self._create_structured_result(
             SceneBeat,
             self._adapt_scene_beat_system_prompt(),
             self._adapt_scene_beat_user_prompt(request),
@@ -1061,6 +1105,7 @@ class NovelImportService:
         branch_suggestions = self._safe_ai_branch_suggestions(request, conflict_points, warnings)
         return self._compose_adapt_scene_response(request, scene_beat, conflict_points, branch_suggestions, warnings)
 
+    @retry_scope
     def stream_ai_adapt_scene(self, request: NovelAiAdaptSceneRequest) -> Iterator[tuple[str, object]]:
         yield ("status", "Adapting scene into AgentVN commands...")
         warnings: list[str] = []
@@ -1106,7 +1151,7 @@ class NovelImportService:
         warnings: list[str],
     ) -> list[ConflictPoint]:
         try:
-            result = self.provider.create_with_tools(
+            result = self._create_structured_result(
                 NovelAiConflictAnalysisResponse,
                 self._conflict_analysis_system_prompt(),
                 self._conflict_analysis_user_prompt(request, scene_beat),
@@ -1128,7 +1173,7 @@ class NovelImportService:
         if not request.import_options.allow_branch_suggestions:
             return []
         try:
-            result = self.provider.create_with_tools(
+            result = self._create_structured_result(
                 NovelAiBranchSuggestionResponse,
                 self._branch_suggestion_system_prompt(),
                 self._branch_suggestion_user_prompt(request, conflict_points),
@@ -1695,6 +1740,9 @@ Hard structure requirements:
 - suggested_scene_count: {request.suggested_scene_count or suggested_scene_count_for_text(len(request.text))}
 - if fewer scenes are truly appropriate, warnings must explicitly explain the reason
 - every scene must include source_span(start_offset/end_offset), summary, and commands
+- all offsets are absolute: {request.chapter.start_offset} <= start_offset < end_offset <= {request.chapter.start_offset + len(request.text)}
+- source_span must equal the scene's start_offset/end_offset; never estimate offsets by rounding or exceed the chapter bounds
+- source_excerpt must be a verbatim contiguous passage of the supplied source; preserve punctuation
 - commands should be a concise visual-novel command draft using valid command types
 - use show_image when the source asks the player to inspect a key item, clue, photo, letter, or prop
 - the chapter source below is complete and authoritative for this chapter
@@ -1881,7 +1929,7 @@ Scene candidate:
 {request.scene_candidate.model_dump_json()}
 
 Known characters:
-{[character.model_dump() for character in request.known_characters]}
+{character_context(request.known_characters, request.scene_candidate.source_excerpt)}
 
 Allowed character references:
 {allowed_character_references}

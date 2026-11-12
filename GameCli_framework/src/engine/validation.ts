@@ -200,11 +200,11 @@ export function validateNextSceneTargets(script: RuntimeScript): ValidationIssue
 export function validateAssetReferences(script: RuntimeScript, manifest: GameManifest): ValidationIssue[] {
   const assets = new Map(manifest.assets.map((asset) => [asset.asset_id, asset]));
   const issues: ValidationIssue[] = [];
-  const check = (id: string | null | undefined, code: string, label: string) => {
+  const check = (id: string | null | undefined, code: string, label: string, location?: string) => {
     if (id && !assets.has(id)) {
       issues.push({
         code,
-        message: `${label}资源编号未打包（asset_id）：${id} 被剧情事件引用，但不在卡带素材清单中。原因：素材库里缺少该资源，或导出时没有收集到它。影响：GameCLI 播放到相关事件时可能显示或播放失败。解决方案：请在素材库中补充该资源，或把事件里的资源编号改成已存在的 asset_id。`
+        message: `${location ? `${location}：` : ""}${label}「${id}」不在卡带素材清单中。请在对应位置重新选择素材。`
       });
     }
   };
@@ -235,11 +235,17 @@ export function validateAssetReferences(script: RuntimeScript, manifest: GameMan
   for (const character of script.characters ?? []) {
     check(character.dialog_style?.background_asset_id, "dialog_background_asset", "角色对白框底图");
   }
-  for (const scene of scenesOf(script)) {
-    for (const command of scene.commands as GameCommand[]) {
-      if (command.type === "background") check(command.background_id, "background_asset", "背景");
+  for (const [sceneIndex, scene] of scenesOf(script).entries()) {
+    for (const [commandIndex, command] of (scene.commands as GameCommand[]).entries()) {
+      const sceneLabel = scene.title?.trim() || `场景 ${sceneIndex + 1}`;
+      const locationFor = (action: string, field: string) =>
+        `位置：场景「${sceneLabel}」 · 事件 ${commandIndex + 1} · ${action} · ${field}`;
+      if (command.type === "background") {
+        check(command.background_id, "background_asset", "背景素材", locationFor("设置背景", "背景素材"));
+      }
       if (command.type === "show_image") {
-        check(command.image_id, "show_image_asset", "展示图片");
+        const location = locationFor("显示图片", "图片素材");
+        check(command.image_id, "show_image_asset", "图片素材", location);
         const asset = assets.get(command.image_id);
         const imageLike = asset && (
           ["background", "sprite", "portrait", "ui"].includes(asset.asset_type) ||
@@ -248,33 +254,38 @@ export function validateAssetReferences(script: RuntimeScript, manifest: GameMan
         if (asset && !imageLike) {
           issues.push({
             code: "show_image_asset_type",
-            message: `展示图片事件引用的素材 ${command.image_id} 不是图片类素材。`,
+            message: `${location}：素材「${command.image_id}」不是图片类型。`,
           });
         }
       }
       if (command.type === "video") {
-        check(command.video_id, "video_asset", "过场视频");
+        const location = locationFor("播放视频", "视频素材");
+        check(command.video_id, "video_asset", "视频素材", location);
         const asset = assets.get(command.video_id);
         if (asset && asset.asset_type !== "video") {
           issues.push({
             code: "video_asset_type",
-            message: `过场视频事件引用的素材 ${command.video_id} 不是视频类型素材。`,
+            message: `${location}：素材「${command.video_id}」不是视频类型。`,
           });
         }
       }
-      if (command.type === "sprite") check(command.sprite_id, "sprite_asset", "立绘");
+      if (command.type === "sprite" && command.visible !== false) {
+        check(command.sprite_id, "sprite_asset", "立绘素材", locationFor("显示立绘", "立绘素材"));
+      }
       if (command.type === "dialog") {
-        check(command.portrait, "portrait_asset", "头像");
-        check(command.voice, "voice_asset", "语音");
-        check(command.font_asset_id, "font_asset", "字体");
-        check(command.dialog_style?.background_asset_id, "dialog_background_asset", "对白框底图");
+        check(command.portrait, "portrait_asset", "头像素材", locationFor("显示对白", "头像素材"));
+        check(command.voice, "voice_asset", "语音素材", locationFor("显示对白", "语音素材"));
+        check(command.font_asset_id, "font_asset", "字体素材", locationFor("显示对白", "字体素材"));
+        check(command.dialog_style?.background_asset_id, "dialog_background_asset", "对白框底图", locationFor("显示对白", "对白框底图"));
       }
       if (command.type === "narration") {
-        check(command.font_asset_id, "font_asset", "字体");
-        check(command.dialog_style?.background_asset_id, "dialog_background_asset", "旁白框底图");
+        check(command.font_asset_id, "font_asset", "字体素材", locationFor("显示旁白", "字体素材"));
+        check(command.dialog_style?.background_asset_id, "dialog_background_asset", "旁白框底图", locationFor("显示旁白", "旁白框底图"));
       }
-      if (command.type === "bgm") check(command.bgm_id, "bgm_asset", "BGM");
-      if (command.type === "sfx") check(command.sfx_id, "sfx_asset", "音效");
+      if (command.type === "bgm" && command.action !== "stop") {
+        check(command.bgm_id, "bgm_asset", "音乐素材", locationFor("播放音乐", "音乐素材"));
+      }
+      if (command.type === "sfx") check(command.sfx_id, "sfx_asset", "音效素材", locationFor("播放音效", "音效素材"));
     }
   }
   return issues;

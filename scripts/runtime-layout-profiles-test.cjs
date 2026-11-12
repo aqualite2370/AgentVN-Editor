@@ -29,9 +29,9 @@ useProjectStore.getState().loadProjectMetadata({
 });
 const migrated = useProjectStore.getState().settings;
 assert.equal(migrated.runtimeUILayoutProfiles?.activeType, "agentvn", "旧工程必须迁入 AgentVN 布局类型");
-// This fixture now contains the shipped, visible native Hide action. Its
-// previously stale 0.1.0 metadata must be upgraded; every visual field stays exact.
-const expectedLegacy = { ...before, target_runtime: "0.25.0" };
+// The default fixture includes the shipped gallery presentation slots. Its
+// stale 0.1.0 metadata must be upgraded; every visual field stays exact.
+const expectedLegacy = { ...before, target_runtime: "0.30.0" };
 assert.deepEqual(migrated.runtimeUILayoutProfiles.profiles.agentvn, expectedLegacy, "只修正已使用能力的版本，旧布局其余字段完整保留");
 assert.deepEqual(migrated.runtimeUILayout, expectedLegacy, "兼容输出使用同一能力归一化结果");
 assert.equal(migrated.runtimeUILayoutProfiles.profiles.renpy, undefined, "不自动创建或套用新类型");
@@ -89,6 +89,10 @@ versionedProfiles.profiles.renpy.target_runtime = "0.10.0";
 // Isolate the button-role floor from the newer Hide action's independent floor.
 versionedProfiles.profiles.renpy.screens.find(screen => screen.screen_id === "player").components
   .find(component => component.component_id === "quick_hide_ui_button").visible = false;
+const roleOnlyGallery = versionedProfiles.profiles.renpy.screens.find(screen => screen.screen_id === "gallery");
+roleOnlyGallery.components = roleOnlyGallery.components.filter(component =>
+  !["gallery_item", "gallery_pagination"].includes(component.component_type));
+for (const component of roleOnlyGallery.components) if (component.style) delete component.style.rows;
 versionedProfiles.profiles.renpy.renpy = {
   shared: { buttonRoles: { story_choice: { states: { normal: { textColor: "#426789" } } } } },
 };

@@ -1,3 +1,4 @@
+import { NumberInput } from "../common/NumberInput";
 import { createElement, lazy, Suspense, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import type { AssistantCreationDraft } from "../../assistant/creationAgent";
 import { planAssistantCreationProjectMerge } from "../../assistant/assistantCreationProjectMerge";
@@ -272,7 +273,7 @@ export function AssistantCreationDraftPreview({
             {(["x", "y", "width", "height"] as const).map((key) => (
               <label key={key}>
                 <span>{{ x: "X", y: "Y", width: "宽", height: "高" }[key]} %</span>
-                <input aria-label={`组件${{ x: "X", y: "Y", width: "宽", height: "高" }[key]}百分比`}
+                <NumberInput aria-label={`组件${{ x: "X", y: "Y", width: "宽", height: "高" }[key]}百分比`}
                   type="number" min={key === "width" || key === "height" ? 1 : 0}
                   max={100} step={1} value={rect[key]}
                   disabled={busy || Boolean(draft.projectMerge)}

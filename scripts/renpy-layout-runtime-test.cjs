@@ -51,16 +51,18 @@ const api = mod.exports;
   assert.equal(exported.manifest.runtime_version,
     api.minimumRuntimeVersionForLayout("0.2.0", exported.uiSkin),
     "Ren’Py 卡带必须按实际活动布局声明最低 Runtime 能力");
-  assert.equal(exported.manifest.runtime_version, "0.25.0",
-    "当前默认 Ren’Py 布局包含隐藏快捷栏能力，应声明 0.25.0");
+  assert.equal(exported.manifest.runtime_version, "0.30.0",
+    "当前默认 Ren’Py 布局包含画廊排列和条目样式，应声明 0.30.0");
   assert.equal(api.isRuntimeCompatible(exported.manifest.runtime_version, "0.24.0"), false,
     "旧 Runtime 必须明确拒绝新布局，不能默默显示 AgentVN");
   assert(api.isRuntimeCompatible(exported.manifest.runtime_version, api.SUPPORTED_RUNTIME_VERSION));
   const agentvn = await api.createEditorLivePreviewData({ ...input, uiLayoutProfiles: baseline.runtimeUILayoutProfiles });
-  assert.equal(agentvn.manifest.runtime_version, "0.25.0",
-    "当前 AgentVN 默认布局同样包含隐藏快捷栏能力，应声明 0.25.0");
+  assert.equal(agentvn.manifest.runtime_version, "0.30.0",
+    "当前 AgentVN 默认布局同样包含画廊排列和条目样式，应声明 0.30.0");
   const withoutDefaultHide = (source) => {
     const copy = structuredClone(source);
+    // Isolate older individual capability floors from the new gallery screen.
+    copy.screens = copy.screens.filter(screen => screen.screen_id !== "gallery");
     const player = copy.screens.find((screen) => screen.screen_id === "player");
     const hide = player?.components.find((component) => component.component_id === "quick_hide_ui_button");
     if (hide) hide.visible = false;

@@ -663,7 +663,6 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
     const installId = state.currentGame?.install_id;
     if (
       !installId
-      || installId === "preview_gamecli"
       || state.galleryReplayActive
       || engine.state.isGalleryReplay
       || state.galleryUnlocks.includes(command.anchor_id)
@@ -673,8 +672,14 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
       scene_id: snapshot.scene_id,
       unlocked_at: new Date().toISOString(),
     };
-    void writeGalleryAnchor(installId, command.anchor_id, persisted)
+    const owner = saveOwner;
+    // External previews unlock within this run, without modifying player data.
+    const write = installId === "preview_gamecli"
+      ? Promise.resolve()
+      : writeGalleryAnchor(installId, command.anchor_id, persisted);
+    void write
       .then(() => {
+        if (owner !== saveOwner || get().currentGame?.install_id !== installId) return;
         set((current) => ({
           galleryUnlocks: current.galleryUnlocks.includes(command.anchor_id)
             ? current.galleryUnlocks
@@ -767,7 +772,7 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
       resetAutoSaveTracking();
       const [saves, galleryUnlocks, storage] = await Promise.all([
         listDesktopSaves(game.install_id),
-        listGalleryUnlocks(game.install_id),
+        game.install_id === "preview_gamecli" ? Promise.resolve([]) : listGalleryUnlocks(game.install_id),
         get().runtimeMode === "fixed"
           ? getSaveStorageInfo(game.install_id).then(info => ({ info, error: undefined as string | undefined }))
             .catch(error => {
@@ -838,7 +843,7 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
       resetAutoSaveTracking();
       const [saves, galleryUnlocks] = await Promise.all([
         listDesktopSaves(game.install_id),
-        listGalleryUnlocks(game.install_id),
+        game.install_id === "preview_gamecli" ? Promise.resolve([]) : listGalleryUnlocks(game.install_id),
       ]);
       if (owner !== saveOwner) return;
       const unlocked = new Set(galleryUnlocks);

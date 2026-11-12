@@ -357,6 +357,9 @@ body.is-toolbar-popover-open .floating-command-workbench{z-index:0!important;poi
 .gamecli-preview-detail{display:grid;gap:8px;padding:12px 14px;border:1px solid color-mix(in srgb,var(--line) 82%,transparent);border-radius:14px;background:color-mix(in srgb,var(--surface) 88%,transparent)}
 .gamecli-preview-detail strong{font-size:12px;letter-spacing:.04em;color:color-mix(in srgb,var(--ink) 76%,var(--muted))}
 .gamecli-preview-detail p{margin:0;max-height:180px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;color:color-mix(in srgb,var(--ink) 78%,var(--muted));font-size:12px;line-height:1.5}
+.gamecli-preview-issues{margin:0;padding:0 0 0 24px;max-height:320px;overflow:auto;overflow-wrap:anywhere}
+.gamecli-preview-issues li{padding:8px 8px 8px 4px;line-height:1.6}
+.gamecli-preview-issues li+li{border-top:1px solid var(--line)}
 @media(max-width:760px){.gamecli-preview-launch-button{grid-template-columns:minmax(0,1fr) auto}.gamecli-preview-launch-status{grid-column:1 / -1;justify-self:start}.gamecli-preview-log li{grid-template-columns:minmax(0,1fr)}}
 @media(prefers-reduced-motion:reduce){.gamecli-preview-launch-button,.gamecli-preview-launch-button:before,.gamecli-preview-launch-arrow,.gamecli-preview-progress-track span{transition:none}.gamecli-preview-progress-track span::after{opacity:0}}
 .advanced-tools-panel{background:radial-gradient(circle at 0% 0%,color-mix(in srgb,var(--tint-tools) 72%,transparent),transparent 34%),color-mix(in srgb,var(--popover-bg) 84%,transparent)}

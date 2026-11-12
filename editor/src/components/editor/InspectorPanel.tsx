@@ -1,3 +1,4 @@
+import { NumberInput } from "../common/NumberInput";
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, Circle, Copy, Film, HelpCircle, ImagePlus, Repeat2, Sparkles, Trash2, UploadCloud, WandSparkles, X } from "lucide-react";
 import { backendClient } from "../../api/backendClient";
@@ -919,7 +920,7 @@ export function InspectorPanel() {
           </label>
           <label>
             章节编号 <FieldHelp field="chapter" />
-            <input
+            <NumberInput
               type="number"
               value={activeNode.data.scene.chapter}
               data-help-key="field.chapter"
@@ -1187,12 +1188,12 @@ export function InspectorPanel() {
               </label>
               <label>
                 开始前记作几次
-                <input type="number" data-help-key="field.loop.initialValue" value={activeNode.data.loop.initialValue} onChange={(event) => updateNodeData(activeNode.id, { loop: { ...activeNode.data.loop!, initialValue: Number(event.target.value) } })} />
+                <NumberInput type="number" data-help-key="field.loop.initialValue" value={activeNode.data.loop.initialValue} onChange={(event) => updateNodeData(activeNode.id, { loop: { ...activeNode.data.loop!, initialValue: Number(event.target.value) } })} />
                 <small>填 0 表示开始前还没有执行过；一般不用修改。</small>
               </label>
               <label>
                 每完成一轮增加多少
-                <input type="number" data-help-key="field.loop.step" value={activeNode.data.loop.step} onChange={(event) => updateNodeData(activeNode.id, { loop: { ...activeNode.data.loop!, step: Number(event.target.value) } })} />
+                <NumberInput type="number" data-help-key="field.loop.step" value={activeNode.data.loop.step} onChange={(event) => updateNodeData(activeNode.id, { loop: { ...activeNode.data.loop!, step: Number(event.target.value) } })} />
                 <small>通常填 1。只有倒数时才填负数；填 0 会让记录一直停在同一个数字。</small>
               </label>
             </div>

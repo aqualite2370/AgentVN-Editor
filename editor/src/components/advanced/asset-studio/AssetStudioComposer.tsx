@@ -1,3 +1,4 @@
+import { NumberInput } from "../../common/NumberInput";
 import { nanoid } from "nanoid";
 import {
   ArrowDown,
@@ -479,11 +480,11 @@ export function AssetStudioComposer({
             <div className="asset-studio-inline-fields">
               <label className="asset-studio-field">
                 <span>宽度</span>
-                <input data-help-key="asset.width" type="number" min={64} max={4096} value={recipe.width} onChange={(event) => onPatch({ width: Number(event.target.value), aspectRatio: "custom" })} />
+                <NumberInput data-help-key="asset.width" type="number" min={64} max={4096} value={recipe.width} onChange={(event) => onPatch({ width: Number(event.target.value), aspectRatio: "custom" })} />
               </label>
               <label className="asset-studio-field">
                 <span>高度</span>
-                <input data-help-key="asset.height" type="number" min={64} max={4096} value={recipe.height} onChange={(event) => onPatch({ height: Number(event.target.value), aspectRatio: "custom" })} />
+                <NumberInput data-help-key="asset.height" type="number" min={64} max={4096} value={recipe.height} onChange={(event) => onPatch({ height: Number(event.target.value), aspectRatio: "custom" })} />
               </label>
             </div>
             {features?.dimension_mode === "aspect_ratio" && (
@@ -491,7 +492,7 @@ export function AssetStudioComposer({
             )}
             <label className="asset-studio-field">
               <span>种子（留空为随机）</span>
-              <input
+              <NumberInput emptyValue=""
                 data-help-key="asset.seed"
                 type="number"
                 value={recipe.seed ?? ""}
@@ -541,7 +542,7 @@ export function AssetStudioComposer({
                 {(["top", "right", "bottom", "left"] as const).map((side) => (
                   <label key={side}>
                     <span>{{ top: "上", right: "右", bottom: "下", left: "左" }[side]}</span>
-                    <input
+                    <NumberInput
                       data-help-key="asset.outpaintInset"
                       type="number"
                       min={0}

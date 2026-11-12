@@ -1,5 +1,5 @@
 import { RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { reportFrontendError } from "../../../../shared/logging/frontendErrorLogger";
 import {
@@ -95,11 +95,13 @@ function liveScene(scene: NonNullable<ReturnType<typeof useEditorStore.getState>
 
 export function PreviewPanel({
   collapsed,
+  workspaceActive = true,
   resizing,
   deferRuntimeMount = false,
   onCollapsedChange,
 }: {
   collapsed: boolean;
+  workspaceActive?: boolean;
   resizing: boolean;
   deferRuntimeMount?: boolean;
   onCollapsedChange: (collapsed: boolean) => void;
@@ -125,6 +127,9 @@ export function PreviewPanel({
   const liveRunCounterRef = useRef(0);
   const activeRunIdRef = useRef("");
   const liveInitializedRef = useRef(false);
+  const workspaceActiveRef = useRef(workspaceActive);
+  const workspacePausedRef = useRef(false);
+  workspaceActiveRef.current = workspaceActive;
   const liveRefreshTimerRef = useRef<number | null>(null);
   const pendingFullScriptRef = useRef(false);
   const pendingPresentationRef = useRef(false);
@@ -172,6 +177,7 @@ export function PreviewPanel({
     liveRunCounterRef.current += 1;
     const runId = `run-${liveRunCounterRef.current}`;
     activeRunIdRef.current = runId;
+    workspacePausedRef.current = false;
     return runId;
   }
 
@@ -283,7 +289,8 @@ export function PreviewPanel({
   }
 
   function resumeForGeometryChange() {
-    if (!activeRunIdRef.current) return;
+    if (!activeRunIdRef.current || !workspaceActiveRef.current) return;
+    workspacePausedRef.current = false;
     const requestId = nextRequestId("resume");
     postLiveMessage({
       type: "agentvn.live-preview.control",
@@ -294,6 +301,12 @@ export function PreviewPanel({
       runId: activeRunIdRef.current,
       action: "resume",
     });
+  }
+
+  function pauseForWorkspace() {
+    if (!liveInitializedRef.current || workspacePausedRef.current) return;
+    workspacePausedRef.current = true;
+    pauseForGeometryChange();
   }
 
   function postRuntimeMessage(payload: Record<string, unknown>, transfer?: Transferable[]) {
@@ -404,6 +417,18 @@ export function PreviewPanel({
     active: !collapsed,
     reducedMotion: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false,
   });
+
+  // Share the toolbar's input lease without collapsing or remounting the
+  // background frame. Late ready events must respect the same lease.
+  useLayoutEffect(() => {
+    if (collapsed) return;
+    if (!workspaceActive) {
+      setRoutePickerOpen(false);
+      pauseForWorkspace();
+    } else if (workspacePausedRef.current && previewTransition.phase === "ready") {
+      resumeForGeometryChange();
+    }
+  }, [collapsed, workspaceActive, previewTransition.phase]);
 
   useEffect(() => {
     if (status === "error" && previewTransition.phase !== "ready") {
@@ -724,6 +749,7 @@ export function PreviewPanel({
             : `实时渲染：${event.data.sceneId ?? "当前场景"}`);
         sendScreen(activeScreen);
         previewTransition.markReady();
+        if (!workspaceActiveRef.current) pauseForWorkspace();
       }
     }
     window.addEventListener("message", handleLivePreviewResponse);

@@ -22,7 +22,7 @@ import { NodePalette } from "./NodePalette";
 import { PreviewPanel } from "./PreviewPanel";
 import { reportFrontendError } from "../../../../shared/logging/frontendErrorLogger";
 import { EditorWorkspace } from "../workspace/EditorWorkspace";
-import { openWorkspaceSurface, requestBack, requestGeneration, workspaceSurfaceChangedEventName, type WorkspaceController, type SaveResult, type WorkspaceSurface } from "../workspace/workspaceContracts";
+import { openWorkspaceSurface, requestBack, requestGeneration, type WorkspaceController, type SaveResult } from "../workspace/workspaceContracts";
 import { WorkspaceStatusBar } from "../workspace/WorkspaceStatusBar";
 import { AssistantProjectCreationLockGate } from "../assistant/AssistantProjectCreationLockGate";
 
@@ -701,19 +701,9 @@ export function VisualNovelEditor({
     return Number.isFinite(saved) && saved >= 320 ? Math.min(1120, saved) : 440;
   });
   const [previewCollapsed, setPreviewCollapsed] = useState(false);
-  const [activeSurface, setActiveSurface] = useState<WorkspaceSurface>("edit");
+  const [workspaceActive, setWorkspaceActive] = useState(true);
   const [previewResizing, setPreviewResizing] = useState(false);
   const [previewSplitRatio, setPreviewSplitRatio] = useState(loadPreviewSplitRatio);
-  useEffect(() => {
-    const handleSurfaceChanged = (event: Event) => {
-      const surface = (event as CustomEvent<{ surface?: WorkspaceSurface }>).detail?.surface;
-      if (surface) {
-        setActiveSurface(surface);
-      }
-    };
-    window.addEventListener(workspaceSurfaceChangedEventName, handleSurfaceChanged);
-    return () => window.removeEventListener(workspaceSurfaceChangedEventName, handleSurfaceChanged);
-  }, []);
   const nodes = useEditorStore((state) => state.nodes);
   const edges = useEditorStore((state) => state.edges);
   const selectedNodeId = useEditorStore((state) => state.selectedNodeId);
@@ -1405,7 +1395,7 @@ export function VisualNovelEditor({
             />
           )}
           <EditorWorkspace
-            toolbar={<EditorToolbar onReturnHome={onReturnHome} />}
+            toolbar={<EditorToolbar onReturnHome={onReturnHome} onWorkspaceActiveChange={setWorkspaceActive} />}
             statusBar={<WorkspaceStatusBar />}
             controller={workspaceController}
           >
@@ -1501,10 +1491,11 @@ export function VisualNovelEditor({
           />
           <section
             ref={previewStackRef}
-            className={`scene-editor-pane${previewCollapsed || activeSurface !== "edit" ? " is-preview-collapsed" : ""}`}
+            className={`scene-editor-pane${previewCollapsed ? " is-preview-collapsed" : ""}`}
           >
             <PreviewPanel
-              collapsed={previewCollapsed || activeSurface !== "edit"}
+              collapsed={previewCollapsed}
+              workspaceActive={workspaceActive}
               resizing={previewResizing}
               deferRuntimeMount={deferRuntimePreview}
               onCollapsedChange={setPreviewCollapsed}

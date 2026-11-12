@@ -18,6 +18,7 @@ import { reportFrontendError } from "../../../shared/logging/frontendErrorLogger
 import { compileControlPresentation, layoutPresentationTargets, resolveLayoutPresentations } from "../../../shared/cartridge/controlPresentation";
 import { resolveNativeAnimationAssets } from "../../../shared/animation/nativeAnimationAsset";
 import { readEditorAnimationAsset } from "../animation/animationAsset";
+import { CartridgeValidationError } from "../../../shared/cartridge/validationError";
 
 export interface EditorCartridgeExportInput {
   script: RuntimeScript;
@@ -654,7 +655,8 @@ async function createEditorCartridgeData(input: EditorCartridgeExportInput) {
     validateNoAIMetadata(normalizedScript),
     ...(uiSkin ? [validateNoAIMetadata(uiSkin)] : [])
   ];
-  const errors = validations.flatMap((result) => result.errors.map((item) => item.message));
+  const validationIssues = validations.flatMap((result) => result.errors);
+  const errors = validationIssues.map((item) => item.message);
   const warnings = [
     ...(uiSkinNormalization?.warnings ?? []),
     ...validations.flatMap((result) => result.warnings.map((item) => item.message)),
@@ -663,7 +665,7 @@ async function createEditorCartridgeData(input: EditorCartridgeExportInput) {
     ...uiSkinFonts.warnings,
     ...scan.missingAssets.map((asset) => `Missing asset ${asset.asset_type} ${asset.asset_id} (${asset.source}). A placeholder was written into the exported package; replace it before release.`)
   ];
-  if (errors.length > 0) throw new Error(errors.join("; "));
+  if (errors.length > 0) throw new CartridgeValidationError(validationIssues);
   const fileName = `${manifest.game_id}-${manifest.version}.vncart`;
   return {
     fileName,

@@ -61,6 +61,7 @@ export interface AiCheckpointEvent {
 }
 
 export interface NovelAiStreamHandlers {
+  signal?: AbortSignal;
   onDelta?: (delta: string) => void;
   onStatus?: (status: string) => void;
   onTrace?: (trace: AiTraceEvent) => void;
@@ -70,6 +71,10 @@ export interface NovelAiStreamHandlers {
 }
 
 type NovelWsOperation = "scan_chunk" | "build_outline" | "plan_chapter" | "adapt_scene";
+const activeNovelRequests = new Set<AbortController>();
+export function cancelActiveNovelAiRequests(): void {
+  for (const controller of activeNovelRequests) controller.abort();
+}
 
 interface NovelWsEvent {
   type: string;
@@ -174,6 +179,9 @@ async function postSse<T>(
 ): Promise<T> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  const abort = () => controller.abort();
+  handlers.signal?.addEventListener("abort", abort, { once: true });
+  if (handlers.signal?.aborted) controller.abort();
   try {
     const response = await fetch(`${baseUrl}${path}`, {
       method: "POST",
@@ -233,6 +241,7 @@ async function postSse<T>(
     throw reportedError;
   } finally {
     window.clearTimeout(timeout);
+    handlers.signal?.removeEventListener("abort", abort);
   }
 }
 
@@ -275,7 +284,9 @@ async function postWs<T>(
   let idleTimer: number | undefined;
   let reconnectTimer: number | undefined;
   let reconnects = 0;
-  let streamStarted = false;
+  // A lost first acknowledgement does not mean the start command was lost.
+  // Once submission is attempted, only resubscribe to this job, never POST SSE.
+  let startSubmitted = false;
 
   return new Promise<T>((resolve, reject) => {
     const cleanup = () => {
@@ -283,16 +294,30 @@ async function postWs<T>(
       if (heartbeat !== undefined) window.clearInterval(heartbeat);
       if (idleTimer !== undefined) window.clearTimeout(idleTimer);
       if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
+      handlers.signal?.removeEventListener("abort", abort);
       if (socket && socket.readyState <= WebSocket.OPEN) socket.close();
     };
 
-    const fail = (message: string, allowSseFallback = !streamStarted) => {
+    const fail = (message: string, allowSseFallback = !startSubmitted) => {
       if (settled) return;
       cleanup();
       const error = new Error(redactError(message));
       if (!allowSseFallback) (error as Error & { skipSseFallback?: boolean }).skipSseFallback = true;
       reject(error);
     };
+    const abort = () => {
+      if (socket?.readyState === WebSocket.OPEN && startSubmitted) {
+        try {
+          socket.send(JSON.stringify({ command: "cancel_job", jobId, requestId }));
+        } catch {
+          // The connection may have closed before send; local cancellation
+          // still settles the request without submitting another job.
+        }
+      }
+      fail("解析已停止，成功断点保留。", false);
+    };
+    handlers.signal?.addEventListener("abort", abort, { once: true });
+    if (handlers.signal?.aborted) { abort(); return; }
 
     const armIdleTimer = () => {
       if (idleTimer !== undefined) window.clearTimeout(idleTimer);
@@ -311,27 +336,46 @@ async function postWs<T>(
       if (settled) return;
       reconnectTimer = undefined;
       armIdleTimer();
-      socket = new WebSocket(`${baseUrl}/api/ws/novel`);
-      socket.onopen = () => {
+      let connection: WebSocket;
+      try {
+        connection = new WebSocket(`${baseUrl}/api/ws/novel`);
+      } catch {
+        fail("WebSocket connection could not be created.");
+        return;
+      }
+      socket = connection;
+      connection.onopen = () => {
+        if (settled || socket !== connection) return;
         if (heartbeat !== undefined) window.clearInterval(heartbeat);
         heartbeat = window.setInterval(() => {
-          if (socket?.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({ command: "ping", requestId, jobId, seq: lastSeq }));
+          if (!settled && socket === connection && connection.readyState === WebSocket.OPEN) {
+            connection.send(JSON.stringify({ command: "ping", requestId, jobId, seq: lastSeq }));
           }
         }, 15_000);
         const command = resume
           ? { command: "subscribe_job", requestId, jobId, lastSeq }
           : { command: "start_novel_job", requestId, jobId, operation, payload: normalizePayload(payload), lastSeq };
-        socket?.send(JSON.stringify(command));
+        const encoded = JSON.stringify(command);
+        if (!resume) startSubmitted = true;
+        try {
+          connection.send(encoded);
+        } catch {
+          fail("WebSocket command could not be sent; the task was not resubmitted.", false);
+        }
       };
-      socket.onerror = () => {
-        if (!resume && lastSeq === 0) fail("WebSocket connection failed before the stream started.");
+      connection.onerror = () => {
+        if (settled || socket !== connection) return;
+        if (!startSubmitted) fail("WebSocket connection failed before the stream started.");
       };
-      socket.onclose = () => {
-        if (!settled && lastSeq > 0) reconnect();
+      connection.onclose = () => {
+        if (settled || socket !== connection) return;
+        if (heartbeat !== undefined) window.clearInterval(heartbeat);
+        heartbeat = undefined;
+        if (startSubmitted) reconnect();
+        else fail("WebSocket connection closed before the start command was submitted.");
       };
-      socket.onmessage = (message) => {
-        if (settled) return;
+      connection.onmessage = (message) => {
+        if (settled || socket !== connection) return;
         const event = parseWsEvent(message);
         if (!event) return;
         if (event.type === "connected" || event.type === "pong") return;
@@ -343,7 +387,6 @@ async function postWs<T>(
             socket.send(JSON.stringify({ command: "ack", jobId, requestId, seq }));
           }
         }
-        if (seq > 0) streamStarted = true;
         if (progressWsEventTypes.has(event.type)) markProgress();
         if (event.type === "message_delta" || event.type === "agent_delta") {
           handlers.onDelta?.(payloadMessage(event.payload));
@@ -409,7 +452,7 @@ async function postWs<T>(
     };
 
     const reconnect = () => {
-      if (settled) return;
+      if (settled || reconnectTimer !== undefined) return;
       reconnects += 1;
       if (reconnects > 3) {
         fail("WebSocket stream disconnected and could not resume.", false);
@@ -429,25 +472,40 @@ async function postRealtime<T>(
   payload: unknown,
   handlers?: NovelAiStreamHandlers,
 ): Promise<T> {
+  // Runtime import avoids the client/store initialization cycle. The backend
+  // owns one retry budget; reconnecting never creates a second retry loop.
+  const { useNovelImportStore, captureNovelTaskOwnership, isNovelTaskOwnershipCurrent } = await import("../store/novelImportStore");
+  payload = { ...(payload as Record<string, unknown>),
+    max_retries: useNovelImportStore.getState().processing.config.maxRetryCount };
+  const controller = new AbortController();
+  const owner = captureNovelTaskOwnership(`transport:${operation}`);
+  const ownershipTimer = window.setInterval(() => {
+    if (!isNovelTaskOwnershipCurrent(owner)) controller.abort();
+  }, 200);
+  activeNovelRequests.add(controller);
+  handlers = { ...handlers, signal: controller.signal };
   try {
-    return await postWs<T>(operation, payload, handlers);
-  } catch (error) {
-    if (error instanceof Error && (error as Error & { skipSseFallback?: boolean }).skipSseFallback) {
-      reportFrontendError("editor.novel-import-api", error, { operation, transport: "websocket" });
-      throw error;
+    try {
+      return await postWs<T>(operation, payload, handlers);
+    } catch (error) {
+      if (error instanceof Error && (error as Error & { skipSseFallback?: boolean }).skipSseFallback) {
+        reportFrontendError("editor.novel-import-api", error, { operation, transport: "websocket" });
+        throw error;
+      }
+      reportFrontendError("editor.novel-import-api", error, {
+        operation,
+        transport: "websocket-fallback",
+      });
+      handlers?.onTrace?.({
+        phase: "websocket",
+        level: "warning",
+        title: "WebSocket fallback",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      if (controller.signal.aborted) throw error;
+      return await postSse<T>(ssePath, payload, handlers);
     }
-    reportFrontendError("editor.novel-import-api", error, {
-      operation,
-      transport: "websocket-fallback",
-    });
-    handlers?.onTrace?.({
-      phase: "websocket",
-      level: "warning",
-      title: "WebSocket fallback",
-      message: error instanceof Error ? error.message : String(error),
-    });
-    return postSse<T>(ssePath, payload, handlers);
-  }
+  } finally { window.clearInterval(ownershipTimer); activeNovelRequests.delete(controller); }
 }
 
 export async function verifyNovelAiRoutes(baseUrl = getNovelBackendBaseUrl()): Promise<void> {
@@ -526,6 +584,7 @@ export interface AiPlanChapterRequest {
   min_scene_count?: number;
   min_branch_suggestion_count?: number;
   allow_branch_suggestions?: boolean;
+  partial_batches?: import("./types").NovelAiSceneBatchCheckpoint[];
   provider_selection?: ProviderSelectionPayload;
 }
 

@@ -1,3 +1,4 @@
+import { NumberInput } from "../common/NumberInput";
 import { ChevronDown, Eye, EyeOff } from "lucide-react";
 import { nanoid } from "nanoid";
 import { useEffect, useMemo, useState } from "react";
@@ -1007,7 +1008,7 @@ function updateTextFamilySelection(providerId?: string) {
                         <div className="advanced-grid-2">
                           <label>
                             随机性（Temperature）
-                            <input
+                            <NumberInput emptyValue=""
                               type="number"
                               step="0.1"
                               data-help-key="provider.temperature"
@@ -1029,7 +1030,7 @@ function updateTextFamilySelection(providerId?: string) {
                           </label>
                           <label>
                             核采样范围（Top P）
-                            <input
+                            <NumberInput emptyValue=""
                               type="number"
                               step="0.1"
                               data-help-key="provider.topP"
@@ -1051,7 +1052,7 @@ function updateTextFamilySelection(providerId?: string) {
                           </label>
                           <label>
                             最大输出长度（Max Tokens）
-                            <input
+                            <NumberInput emptyValue=""
                               type="number"
                               step="1"
                               data-help-key="provider.maxTokens"
@@ -1091,7 +1092,7 @@ function updateTextFamilySelection(providerId?: string) {
                           </label>
                           <label>
                             请求超时（秒）
-                            <input
+                            <NumberInput emptyValue=""
                               type="number"
                               min="30"
                               max="900"
@@ -1117,7 +1118,7 @@ function updateTextFamilySelection(providerId?: string) {
                           </label>
                           <label>
                             上下文预算（tokens）
-                            <input
+                            <NumberInput emptyValue=""
                               type="number"
                               min="4000"
                               max="200000"

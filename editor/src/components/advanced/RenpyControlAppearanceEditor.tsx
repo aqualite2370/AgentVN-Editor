@@ -1,3 +1,4 @@
+import { NumberInput } from "../common/NumberInput";
 import { useEffect, useRef, useState } from "react";
 import type { UILayoutComponent, UILayoutComponentStyle } from "../../../../shared/cartridge/uiSkin";
 import type { AssetRef } from "../../types/assets";
@@ -104,7 +105,7 @@ export function RenpyControlAppearanceEditor({ component, assets, advancedEnable
         const codeValue = code[key];
         const numeric = codeValue && /^\d+(?:\.\d+)?(?:px)?$/.test(codeValue) ? parseFloat(codeValue) : undefined;
         return <label key={key}>{label}
-          <input type="number" aria-label={`当前控件${label}`} min={min} max={max} step={1}
+          <NumberInput emptyValue="" type="number" aria-label={`当前控件${label}`} min={min} max={max} step={1}
             placeholder="继承" value={numeric ?? style[key] ?? ""} disabled={component.locked || Boolean(codeValue) || state !== "normal"}
             onChange={event => {
               const value = event.currentTarget.value === "" ? undefined : event.currentTarget.valueAsNumber;

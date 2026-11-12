@@ -1,3 +1,4 @@
+import { NumberInput } from "../common/NumberInput";
 import { Move3d } from "lucide-react";
 import { useState } from "react";
 import { defaultCharacterAnimationConfig, legacySpriteAnimationToConfig } from "../../../../shared/animation/characterAnimation";
@@ -109,7 +110,7 @@ export function SpriteCommandEditor({
       </label>
       <label className="sprite-layer-control">
         人物层级 <FieldHelp field="layer" />
-        <input
+        <NumberInput emptyValue=""
           type="number"
           min={MIN_SPRITE_LAYER}
           max={MAX_SPRITE_LAYER}

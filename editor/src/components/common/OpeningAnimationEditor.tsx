@@ -1,3 +1,4 @@
+import { NumberInput } from "./NumberInput";
 import { useMemo, useState, type ChangeEvent } from "react";
 import type { LoadingAnimationConfig } from "../../../../shared/cartridge/types";
 import type { AssetRef, AssetType } from "../../types/assets";
@@ -161,9 +162,9 @@ export function OpeningAnimationEditor({ animation = { kind: "default" }, assets
             options={[{ value: "contain", label: "完整显示" }, { value: "cover", label: "裁切铺满" }, { value: "stretch", label: "拉伸" }]}
             onChange={fit => updatePresentation({ fit })} /></label>
           {presentation.mode === "centered" && <>
-            <label>宽度（%）<input aria-label="片头容器宽度（百分比）" type="number" min={20} max={100} step={1}
+            <label>宽度（%）<NumberInput aria-label="片头容器宽度（百分比）" type="number" min={20} max={100} step={1}
               value={presentation.width_percent} onChange={event => updatePresentation({ width_percent: Math.min(100, Math.max(20, Number(event.target.value) || 20)) })} /></label>
-            <label>高度（%）<input aria-label="片头容器高度（百分比）" type="number" min={20} max={100} step={1}
+            <label>高度（%）<NumberInput aria-label="片头容器高度（百分比）" type="number" min={20} max={100} step={1}
               value={presentation.height_percent} onChange={event => updatePresentation({ height_percent: Math.min(100, Math.max(20, Number(event.target.value) || 20)) })} /></label>
           </>}
         </fieldset>
@@ -182,7 +183,7 @@ export function OpeningAnimationEditor({ animation = { kind: "default" }, assets
             <button data-help-key="editor.control" type="button" disabled={!selectedFrame} onClick={() => { onChange({ ...animation, image_asset_ids: [...imageIds, selectedFrame], frame_duration_ms: animation.frame_duration_ms ?? 1000 }); setSelectedFrame(""); }}>添加为帧</button>
           </div>
           <label className="loading-animation-import"><input data-help-key="editor.control" type="file" accept="image/*,.png,.jpg,.jpeg,.webp,.gif,.bmp,.svg" multiple hidden onChange={(event) => void importImages(event)} />导入图片</label>
-          <label className="loading-animation-duration">切换时间（毫秒）<input data-help-key="editor.control" type="number" min={100} step={100} value={animation.frame_duration_ms ?? 1000} onChange={(event) => onChange({ ...animation, frame_duration_ms: Math.max(100, Math.round(Number(event.target.value) || 1000)) })} /></label>
+          <label className="loading-animation-duration">切换时间（毫秒）<NumberInput data-help-key="editor.control" type="number" min={100} step={100} value={animation.frame_duration_ms ?? 1000} onChange={(event) => onChange({ ...animation, frame_duration_ms: Math.max(100, Math.round(Number(event.target.value) || 1000)) })} /></label>
           <div className="loading-animation-frame-list">
             {imageIds.length === 0 ? <p>尚未添加图片帧。</p> : imageIds.map((assetId, index) => {
               const asset = imageAssets[index];

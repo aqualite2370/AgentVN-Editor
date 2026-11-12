@@ -15,6 +15,7 @@ from typing import Any
 
 from pydantic import BaseModel
 from app.core.errors import AIProviderError
+from app.services.novel_retry import retry_cancelled
 
 
 NovelStreamFactory = Callable[[], Iterator[tuple[str, object]]]
@@ -206,6 +207,7 @@ class NovelRealtimeHub:
         return job
 
     def _run_stream(self, job: NovelRealtimeJob, stream_factory: NovelStreamFactory) -> None:
+        cancel_token = retry_cancelled.set(job.cancel_requested.is_set)
         started_at = datetime.now(UTC)
         try:
             job.status = "running"
@@ -231,6 +233,11 @@ class NovelRealtimeHub:
             job.status = "completed"
             job.next_event("agent_completed", {"status": "completed", "elapsedMs": elapsed_ms})
         except Exception as exc:
+            if job.cancel_requested.is_set():
+                job.status = "cancelled"
+                job.next_event("lifecycle", {"status": "cancelled", "message": "Job cancelled."})
+                job.next_event("agent_completed", {"status": "cancelled"})
+                return
             logger.error(
                 "Novel realtime job failed: job_id=%s operation=%s phase=%s\n%s",
                 job.job_id,
@@ -250,6 +257,8 @@ class NovelRealtimeHub:
             job.status = "failed"
             job.next_event("error", error_payload)
             job.next_event("agent_completed", {"status": "failed", **error_payload})
+        finally:
+            retry_cancelled.reset(cancel_token)
 
 
 novel_realtime_hub = NovelRealtimeHub()

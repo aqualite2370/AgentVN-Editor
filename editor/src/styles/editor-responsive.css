@@ -147,7 +147,7 @@
   width: var(--workspace-wide-task-width, var(--workspace-task-width, auto)) !important;
   height: auto !important;
   max-height: none !important;
-  padding: 8px !important;
+  padding: 14px !important;
   /* Each workbench pane owns its scrolling; the fixed shell is not a scroller. */
   overflow: hidden;
 }

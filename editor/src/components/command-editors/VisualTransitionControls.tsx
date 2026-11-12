@@ -1,3 +1,4 @@
+import { NumberInput } from "../common/NumberInput";
 import { RotateCcw, Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
@@ -138,7 +139,7 @@ export function VisualTransitionControls({
         <label>
           过渡时长
           <span className="visual-transition-input-with-unit">
-            <input
+            <NumberInput
               type="number"
               min={MIN_VISUAL_TRANSITION_DURATION_MS}
               max={MAX_VISUAL_TRANSITION_DURATION_MS}

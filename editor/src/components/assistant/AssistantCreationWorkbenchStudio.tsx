@@ -1,3 +1,4 @@
+import { NumberInput } from "../common/NumberInput";
 import { Check, Copy, Eye, Layers3, Sparkles } from "lucide-react";
 import { Suspense, lazy, useEffect, useLayoutEffect, useMemo, useState, type CSSProperties } from "react";
 import {
@@ -520,7 +521,7 @@ export function AssistantCreationWorkbenchStudio({
                   {(["x", "y", "width", "height"] as const).map(key => (
                     <label key={key}>
                       <span>{{ x: "X", y: "Y", width: "宽", height: "高" }[key]} %</span>
-                      <input aria-label={`${item.draft.name} ${key}`}
+                      <NumberInput aria-label={`${item.draft.name} ${key}`}
                         type="number" min={key === "width" || key === "height" ? 1 : 0}
                         max={100} step={1} value={item.rect[key]}
                         disabled={busy || Boolean(item.draft.projectMerge)}

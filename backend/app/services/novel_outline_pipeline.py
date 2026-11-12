@@ -45,7 +45,7 @@ class OutlinePipeline:
             "branches": request.allow_branch_suggestions})
         self.reuse_full = not request.partial_source_hash or request.partial_source_hash == self.source_hash
 
-    def prompts(self, stage, rows, mainline=None, *, legacy_ranges=False):
+    def prompts(self, stage, rows, mainline=None, *, legacy_ranges=False, legacy_mainline=False):
         local = self.request.model_copy(update={"analyses": rows, "partial_mainline": None,
             "partial_structure": None, "partial_index": None, "partial_batches": []})
         system = getattr(self.service, f"_outline_{stage}_system_prompt")()
@@ -60,6 +60,12 @@ class OutlinePipeline:
             "每章summary最多100字；warnings仅列本批新增问题、最多6条、每条最多80字；"
             "不要重复逐段警告。保留所有本批章节范围，不能为了简短遗漏章节。"
         )
+        if stage == "mainline" and not legacy_mainline:
+            system += (
+                "\n主线输出是分层归并用的简要中间结果，不是重述输入：summary控制在120字内，"
+                "main_plot控制在500字内；只写本批新增的关键因果，不列章节清单、不复述分块原文。"
+                "字段上限是硬约束，输出前自行核对长度。"
+            )
         return system, user
 
     @staticmethod
@@ -149,7 +155,12 @@ class OutlinePipeline:
         system, user = self.prompts(stage, rows, mainline)
         key = digest({"version": VERSION, "stage": stage, "system": system, "user": user})
         cache_keys = [key]
-        if stage == "structure":
+        if stage == "mainline":
+            old_system, old_user = self.prompts(
+                stage, rows, mainline, legacy_mainline=True)
+            cache_keys.append(digest({"version": VERSION, "stage": stage,
+                                      "system": old_system, "user": old_user}))
+        elif stage == "structure":
             old_system, old_user = self.prompts(stage, rows, mainline, legacy_ranges=True)
             cache_keys.append(digest({"version": VERSION, "stage": stage,
                                      "system": old_system, "user": old_user}))
@@ -181,7 +192,7 @@ class OutlinePipeline:
                 result = yield from self.service._stream_structured_result(
                     model, system, user, temperature=.2, selection=selection, phase=f"outline_{stage}")
             else:
-                result = self.service.provider.create_with_tools(
+                result = self.service._create_structured_result(
                     model, system, user, temperature=.2, selection=selection)
             if stage == "structure":
                 # Range-only diagnostics survive a failed validation without
@@ -193,7 +204,7 @@ class OutlinePipeline:
             self.validate(stage, rows, result)
         except AIProviderError as exc:
             raise AIProviderError(
-                f"大纲{LABELS[stage]}第{number}/{total}批失败；已完成批次保留，未自动重试。{exc}"
+                f"大纲{LABELS[stage]}第{number}/{total}批失败；已完成批次保留。{exc}"
             ) from exc
         payload = {"key": key, "stage": stage, "payload": result.model_dump(mode="json")}
         if stage == "mainline":
@@ -205,8 +216,8 @@ class OutlinePipeline:
         if stage == "mainline":
             if result.document_id != self.request.document_id:
                 raise AIProviderError("大纲主线的文档归属不匹配，未写入断点。")
-            if len(result.summary) > 600 or len(result.main_plot) > 2400:
-                raise AIProviderError("大纲主线摘要超过单批预算，未截断或写入结果。")
+            if len(result.summary) > 300 or len(result.main_plot) > 1200:
+                raise AIProviderError("大纲主线摘要超出结构化输出长度限制，未写入结果。")
         if stage != "structure" or not rows or len(self.request.analyses) <= 4:
             return
         source = [c for row in rows for c in row.chapter_candidates]

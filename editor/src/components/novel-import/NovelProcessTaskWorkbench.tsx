@@ -15,8 +15,9 @@ import {
   createMockNovelProcessSnapshot,
   persistNovelProcessTaskSnapshot,
   readPersistedNovelProcessTaskSnapshot,
-  updateMockSnapshotStatus,
+  readPersistedNovelProcessTaskSnapshotAsync,
 } from "../../novel-import/novelProcessJobAdapter";
+import { localNovelTaskTarget } from "../../novel-import/novelTaskControls";
 import {
   isNovelProcessJobUnfinished,
   type NovelProcessAgentProgress,
@@ -40,6 +41,8 @@ import "./novel-task-floating.css";
 import { openWorkspaceSurface, requestCanvasNodeFocus, workspaceBackEventName, novelTaskCardRevealEventName } from "../workspace/workspaceContracts";
 import { useNovelTaskModalPriority } from "./useNovelTaskModalPriority";
 import { withNovelGraphPhaseProgress } from "../../novel-import/novelProcessGraphProgress";
+import { NovelDetails } from "./NovelDetails";
+import "./novel-workbench-usability.css";
 
 type TokenView = "total" | "agent" | "chapter";
 type LogOrder = "newest" | "oldest";
@@ -259,7 +262,7 @@ function StatTile({ label, value, hint }: { label: string; value: string | numbe
 function sourceLabel(source: NovelProcessJob["source"]): { label: string; detail: string } {
   if (source === "api") return { label: "后端 API", detail: "来自后端 NovelProcessJob 快照" };
   if (source === "ui_pressure_fixture") return { label: "UI 压力测试快照", detail: "仅用于任务面板渲染压力审计，不代表 AI 任务成功" };
-  return { label: "本地恢复 / mock adapter", detail: "只用于恢复显示，不能作为完整通过依据" };
+  return { label: "本地解析记录", detail: "进度来自当前工程保存的解析断点" };
 }
 
 function phaseTone(status: NovelProcessPhaseProgress["status"]): ProgressMeterTone {
@@ -363,25 +366,18 @@ function OverviewPanel({ job }: { job: NovelProcessJob }) {
     <section className="novel-task-section novel-task-overview" aria-labelledby="novel-task-overview-title">
       <header>
         <div>
-          <span className="panel-kicker">任务概览</span>
-          <h3 id="novel-task-overview-title">{job.novelTitle}</h3>
+          <h3 id="novel-task-overview-title">处理进度</h3>
         </div>
-        <span className={`novel-task-status is-${meta.tone}`}>{meta.label}</span>
       </header>
       <p>{meta.detail}</p>
       <dl className="novel-task-stat-grid">
         <StatTile label="已选章节" value={job.selectedChapterCount} />
-        <StatTile label="总切片" value={job.totalChunks} />
-        <StatTile label="已完成" value={job.completedChunks} />
+        <StatTile label="已完成切片" value={`${job.completedChunks}/${job.totalChunks}`} />
         <StatTile label="失败" value={job.failedChunks} />
-        <StatTile label="已取消" value={job.cancelledChunks} />
-        <StatTile label="运行处理槽" value={job.runningAgentCount} />
-        <StatTile label="预计剩余" value={`${job.estimatedRemainingChunks} 个切片`} />
         <StatTile label="当前阶段" value={displayMachineValue(job.activePhase, "切片解析")} />
-        <StatTile label="数据源" value={source.label} hint={source.detail} />
       </dl>
       <ProgressMeter value={job.progressPercent} label="小说处理整体进度" tone={progressToneFromJob(job.status)} variant="overall" />
-      <PhaseTimeline phases={job.phaseProgress} />
+      <small className="novel-task-provenance" title={source.detail}>{source.label}</small>
     </section>
   );
 }
@@ -418,6 +414,7 @@ function TokenBreakdownList({ rows, emptyText }: { rows: NovelProcessTokenBreakd
 }
 
 function TokenPanel({ job, tokenView, onTokenViewChange }: { job: NovelProcessJob; tokenView: TokenView; onTokenViewChange: (view: TokenView) => void }) {
+  const [open, setOpen] = useState(false);
   const stats = job.tokenStats;
   const overBudget = stats.estimatedTokens > 0 && stats.actualTokens > stats.estimatedTokens * 1.2;
   const panelRef = useRef<HTMLElement | null>(null);
@@ -443,7 +440,9 @@ function TokenPanel({ job, tokenView, onTokenViewChange }: { job: NovelProcessJo
   useLayoutEffect(() => () => animationRef.current?.cancel(), []);
 
   return (
-    <section ref={panelRef} className="novel-task-section novel-token-panel" aria-labelledby="novel-task-token-title">
+    <section ref={panelRef} className="novel-task-section novel-token-panel" aria-label="任务用量">
+      <NovelDetails title="用量详情" description={`已记录 ${formatInteger(stats.totalTokens)} Token · 预计 ${formatInteger(stats.estimatedTokens)}`}
+        badge={overBudget ? "超出预估" : undefined} open={open} onToggle={() => setOpen((value) => !value)}>
       <header>
         <div>
           <span className="panel-kicker">Token 统计</span>
@@ -490,6 +489,7 @@ function TokenPanel({ job, tokenView, onTokenViewChange }: { job: NovelProcessJo
           <TokenBreakdownList rows={stats.byChapter} emptyText="暂无章节 token 明细。" />
         )}
       </div>
+      </NovelDetails>
     </section>
   );
 }
@@ -830,6 +830,7 @@ export function NovelProcessTaskWorkbench() {
   const ownershipGeneration = useNovelImportStore((state) => state.ownershipGeneration);
   const pauseBlueprintGeneration = useNovelImportStore((state) => state.pauseBlueprintGeneration);
   const resumeBlueprintGeneration = useNovelImportStore((state) => state.resumeBlueprintGeneration);
+  const startAiAnalysis = useNovelImportStore((state) => state.startAiAnalysis);
   const cancelBlueprintGeneration = useNovelImportStore((state) => state.cancelBlueprintGeneration);
   const retryFailedNovelAgentTasks = useNovelImportStore((state) => state.retryFailedNovelAgentTasks);
   const importNovelProcessJobResults = useNovelImportStore((state) => state.importNovelProcessJobResults);
@@ -843,6 +844,7 @@ export function NovelProcessTaskWorkbench() {
   const [panelClosing, setPanelClosing] = useState(false);
   const [hiddenCard, setHiddenCard] = useState<{ projectId: string; jobId: string }>();
   const [tokenView, setTokenView] = useState<TokenView>("total");
+  const [technicalOpen, setTechnicalOpen] = useState(false);
   const [logOrder, setLogOrder] = useState<LogOrder>("newest");
   const [busyAction, setBusyAction] = useState<WorkbenchAction>();
   const [actionMessage, setActionMessage] = useState<string>();
@@ -995,6 +997,18 @@ export function NovelProcessTaskWorkbench() {
     setHiddenCard(undefined);
   }, [projectId, ownershipGeneration]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const owner = captureNovelTaskOwnership("");
+    void readPersistedNovelProcessTaskSnapshotAsync(projectId).then(next => {
+      if (!cancelled && isNovelTaskOwnershipCurrent(owner) && next?.projectId === projectId)
+        setSnapshot(current => current ?? next);
+    }).catch(error => reportFrontendError("editor.novel-process", error, {
+      operation: "restore-large-task-snapshot", projectId,
+    }));
+    return () => { cancelled = true; };
+  }, [projectId, ownershipGeneration]);
+
   useLayoutEffect(() => {
     // A new task in the same project does not remount this controller. Its
     // controls must not inherit the previous task's in-flight operation flags.
@@ -1135,7 +1149,13 @@ export function NovelProcessTaskWorkbench() {
   const backendTask = job.source === "api"
     || (job.source !== "ui_pressure_fixture" && processing.activeJobId === job.jobId);
   const meta = statusMeta[job.status];
-  const actions = visibleActions(job.status);
+  const localTarget = localNovelTaskTarget(job, session, importJob);
+  const actions = visibleActions(job.status).filter(action => {
+    if (backendTask || job.source === "ui_pressure_fixture") return true;
+    if (localTarget === "record") return action === "view" || action === "collapse";
+    if (localTarget === "analysis") return action === "retry" || action === "resume" || action === "collapse";
+    return true;
+  });
   const taskNodes = nodes.filter(node => backendTask
     ? node.data.editorMeta?.sourceProcessJobId === job.jobId
     : node.data.editorMeta?.importSessionId === session.session_id);
@@ -1150,17 +1170,12 @@ export function NovelProcessTaskWorkbench() {
   };
   closeTaskPanelRef.current = closePanel;
 
-  const updateLocalSnapshot = (status: NovelProcessJobStatus, message: string) => {
-    setSnapshot((current) => {
-      if (!current) return current;
-      const next = updateMockSnapshotStatus(current, status, message);
-      persistNovelProcessTaskSnapshot(projectId, next);
-      return next;
-    });
-  };
-
   const runAction = async (action: WorkbenchAction) => {
     if (actionRef.current) return;
+    if (!backendTask && localTarget === "record") {
+      setActionMessage("这是本地恢复记录。请从小说导入工作台查看原文与断点。");
+      return;
+    }
     const owner = captureNovelTaskOwnership(job.jobId);
     const current = () => mountedRef.current && isNovelTaskOwnershipCurrent(owner) && visibleJobRef.current === owner.jobId;
     taskResponseRevisionRef.current++;
@@ -1182,24 +1197,23 @@ export function NovelProcessTaskWorkbench() {
         persistNovelProcessTaskSnapshot(projectId, next);
         syncNovelProcessingJobSnapshot(nextJob);
       } else {
+        if (localTarget === "analysis") {
+          if (action === "resume" || action === "retry") await startAiAnalysis();
+          return;
+        }
         if (action === "pause") {
           pauseBlueprintGeneration();
-          updateLocalSnapshot("paused", "任务暂停");
         }
         if (action === "resume") {
-          void resumeBlueprintGeneration();
-          updateLocalSnapshot("running", "任务继续");
+          await resumeBlueprintGeneration();
         }
         if (action === "cancel") {
           cancelBlueprintGeneration();
-          updateLocalSnapshot("cancelled", "任务取消");
         }
         if (action === "retry") {
           retryFailedNovelAgentTasks();
-          void resumeBlueprintGeneration();
-          updateLocalSnapshot("retrying", "重试失败项");
+          await resumeBlueprintGeneration();
         }
-        setActionMessage("当前为 mock adapter 操作；任务执行由后端 API 提供。");
       }
     } catch (error) {
       reportFrontendError("editor.novel-process", error, {
@@ -1314,6 +1328,11 @@ export function NovelProcessTaskWorkbench() {
             </header>
 
             <div className="novel-task-body">
+              {!backendTask && localTarget === "record" && job.source !== "ui_pressure_fixture" && (
+                <p className="novel-task-action-message" role="status">
+                  本地恢复记录：当前没有可继续的对应任务，原记录已保留。
+                </p>
+              )}
               {job.promptVersion && job.promptVersion !== "novel-process-v3" && (
                 <div className="novel-agent-quality-warning">
                   此任务来自旧版处理流程。建议重新创建任务，以获得更完整的章节结果。
@@ -1322,14 +1341,21 @@ export function NovelProcessTaskWorkbench() {
               <OverviewPanel job={job} />
               <QualityDimensionPanel dimensions={job.qualityDimensions} issues={job.qualityIssues} />
               <TokenPanel job={job} tokenView={tokenView} onTokenViewChange={setTokenView} />
-              <details className="novel-task-technical-details">
-                <summary>技术详情</summary>
+              <NovelDetails className="novel-task-technical-details" title="技术详情"
+                description="处理槽、阶段与日志" open={technicalOpen} onToggle={() => setTechnicalOpen((value) => !value)}>
                 <div className="novel-task-technical-details-body">
+                  <dl className="novel-task-stat-grid">
+                    <StatTile label="已取消" value={job.cancelledChunks} />
+                    <StatTile label="运行处理槽" value={job.runningAgentCount} />
+                    <StatTile label="预计剩余" value={`${job.estimatedRemainingChunks} 个切片`} />
+                    <StatTile label="数据源" value={sourceLabel(job.source).label} hint={sourceLabel(job.source).detail} />
+                  </dl>
+                  <PhaseTimeline phases={job.phaseProgress} />
                   <AssignmentPanel job={job} />
                   <AgentPanel agents={job.agents} expandedAgentIds={expandedAgentIds} onToggleAgents={toggleAgentDetails} />
                   <LogPanel events={events} logOrder={logOrder} onLogOrderChange={setLogOrder} />
                 </div>
-              </details>
+              </NovelDetails>
             </div>
 
             <footer className="novel-task-actions" aria-label="任务操作">
@@ -1347,7 +1373,7 @@ export function NovelProcessTaskWorkbench() {
                 )}
                 {actions.includes("retry") && (
                   <button type="button" data-help-key="novel.task.retry" disabled={Boolean(busyAction)} onClick={() => void runAction("retry")}>
-                    <RotateCcw size={15} />重试失败项
+                    <RotateCcw size={15} />{!backendTask && localTarget === "analysis" ? "继续解析" : "重试失败项"}
                   </button>
                 )}
                 {actions.includes("view") && (

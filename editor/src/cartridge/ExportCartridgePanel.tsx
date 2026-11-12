@@ -1364,10 +1364,28 @@ export function ExportCartridgePanel({ onClose }: { onClose: () => void }) {
       ? "warning"
       : "error";
   const preflightDetailItems = preflightDetailCheck?.issues.length
-    ? preflightDetailCheck.issues.flatMap((issue, index) => [
-      { label: `问题 ${index + 1}`, value: issue.message },
-      { label: `解决方案：${index + 1}`, value: issue.solution },
-    ])
+    ? preflightDetailCheck.issues.flatMap((issue, index) => {
+      if (issue.code === "asset_reference_missing" && issue.locations?.length) {
+        return [
+          { label: "问题", value: issue.message },
+          ...(issue.subject ? [{ label: "素材编号", value: issue.subject }] : []),
+          ...issue.locations.map((location, locationIndex) => ({
+            label: `引用位置 ${String(locationIndex + 1).padStart(2, "0")}`,
+            value: [
+              location.scene,
+              location.eventNumber ? `事件 ${location.eventNumber}` : "",
+              location.action,
+              location.field,
+            ].filter(Boolean).join(" · "),
+          })),
+          { label: "处理建议", value: issue.solution },
+        ];
+      }
+      return [
+        { label: `问题 ${index + 1}`, value: issue.message },
+        { label: "处理建议", value: issue.solution },
+      ];
+    })
     : [{ label: "检查结果", value: "未发现需要处理的问题。" }];
   const environmentDialogStages = environmentOperationDialog
     ? environmentOperationDialog.operation === "check"
@@ -1903,7 +1921,9 @@ export function ExportCartridgePanel({ onClose }: { onClose: () => void }) {
           label="发布前检查"
           title={preflightDetailCheck.title}
           message={preflightDetailCheck.issues.length > 0
-            ? `发现 ${preflightDetailCheck.issues.length} 项诊断，请按建议处理后重新检查。`
+            ? preflightDetailCheck.id === "asset_references"
+              ? `发现 ${preflightDetailCheck.issues.length} 项素材问题；按场景与事件序号定位，再复查对应素材。`
+              : `发现 ${preflightDetailCheck.issues.length} 项诊断，请按建议处理后重新检查。`
             : "该检查项已通过。"}
           icon={<PreflightDetailIcon size={20} />}
           details={preflightDetailItems}

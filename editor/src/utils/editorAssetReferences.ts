@@ -13,6 +13,7 @@ export interface EditorAssetReference {
   node_id: string;
   node_label: string;
   command_type: GameCommand["type"] | "loading_animation" | "loading_audio";
+  action?: string;
   command_index: number;
   field: string;
   location: string;
@@ -50,6 +51,7 @@ function reference(node: EditorNode, command: GameCommand | { type: "loading_ani
     node_id: node.id,
     node_label: node.data.label || node.id,
     command_type: command.type,
+    action: command.type === "bgm" ? command.action : undefined,
     command_index: commandIndex,
     field,
     location,

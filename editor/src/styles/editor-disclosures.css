@@ -1,0 +1,93 @@
+/* Disclosure headers are controls even before hover. Scope to authoring UI;
+   game previews, menus and native file pickers retain their own presentation. */
+body :is(
+  .novel-expand-toggle,
+  .provider-model-toggle,
+  .provider-system-prompt-panel > summary,
+  .animation-advanced-panel > summary,
+  .novel-processing-advanced > summary,
+  .novel-agent-task-panel > summary,
+  .novel-character-review > summary,
+  .runtime-layout-sidebar details > summary,
+  .runtime-layout-inspector details > summary,
+  .runtime-layout-fieldset > summary,
+  .runtime-theme-fieldset > summary,
+  .asset-studio-disclosure > summary,
+  .asset-studio-provenance > summary,
+  .generation-debug-panel > summary,
+  .preview-launch-maintenance > summary
+) {
+  box-sizing: border-box;
+  min-height: 40px;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--accent) 9%, var(--field));
+  color: var(--ink-strong);
+  box-shadow: none;
+  cursor: pointer;
+  text-align: left;
+  transition: background-color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard),
+    transform 180ms var(--ease-ui-out);
+  transform: none;
+}
+body :is(
+  .novel-expand-toggle,
+  .provider-model-toggle,
+  .provider-system-prompt-panel > summary,
+  .animation-advanced-panel > summary,
+  .novel-processing-advanced > summary,
+  .novel-agent-task-panel > summary,
+  .novel-character-review > summary,
+  .runtime-layout-sidebar details > summary,
+  .runtime-layout-inspector details > summary,
+  .runtime-layout-fieldset > summary,
+  .runtime-theme-fieldset > summary,
+  .asset-studio-disclosure > summary,
+  .asset-studio-provenance > summary,
+  .generation-debug-panel > summary,
+  .preview-launch-maintenance > summary
+):is(:hover, :focus-visible, [aria-expanded="true"]) {
+  border-color: color-mix(in srgb, var(--accent) 64%, var(--line));
+  background: color-mix(in srgb, var(--accent) 15%, var(--field));
+  box-shadow: none;
+}
+body :is(
+  .provider-system-prompt-panel, .animation-advanced-panel,
+  .novel-processing-advanced, .novel-agent-task-panel, .novel-character-review,
+  .runtime-layout-sidebar details, .runtime-layout-inspector details,
+  .runtime-layout-fieldset, .runtime-theme-fieldset, .asset-studio-disclosure,
+  .asset-studio-provenance, .generation-debug-panel, .preview-launch-maintenance
+)[open] > summary {
+  border-color: color-mix(in srgb, var(--accent) 64%, var(--line));
+}
+.editor-disclosure-state {
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 12%, var(--field));
+  color: var(--ink);
+}
+.novel-processing-advanced > summary::marker,
+.runtime-layout-fieldset > summary::marker,
+.runtime-theme-fieldset > summary::marker {
+  color: var(--accent);
+}
+
+/* The header moves on its own presentation layer; its card/track never moves.
+   Include transform explicitly: the global hover used to jump one pixel. */
+@media (hover: hover) and (pointer: fine) {
+  body :is(.novel-expand-toggle, .provider-model-toggle):hover:not(:disabled) {
+    transform: translateY(-1px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  body :is(.novel-expand-toggle, .provider-model-toggle) {
+    transition: background-color 80ms var(--ease-ui-out), border-color 80ms var(--ease-ui-out),
+      color 80ms var(--ease-ui-out), transform 120ms var(--ease-ui-out);
+  }
+  body :is(.novel-expand-toggle, .provider-model-toggle):hover:not(:disabled) {
+    transform: translateY(-.5px);
+  }
+}

@@ -1,3 +1,4 @@
+import { NumberInput } from "../common/NumberInput";
 import { ChevronLeft, ChevronRight, Move, RotateCcw, Scaling, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -515,7 +516,7 @@ export function SpritePlacementStudioDialog({
                 helpKey="command.sprite.offsetX"
                 onChange={(offset_x) => updateDraft({ offset_x })}
               />
-              <input data-help-key="editor.control" type="number" min={MIN_SPRITE_OFFSET_X} max={MAX_SPRITE_OFFSET_X} step={SPRITE_OFFSET_STEP} value={draft.offset_x} onChange={(event) => updateDraft({ offset_x: Number(event.target.value) })} />
+              <NumberInput data-help-key="editor.control" type="number" min={MIN_SPRITE_OFFSET_X} max={MAX_SPRITE_OFFSET_X} step={SPRITE_OFFSET_STEP} value={draft.offset_x} onChange={(event) => updateDraft({ offset_x: Number(event.target.value) })} />
             </label>
             <label>
               <span><Move size={15} /> Y 偏移 <output>{draft.offset_y.toFixed(1)}%</output></span>
@@ -528,7 +529,7 @@ export function SpritePlacementStudioDialog({
                 helpKey="command.sprite.offsetY"
                 onChange={(offset_y) => updateDraft({ offset_y })}
               />
-              <input data-help-key="editor.control" type="number" min={MIN_SPRITE_OFFSET_Y} max={MAX_SPRITE_OFFSET_Y} step={SPRITE_OFFSET_STEP} value={draft.offset_y} onChange={(event) => updateDraft({ offset_y: Number(event.target.value) })} />
+              <NumberInput data-help-key="editor.control" type="number" min={MIN_SPRITE_OFFSET_Y} max={MAX_SPRITE_OFFSET_Y} step={SPRITE_OFFSET_STEP} value={draft.offset_y} onChange={(event) => updateDraft({ offset_y: Number(event.target.value) })} />
             </label>
             <label>
               <span><Scaling size={15} /> 等比缩放 <output>{spriteScalePercent(draft.scale)}</output></span>
@@ -541,7 +542,7 @@ export function SpritePlacementStudioDialog({
                 helpKey="command.sprite.scale"
                 onChange={(scale) => updateDraft({ scale })}
               />
-              <input data-help-key="editor.control" type="number" min={MIN_SPRITE_SCALE} max={MAX_SPRITE_SCALE} step={SPRITE_SCALE_STEP} value={draft.scale} onChange={(event) => updateDraft({ scale: Number(event.target.value) })} />
+              <NumberInput data-help-key="editor.control" type="number" min={MIN_SPRITE_SCALE} max={MAX_SPRITE_SCALE} step={SPRITE_SCALE_STEP} value={draft.scale} onChange={(event) => updateDraft({ scale: Number(event.target.value) })} />
             </label>
           </div>
         </div>

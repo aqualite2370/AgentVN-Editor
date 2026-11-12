@@ -416,7 +416,9 @@ function collectCommandAssetReferences(command: GameCommand): Array<{ asset_id: 
   if (command.type === "background") return command.background_id ? [{ asset_id: command.background_id, asset_type: "background" }] : [];
   if (command.type === "show_image") return command.image_id ? [{ asset_id: command.image_id, asset_type: "ui", image_like: true }] : [];
   if (command.type === "video") return command.video_id ? [{ asset_id: command.video_id, asset_type: "video" }] : [];
-  if (command.type === "sprite") return command.sprite_id ? [{ asset_id: command.sprite_id, asset_type: "sprite" }] : [];
+  if (command.type === "sprite") return command.visible === false || !command.sprite_id
+    ? []
+    : [{ asset_id: command.sprite_id, asset_type: "sprite" }];
   if (command.type === "dialog") {
     const refs: Array<{ asset_id: string; asset_type: AssetType }> = [];
     if (command.portrait) refs.push({ asset_id: command.portrait, asset_type: "portrait" });
@@ -431,7 +433,9 @@ function collectCommandAssetReferences(command: GameCommand): Array<{ asset_id: 
     if (command.dialog_style?.background_asset_id) refs.push({ asset_id: command.dialog_style.background_asset_id, asset_type: "ui" });
     return refs;
   }
-  if (command.type === "bgm" && command.bgm_id) return [{ asset_id: command.bgm_id, asset_type: "bgm" }];
+  if (command.type === "bgm" && command.action !== "stop" && command.bgm_id) {
+    return [{ asset_id: command.bgm_id, asset_type: "bgm" }];
+  }
   if (command.type === "sfx") return command.sfx_id ? [{ asset_id: command.sfx_id, asset_type: "sfx" }] : [];
   if (command.type === "gallery_anchor") return command.asset_id ? [{ asset_id: command.asset_id, asset_type: "ui", image_like: true }] : [];
   if (command.type === "animation") return command.animation_asset_id
@@ -544,8 +548,8 @@ export function validateAssetReferences(script: RuntimeScript, manifest: GameMan
       issues.push(issue("opening_audio_playback", `Opening audio playback mode is invalid: ${String(track.playback)}.`, "error", `script.opening_audio.${index}.playback`));
     }
   }
-  for (const scene of scenesOf(script)) {
-    for (const command of scene.commands) {
+  for (const [sceneIndex, scene] of scenesOf(script).entries()) {
+    for (const [commandIndex, command] of scene.commands.entries()) {
       if (command.type === "background" && !isValidBackgroundFit(command.background_fit)) {
         issues.push(issue("background_fit", `Background command display mode is invalid: ${String(command.background_fit)}. GameCLI supports stretch, contain, and cover; invalid values fall back to stretch.`, "warning", `scene.${scene.scene_id}.background_fit`));
       }
@@ -557,10 +561,43 @@ export function validateAssetReferences(script: RuntimeScript, manifest: GameMan
       }
       for (const ref of collectCommandAssetReferences(command)) {
         const asset = assets.get(ref.asset_id);
+        const sceneLabel = scene.title?.trim() || `场景 ${sceneIndex + 1}`;
+        const field = command.type === "background" ? "背景素材"
+          : command.type === "show_image" ? "图片素材"
+          : command.type === "video" ? "视频素材"
+          : command.type === "sprite" ? "立绘素材"
+          : command.type === "dialog" ? ["portrait", "voice", "font_asset_id", "dialog_style.background_asset_id"]
+            .find((key) => key.split(".").reduce<unknown>((value, part) =>
+              value && typeof value === "object" ? (value as Record<string, unknown>)[part] : undefined, command) === ref.asset_id)
+              ?.replace("portrait", "头像素材")
+              .replace("voice", "语音素材")
+              .replace("font_asset_id", "字体素材")
+              .replace("dialog_style.background_asset_id", "对白框底图") ?? "对白素材"
+          : command.type === "narration" ? ["font_asset_id", "dialog_style.background_asset_id"]
+            .find((key) => key.split(".").reduce<unknown>((value, part) =>
+              value && typeof value === "object" ? (value as Record<string, unknown>)[part] : undefined, command) === ref.asset_id)
+              ?.replace("font_asset_id", "字体素材")
+              .replace("dialog_style.background_asset_id", "旁白框底图") ?? "旁白素材"
+          : command.type === "bgm" ? "音乐素材"
+          : command.type === "sfx" ? "音效素材"
+          : command.type === "gallery_anchor" ? "引用素材"
+          : "动画素材";
+        const action = command.type === "background" ? "设置背景"
+          : command.type === "show_image" ? "显示图片"
+          : command.type === "video" ? "播放视频"
+          : command.type === "sprite" ? "显示立绘"
+          : command.type === "bgm" ? command.action === "stop" ? "停止音乐" : "播放音乐"
+          : command.type === "sfx" ? "播放音效"
+          : command.type === "dialog" ? "显示对白"
+          : command.type === "narration" ? "显示旁白"
+          : command.type === "gallery_anchor" ? "图鉴展示"
+          : "播放动画";
+        const location = `位置：场景「${sceneLabel}」 · 事件 ${commandIndex + 1} · ${action} · ${field}`;
+        const issuePath = `script.scenes[${sceneIndex}].commands[${commandIndex}]`;
         if (!asset) {
-          issues.push(issue("missing_asset", `素材编号未打包（asset_id）：${ref.asset_id} 被剧情事件引用，但不在卡带素材清单中。原因：素材库里缺少该资源，或导出时没有收集到它。影响：GameCLI 播放到相关背景、立绘、头像、语音、BGM 或音效时可能显示/播放失败。解决方案：请在素材库中补充该资源，或把事件里的资源编号改成已存在的 asset_id。`, "error", `scene.${scene.scene_id}`));
+          issues.push(issue("missing_asset", `${location}：素材「${ref.asset_id}」未加入卡带素材清单，请在该事件重新选择。`, "error", issuePath));
         } else if (ref.image_like ? !(isImageLikeAssetType(asset.asset_type) || asset.mime_type?.startsWith("image/") === true) : !assetTypeMatchesExpected(asset.asset_type, ref.asset_type)) {
-          issues.push(issue("asset_type_mismatch", `素材类型不匹配：${ref.asset_id} 被剧情事件当作${assetTypeDisplayLabel(ref.asset_type)}使用，但素材清单登记为${assetTypeDisplayLabel(asset.asset_type)}。请在素材库修改素材类型，或在事件里重新选择合适素材。`, "error", `scene.${scene.scene_id}`));
+          issues.push(issue("asset_type_mismatch", `${location}引用素材「${asset.display_name?.trim() || asset.filename || ref.asset_id}」，但类型为${assetTypeDisplayLabel(asset.asset_type)}，需要${assetTypeDisplayLabel(ref.asset_type)}。请在此事件重新选择正确类型的素材。`, "error", issuePath));
         }
       }
     }

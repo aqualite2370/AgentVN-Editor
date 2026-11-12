@@ -1,3 +1,4 @@
+import { NumberInput } from "../common/NumberInput";
 import { Copy, EyeOff, History, Layers, List, Lock, Move, Plus, Redo2, RotateCw, Save, SkipForward, Trash2, Timer, Undo2, UploadCloud } from "lucide-react";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type MutableRefObject, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import {
@@ -40,6 +41,7 @@ import { RenpyTitleEditor } from "./RenpyTitleEditor";
 import { compileControlPresentation, layoutPresentationTargets } from "../../../../shared/cartridge/controlPresentation";
 import { ControlPresentationEditor } from "./ControlPresentationEditor";
 import { RenpyControlAppearanceEditor } from "./RenpyControlAppearanceEditor";
+import { GalleryGridSettings } from "./GalleryGridSettings";
 import { useControlPresentationPreview } from "../../utils/controlPresentationPreview";
 import { RenpyButtonRoleEditor } from "./RenpyButtonRoleEditor";
 import { RenpyRuntimePreview } from "./RenpyRuntimePreview";
@@ -212,6 +214,8 @@ const componentLabels: Record<string, string> = {
   settings_group: "设置项",
   history_list: "历史列表",
   gallery_grid: "画廊网格",
+  gallery_item: "画廊条目",
+  gallery_pagination: "画廊翻页按钮",
   about_panel: "关于面板",
   help_panel: "帮助面板",
   import_panel: "导入面板",
@@ -300,7 +304,7 @@ function isLayoutEditableComponent(component: UILayoutComponent): boolean {
 }
 
 function isStyleOnlyComponent(component: UILayoutComponent): boolean {
-  return component.component_type === "quick_button" || component.component_type === "choice_option";
+  return ["quick_button", "choice_option", "gallery_item", "gallery_pagination"].includes(component.component_type);
 }
 
 function isGeometryLocked(component: UILayoutComponent, components: UILayoutComponent[]): boolean {
@@ -2655,7 +2659,16 @@ export function RuntimeLayoutDesigner({ sessionRef }: { sessionRef?: MutableRefO
           {layoutType === "renpy" && screenId === "player" && <details><summary>共享快捷栏样式</summary><RenpyButtonRoleEditor draft={draft}
             page="player" onChange={(next) => commitUpdater(() => next)} /></details>}
           {selected ? <>
-            <header><strong>{componentLabel(selected)}</strong><small>{selectedIsStyleOnly ? "快捷按钮样式" : "布局组件"}</small></header>
+            <header><strong>{componentLabel(selected)}</strong><small>{selectedIsStyleOnly ? "重复控件样式" : "布局组件"}</small></header>
+            <GalleryGridSettings component={selected} onChange={setSelectedStyle} />
+            {["gallery_item", "gallery_pagination"].includes(selected.component_type) && layoutType !== "renpy"
+              && <RenpyControlAppearanceEditor component={selected} assets={assetManifest}
+                advancedEnabled={draft.advancedPresentationEnabled} onStyle={setSelectedStyle}
+                onStateStyle={(state, patch) => updateSelectedComponent(component => ({
+                  ...component, stateStyles: { ...component.stateStyles,
+                    [state]: { ...component.stateStyles?.[state], ...patch } },
+                }))}
+                onImport={(asset, patch) => { setAssetManifest([asset, ...assetManifest]); setSelectedStyle(patch); }} />}
             {layoutType === "renpy" && <RenpyControlAppearanceEditor key={`${screenId}:${selected.component_id}`}
               component={selected} assets={assetManifest} advancedEnabled={draft.advancedPresentationEnabled}
               onStyle={setSelectedStyle}
@@ -2672,7 +2685,7 @@ export function RuntimeLayoutDesigner({ sessionRef }: { sessionRef?: MutableRefO
               <summary>位置与尺寸</summary>
               {(["x", "y", "width", "height"] as const).map((field) => {
                 const autoSizedField = selectedIsCustomButtonContainer && (field === "width" || field === "height");
-                return <label key={field}>{field}<div className="runtime-layout-input-pair"><RangeControl disabled={selectedGeometryLocked || autoSizedField || selectedIsFixedQuickMenu} ariaLabel={`${field} slider`} value={selectedRect[field]} min={field === "width" || field === "height" ? 2 : 0} max={100} step={1} helpKey="layout.rect" onChange={(value) => updateSelectedComponentRectField(field, value)} /><input disabled={selectedGeometryLocked || autoSizedField || selectedIsFixedQuickMenu} type="number" value={selectedRect[field]} min={field === "width" || field === "height" ? 2 : 0} max={100} data-help-key="layout.rect" onChange={(event) => updateSelectedComponentRectField(field, Number(event.target.value))} /></div></label>;
+                return <label key={field}>{field}<div className="runtime-layout-input-pair"><RangeControl disabled={selectedGeometryLocked || autoSizedField || selectedIsFixedQuickMenu} ariaLabel={`${field} slider`} value={selectedRect[field]} min={field === "width" || field === "height" ? 2 : 0} max={100} step={1} helpKey="layout.rect" onChange={(value) => updateSelectedComponentRectField(field, value)} /><NumberInput disabled={selectedGeometryLocked || autoSizedField || selectedIsFixedQuickMenu} type="number" value={selectedRect[field]} min={field === "width" || field === "height" ? 2 : 0} max={100} data-help-key="layout.rect" onChange={(event) => updateSelectedComponentRectField(field, Number(event.target.value))} /></div></label>;
               })}
               {selectedIsCustomButtonContainer && (
                 <div className="runtime-layout-auto-size-note" role="note">
@@ -2683,7 +2696,7 @@ export function RuntimeLayoutDesigner({ sessionRef }: { sessionRef?: MutableRefO
               <label>锚点<RichSelect disabled={selectedGeometryLocked || selectedIsCustomButtonContainer || selectedIsFixedQuickMenu} ariaLabel="布局锚点" value={selectedRect.anchor ?? ""} options={anchorLabels} helpKey="layout.anchor" onChange={(anchor) => setSelectedRect(applyCanvasAnchorPreset(selectedRect, anchor ? anchor as UILayoutAnchor : undefined))} /></label>
               <div className="runtime-layout-pixel-readout" data-help-key="layout.pixelPreview"><strong>当前画布像素</strong><span>{selectedPixelRect ? `x ${selectedPixelRect.x}px / y ${selectedPixelRect.y}px / ${selectedPixelRect.width} x ${selectedPixelRect.height}px` : "等待画布测量"}</span></div>
             </details>}
-            {selectedIsStyleOnly && (
+            {selectedIsStyleOnly && selected.component_type === "quick_button" && (
               <div className="runtime-layout-auto-size-note" role="note" data-testid="quick-button-style-note">
                 <strong>快捷按钮样式</strong>
                 <span>这里可以调整按钮颜色、圆角、透明度和图案，按钮位置会随快捷菜单一起变化。</span>
@@ -2747,7 +2760,7 @@ export function RuntimeLayoutDesigner({ sessionRef }: { sessionRef?: MutableRefO
                     背景模糊
                     <div className="runtime-layout-input-pair">
                       <RangeControl disabled={selectedLocked} ariaLabel="背景模糊" min={0} max={48} step={1} value={Number(selected.style?.backdropBlur ?? 12)} helpKey="layout.mask.blur" onChange={(value) => setSelectedStyle({ backdropBlur: value })} />
-                      <input data-help-key="editor.control" disabled={selectedLocked} type="number" min={0} max={48} value={Number(selected.style?.backdropBlur ?? 12)} onChange={(event) => setSelectedStyle({ backdropBlur: Math.max(0, Math.min(48, Number(event.target.value))) })} />
+                      <NumberInput data-help-key="editor.control" disabled={selectedLocked} type="number" min={0} max={48} value={Number(selected.style?.backdropBlur ?? 12)} onChange={(event) => setSelectedStyle({ backdropBlur: Math.max(0, Math.min(48, Number(event.target.value))) })} />
                     </div>
                   </label>
                 )}
@@ -2755,7 +2768,7 @@ export function RuntimeLayoutDesigner({ sessionRef }: { sessionRef?: MutableRefO
                   不透明度
                   <div className="runtime-layout-input-pair">
                     <RangeControl disabled={selectedLocked} ariaLabel="遮罩不透明度" min={0.1} max={1} step={0.05} value={Number(selected.style?.opacity ?? 1)} helpKey="layout.mask.opacity" onChange={(value) => setSelectedStyle({ opacity: value })} />
-                    <input data-help-key="editor.control" disabled={selectedLocked} type="number" min={0.1} max={1} step={0.05} value={Number(selected.style?.opacity ?? 1)} onChange={(event) => setSelectedStyle({ opacity: Math.max(0.1, Math.min(1, Number(event.target.value))) })} />
+                    <NumberInput data-help-key="editor.control" disabled={selectedLocked} type="number" min={0.1} max={1} step={0.05} value={Number(selected.style?.opacity ?? 1)} onChange={(event) => setSelectedStyle({ opacity: Math.max(0.1, Math.min(1, Number(event.target.value))) })} />
                   </div>
                 </label>
                 {(selected.style?.maskMode ?? "blur") === "image" && (
@@ -2790,7 +2803,7 @@ export function RuntimeLayoutDesigner({ sessionRef }: { sessionRef?: MutableRefO
                   圆角
                   <div className="runtime-layout-input-pair">
                     <RangeControl disabled={selectedLocked} ariaLabel="遮罩圆角" min={0} max={96} step={1} value={Number(selected.style?.borderRadius ?? 12)} helpKey="layout.mask.radius" onChange={(value) => setSelectedStyle({ borderRadius: value })} />
-                    <input data-help-key="editor.control" disabled={selectedLocked} type="number" min={0} max={96} value={Number(selected.style?.borderRadius ?? 12)} onChange={(event) => setSelectedStyle({ borderRadius: Math.max(0, Math.min(96, Number(event.target.value))) })} />
+                    <NumberInput data-help-key="editor.control" disabled={selectedLocked} type="number" min={0} max={96} value={Number(selected.style?.borderRadius ?? 12)} onChange={(event) => setSelectedStyle({ borderRadius: Math.max(0, Math.min(96, Number(event.target.value))) })} />
                   </div>
                 </label>
                 <label>
@@ -2804,7 +2817,7 @@ export function RuntimeLayoutDesigner({ sessionRef }: { sessionRef?: MutableRefO
                   边框宽度
                   <div className="runtime-layout-input-pair">
                     <RangeControl disabled={selectedLocked} ariaLabel="遮罩边框宽度" min={0} max={8} step={1} value={Number(selected.style?.borderWidth ?? 1)} helpKey="layout.mask.borderWidth" onChange={(value) => setSelectedStyle({ borderWidth: value })} />
-                    <input data-help-key="editor.control" disabled={selectedLocked} type="number" min={0} max={8} value={Number(selected.style?.borderWidth ?? 1)} onChange={(event) => setSelectedStyle({ borderWidth: Math.max(0, Math.min(8, Number(event.target.value))) })} />
+                    <NumberInput data-help-key="editor.control" disabled={selectedLocked} type="number" min={0} max={8} value={Number(selected.style?.borderWidth ?? 1)} onChange={(event) => setSelectedStyle({ borderWidth: Math.max(0, Math.min(8, Number(event.target.value))) })} />
                   </div>
                 </label>
                 <label>
@@ -3039,7 +3052,7 @@ export function RuntimeLayoutDesigner({ sessionRef }: { sessionRef?: MutableRefO
                     value={selected.style?.[field] ?? (field === "backgroundOpacity"
                       ? resolveUILayoutBackgroundOpacity(selected.component_type, selected.style) : selected.style?.opacity ?? 1)}
                     onChange={value => setSelectedStyle({ [field]: value })} />
-                  <input disabled={selectedLocked} type="number" aria-label={label} min={0} max={1} step={0.05}
+                  <NumberInput disabled={selectedLocked} type="number" aria-label={label} min={0} max={1} step={0.05}
                     value={selected.style?.[field] ?? (field === "backgroundOpacity"
                       ? resolveUILayoutBackgroundOpacity(selected.component_type, selected.style) : selected.style?.opacity ?? 1)}
                     onChange={event => { const value = event.currentTarget.valueAsNumber;
@@ -3048,7 +3061,7 @@ export function RuntimeLayoutDesigner({ sessionRef }: { sessionRef?: MutableRefO
                 <button type="button" disabled={selectedLocked || selected.style?.[field] === undefined}
                   aria-label={`${label}恢复继承`} onClick={() => setSelectedStyle({ [field]: undefined })}>恢复继承</button>
               </label>)}
-              {(selectedIsStyleOnly ? ["borderWidth", "borderRadius", "opacity"] as const : ["borderWidth", "borderRadius", "opacity", "padding", "gap", "backdropBlur", "fontSize"] as const).filter(field => field !== "opacity" || !supportsUILayoutOpacityLayers(selected.component_type)).map((field, index) => <label key={field}>{field}<div className="runtime-layout-input-pair"><RangeControl disabled={selectedLocked} ariaLabel={`${field} slider`} min={field === "opacity" ? 0.1 : 0} max={field === "fontSize" ? 40 : 48} step={field === "opacity" ? 0.05 : 1} value={Number(selected.style?.[field] ?? (field === "opacity" ? 1 : 0))} helpKey="layout.styleNumber" onChange={(value) => setSelectedStyle({ [field]: value })} /><input disabled={selectedLocked} type="number" data-help-key="layout.styleNumber" min={0} max={100} step={field === "opacity" ? 0.05 : 1} value={Number(selected.style?.[field] ?? (field === "opacity" ? 1 : 0))} onChange={(event) => setSelectedStyle({ [field]: Number(event.target.value) })} /></div>{index === -1 ? null : null}</label>)}
+              {(selectedIsStyleOnly ? ["borderWidth", "borderRadius", "opacity"] as const : ["borderWidth", "borderRadius", "opacity", "padding", "gap", "backdropBlur", "fontSize"] as const).filter(field => field !== "opacity" || !supportsUILayoutOpacityLayers(selected.component_type)).map((field, index) => <label key={field}>{field}<div className="runtime-layout-input-pair"><RangeControl disabled={selectedLocked} ariaLabel={`${field} slider`} min={field === "opacity" ? 0.1 : 0} max={field === "fontSize" ? 40 : 48} step={field === "opacity" ? 0.05 : 1} value={Number(selected.style?.[field] ?? (field === "opacity" ? 1 : 0))} helpKey="layout.styleNumber" onChange={(value) => setSelectedStyle({ [field]: value })} /><NumberInput disabled={selectedLocked} type="number" data-help-key="layout.styleNumber" min={0} max={100} step={field === "opacity" ? 0.05 : 1} value={Number(selected.style?.[field] ?? (field === "opacity" ? 1 : 0))} onChange={(event) => setSelectedStyle({ [field]: Number(event.target.value) })} /></div>{index === -1 ? null : null}</label>)}
               {!selectedIsStyleOnly && <label>阴影<RichSelect disabled={selectedLocked} ariaLabel="阴影样式" value={selected.style?.shadow ?? ""} helpKey="layout.shadow" options={[{ value: "", label: "默认" }, { value: "none", label: "无" }, { value: "soft", label: "柔和" }, { value: "strong", label: "强" }]} onChange={(shadow) => setSelectedStyle({ shadow: shadow ? shadow as UILayoutComponentStyle["shadow"] : undefined })} /></label>}
             </LazyRuntimeLayoutFieldset>}
             {!selectedIsCustomButtonContainer && !selectedIsStyleOnly && <LazyRuntimeLayoutFieldset key={`text-${selected.component_id}`} summary="文本">

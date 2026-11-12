@@ -9,7 +9,7 @@ import type {
   SceneCandidate,
   SourceDocument,
 } from "./types";
-import { createSourceMapping, updateSourceMappingAfterEdit } from "./sourceMapping";
+import { createSourceMapping, splitsSurrogatePair, updateSourceMappingAfterEdit } from "./sourceMapping";
 import { nextUniqueSceneId, remapSceneSelfTargets, sceneIdBase } from "./sceneIdUniqueness";
 import { normalizeNovelSceneForRuntime } from "./normalizeNovelSceneForRuntime";
 import { assetTypeDisplayLabel, assetTypeMatchesExpected, isImageLikeAssetType } from "../../../shared/cartridge/assetTaxonomy";
@@ -124,14 +124,21 @@ function characterKeys(characters: CharacterCandidate[], sceneCharacters: string
 }
 
 function isTraceableExcerpt(document: SourceDocument, start: number, end: number, excerpt: string): boolean {
-  const source = document.normalized_text.slice(start, end);
-  const probe = excerpt.trim().replace(/\s+/g, " ").slice(0, 80);
-  if (!probe) return false;
-  return source.replace(/\s+/g, " ").includes(probe);
+  const text = document.normalized_text;
+  if (!excerpt.trim() || excerpt.length > end - start) return false;
+  const source = text.slice(start, end);
+  let match = source.indexOf(excerpt);
+  while (match !== -1) {
+    if (!splitsSurrogatePair(source, match) && !splitsSurrogatePair(source, match + excerpt.length)) return true;
+    match = source.indexOf(excerpt, match + 1);
+  }
+  return false;
 }
 
 function hasValidRange(document: SourceDocument, start: number, end: number): boolean {
-  return Number.isFinite(start) && Number.isFinite(end) && start >= 0 && end >= start && end <= document.normalized_text.length;
+  const text = document.normalized_text;
+  return Number.isInteger(start) && Number.isInteger(end) && start >= 0 && end > start && end <= text.length
+    && !splitsSurrogatePair(text, start) && !splitsSurrogatePair(text, end);
 }
 
 function assetById(projectAssets: AssetRef[] = []): Map<string, AssetRef> {
@@ -389,8 +396,10 @@ export function validateNovelBlueprintWrite(input: NovelBlueprintValidationInput
   const candidateRangeValid = hasValidRange(input.document, input.sceneCandidate.start_offset, input.sceneCandidate.end_offset);
   const mapping = adapted.source_mapping;
   const mappingTraceable =
+    candidateRangeValid &&
     mapping.document_id === input.document.document_id &&
-    hasValidRange(input.document, mapping.start_offset, mapping.end_offset) &&
+    mapping.start_offset === input.sceneCandidate.start_offset &&
+    mapping.end_offset === input.sceneCandidate.end_offset &&
     isTraceableExcerpt(input.document, mapping.start_offset, mapping.end_offset, mapping.source_excerpt);
 
   if (!adapted.source_scene_candidate_id || adapted.source_scene_candidate_id !== input.sceneCandidate.scene_candidate_id) {

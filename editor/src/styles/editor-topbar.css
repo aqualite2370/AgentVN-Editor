@@ -229,13 +229,41 @@
   animation: none !important;
   opacity: 1;
 }
-.toolbar-popover.workspace-task-panel:not(.cartridge).is-open {
+.toolbar-popover.workspace-task-panel:not(.cartridge).is-open:not(.is-entered):not(.is-morph-settled) {
   animation: workspace-task-enter calc(800ms / var(--editor-workspace-playback-rate)) var(--ease-editor-container) both !important;
 }
-.toolbar-panel-presentation-layer { display: contents; }
+.toolbar-panel-presentation-layer {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+/* Keep the eight navigation targets on the compact workbench's original
+   track. Only the authoring area expands toward the Inspector. */
+@media (min-width: 901px) and (min-height: 481px) {
+  .toolbar-popover.workspace-task-panel.advanced .advanced-tools-panel > nav.glass-selection-group {
+    width: min(950px, calc(var(--workspace-task-width) - 30px));
+  }
+  .toolbar-popover.workspace-task-panel.advanced.is-layout-mode {
+    padding: 14px !important;
+  }
+}
 .toolbar-popover.is-morphing {
   transform-origin: top left;
   will-change: transform, opacity;
+}
+.toolbar-popover.has-container-morph {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  animation: none !important;
+  opacity: 1 !important;
+  transform: none !important;
+}
+.editor-container-morph-shell {
+  contain: paint;
+  will-change: transform, clip-path;
 }
 /* Editor FLIP deltas are measured from the top-left corner. The legacy wide
    layout rule uses a centered origin and outranks the generic morph selector;
@@ -251,16 +279,16 @@
 @keyframes workspace-task-enter {
   from {
     opacity: var(--workspace-task-enter-start-opacity, 0);
-    transform: var(--workspace-task-enter-start-transform, translate3d(var(--workspace-task-motion-distance), 0, 0) scale(0.99));
+    transform: var(--workspace-task-enter-start-transform, translate3d(var(--workspace-task-motion-distance), 0, 0));
   }
-  to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
 }
 @keyframes workspace-task-exit {
   from {
     opacity: var(--workspace-task-exit-start-opacity, 1);
-    transform: var(--workspace-task-exit-start-transform, translate3d(0, 0, 0) scale(1));
+    transform: var(--workspace-task-exit-start-transform, translate3d(0, 0, 0));
   }
-  to { opacity: 0; transform: translate3d(var(--workspace-task-motion-distance), 0, 0) scale(0.99); }
+  to { opacity: 0; transform: translate3d(var(--workspace-task-motion-distance), 0, 0); }
 }
 
 .workspace-surface-nav button.is-active svg {

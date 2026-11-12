@@ -204,7 +204,7 @@
 /* Position within the content region, never the full-frame authored rect.
    These overrides are scoped to the Ren'Py frame; AgentVN remains untouched. */
 .ui-skin-scope[data-layout-type="renpy"] .renpy-menu-content > :is(
-  .settings-renpy, .history-list, .about-card, .help-card, .gallery-grid, .save-grid
+  .settings-renpy, .history-list, .about-card, .help-card, .gallery-grid, .gallery-panel, .save-grid
 ) {
   position: relative !important;
   inset: auto !important;

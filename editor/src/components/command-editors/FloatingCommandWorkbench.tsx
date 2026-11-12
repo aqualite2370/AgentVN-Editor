@@ -1,3 +1,4 @@
+import { NumberInput } from "../common/NumberInput";
 import {
   BookOpenText,
   Clapperboard,
@@ -737,7 +738,7 @@ export function FloatingCommandWorkbench({
           {bgmFadeMs > 0 && (
             <label>
               {bgmAction === "play" ? "淡入时长（毫秒）" : "淡出时长（毫秒）"}
-              <input
+              <NumberInput
                 type="number"
                 min="0"
                 step="100"
@@ -1068,7 +1069,7 @@ export function FloatingCommandWorkbench({
           </div>
           <form className="workbench-insert-form" noValidate onSubmit={submitInsert}>
             <label htmlFor="workbench-insert-index">事件序号</label>
-            <input data-help-key="editor.control"
+            <NumberInput data-help-key="editor.control"
               ref={insertInputRef}
               id="workbench-insert-index"
               type="number"

@@ -27,7 +27,7 @@ class NovelProcessingConfig(NovelContractModel):
     chunkMinChars: int = Field(default=2_000, ge=1)
     chunkOverlapChars: int = Field(default=500, ge=0)
     maxConcurrentAgents: int = Field(default=3, ge=1, le=10)
-    maxRetryCount: int = Field(default=2, ge=0)
+    maxRetryCount: int = Field(default=5, ge=0)
     lowChapterConfidenceThreshold: float = Field(default=0.65, ge=0.0, le=1.0)
     previousContextSummaryMaxChars: int = Field(default=800, ge=0)
     chapterSummaryMaxChars: int = Field(default=1_500, ge=0)
@@ -177,7 +177,7 @@ class NovelProcessJob(NovelContractModel):
     actualOutputTokens: int = Field(default=0, ge=0)
     actualTotalTokens: int = Field(default=0, ge=0)
     maxConcurrency: int = Field(default=3, ge=1, le=10)
-    maxRetryCount: int = Field(default=2, ge=0)
+    maxRetryCount: int = Field(default=5, ge=0)
     userInstruction: str | None = None
     outputFormat: str = "markdown"
     promptVersion: str = "novel-processing-v1"

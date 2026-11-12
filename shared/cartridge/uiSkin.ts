@@ -66,6 +66,8 @@ export type UILayoutComponentType =
   | "settings_group"
   | "history_list"
   | "gallery_grid"
+  | "gallery_item"
+  | "gallery_pagination"
   | "about_panel"
   | "help_panel"
   | "import_panel"
@@ -115,6 +117,7 @@ export interface UILayoutComponentStyle {
   backdropBlur?: number;
   textAlign?: "left" | "center" | "right";
   columns?: number;
+  rows?: number;
   quickMenuDirection?: UILayoutQuickMenuDirection;
   quickMenuVariant?: QuickMenuVariant;
 }
@@ -425,6 +428,8 @@ const allowedComponentTypes: UILayoutComponentType[] = [
   "settings_group",
   "history_list",
   "gallery_grid",
+  "gallery_item",
+  "gallery_pagination",
   "about_panel",
   "help_panel",
   "import_panel",
@@ -1009,6 +1014,7 @@ export function migrateLegacyUISkinLayout(layout?: UISkinLayout): UISkinLayout {
  * never contain `mobileRect`.
  */
 function finalizeUnifiedLayout(layout: UISkinLayout): UISkinLayout {
+  layout = ensureGalleryControls(layout);
   return {
     ...layout,
     ui_layout_version: UI_LAYOUT_VERSION,
@@ -1124,6 +1130,19 @@ export function ensureRenpyHelpScreen(layout: UISkinLayout): UISkinLayout {
       }],
     }],
   };
+}
+
+/** Missing authoring slots inherit the theme; existing values stay untouched. */
+export function ensureGalleryControls(layout: UISkinLayout): UISkinLayout {
+  return { ...layout, screens: layout.screens.map(screen => screen.screen_id !== "gallery" ? screen : {
+    ...screen, components: [...screen.components,
+      ...(["gallery_item", "gallery_pagination"] as const)
+        .filter(type => !screen.components.some(component => component.component_type === type))
+        .map(type => ({ component_id: type, component_type: type,
+          label: type === "gallery_item" ? "画廊条目" : "画廊翻页按钮",
+          rect: { x: 0, y: 0, width: 100, height: 10 } })),
+    ],
+  }) };
 }
 
 /**
@@ -1266,6 +1285,7 @@ function validateStyle(style: unknown, path: string, issues: ValidationIssue[], 
     "backdropBlur",
     "textAlign",
     "columns",
+    "rows",
     "quickMenuDirection",
     "quickMenuVariant",
   ]);
@@ -1286,7 +1306,7 @@ function validateStyle(style: unknown, path: string, issues: ValidationIssue[], 
     if (key === "backgroundFit" && !["stretch", "contain", "cover"].includes(String(value))) {
       issues.push(issue("ui_background_fit", `背景图显示模式不支持（backgroundFit）：${String(value)} 不是有效选项。原因：GameCLI 只支持 stretch、contain 或 cover。影响：玩家端无法确定背景图如何铺放。解决方案：请在布局设计器中重新选择背景显示模式。`, "error", `${path}.${key}`));
     }
-    if (["borderWidth", "borderRadius", "opacity", "backgroundOpacity", "contentOpacity", "fontSize", "fontWeight", "padding", "gap", "backdropBlur", "columns"].includes(key)) {
+    if (["borderWidth", "borderRadius", "opacity", "backgroundOpacity", "contentOpacity", "fontSize", "fontWeight", "padding", "gap", "backdropBlur", "columns", "rows"].includes(key)) {
       if (typeof value !== "number" || !Number.isFinite(value)) issues.push(issue("ui_style_number", `界面样式数值无效（${key}）：${path}.${key} 必须是有限数字。原因：样式参数被写成了空值、文本或无限值。影响：GameCLI 无法正确渲染该控件。解决方案：请在布局设计器中重新输入该数值。`, "error", `${path}.${key}`));
       if (["backgroundOpacity", "contentOpacity"].includes(key) && typeof value === "number"
         && Number.isFinite(value) && (value < 0 || value > 1)) {
@@ -1297,6 +1317,10 @@ function validateStyle(style: unknown, path: string, issues: ValidationIssue[], 
       }
       if (key === "backdropBlur" && typeof value === "number" && Number.isFinite(value) && (value < 0 || value > 48)) {
         issues.push(issue("ui_backdrop_blur", `背景模糊值超出范围：${path}.${key} 必须在 0 到 48 之间。`, "error", `${path}.${key}`));
+      }
+      if ((key === "columns" || key === "rows") && typeof value === "number"
+        && (!Number.isInteger(value) || value < 1 || value > 8)) {
+        issues.push(issue("ui_grid_range", `${path}.${key} 必须是 1 到 8 的整数。`, "error", `${path}.${key}`));
       }
     }
     if (key === "shadow" && !["none", "soft", "strong"].includes(String(value))) {
@@ -1979,7 +2003,11 @@ export function getDefaultUISkinLayout(): UISkinLayout {
       { screen_id: "save_load", components: [{ component_id: "save_grid", component_type: "save_slot_grid", required: true, rect: { x: 4, y: 20, width: 92, height: 74 }, style: { columns: 3, gap: 14 } }] },
       { screen_id: "preferences", components: [{ component_id: "settings_group", component_type: "settings_group", required: true, rect: { x: 5, y: 18, width: 62, height: 70 }, mobileRect: { x: 5, y: 16, width: 90, height: 76 } }] },
       { screen_id: "history", components: [{ component_id: "history_list", component_type: "history_list", required: true, rect: { x: 5, y: 18, width: 90, height: 72 } }] },
-      { screen_id: "gallery", components: [{ component_id: "gallery_grid", component_type: "gallery_grid", required: true, rect: { x: 5, y: 18, width: 90, height: 72 }, style: { columns: 4, gap: 14 } }] },
+      { screen_id: "gallery", components: [
+        { component_id: "gallery_grid", component_type: "gallery_grid", label: "画廊面板", required: true, rect: { x: 5, y: 18, width: 90, height: 72 }, style: { columns: 4, rows: 2, gap: 14 } },
+        { component_id: "gallery_item", component_type: "gallery_item", label: "画廊条目", rect: { x: 0, y: 0, width: 100, height: 10 } },
+        { component_id: "gallery_pagination", component_type: "gallery_pagination", label: "画廊翻页按钮", rect: { x: 0, y: 0, width: 100, height: 10 } },
+      ] },
       { screen_id: "about", components: [{ component_id: "about_panel", component_type: "about_panel", required: true, rect: { x: 5, y: 18, width: 58, height: 48 }, mobileRect: { x: 5, y: 18, width: 90, height: 58 } }] },
     ],
   });

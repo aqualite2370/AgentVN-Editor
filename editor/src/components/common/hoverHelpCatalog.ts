@@ -1549,6 +1549,12 @@ export const hoverHelpCatalog = {
     usage: "“现有旁白框”保持原有行为；“暗幕居中”会压暗场景、隐藏旁白框，并把文本直接显示在屏幕中央。",
     effect: "导出后写入 NarrationCommand.narration_style。旧项目未设置时默认按现有旁白框播放。",
   },
+  "command.narration.style.applyScene": {
+    title: "应用到该场景旁白",
+    purpose: "将当前显示样式应用到这个场景的全部旁白。",
+    usage: "修改呈现模式、底图和文字样式；保留各句文本、独立字体及对白模式。",
+    effect: "其他场景不变，整次操作可撤销。",
+  },
   "command.narration.style.applyAll": {
     title: "应用旁白显示样式到全部旁白",
     purpose: "把当前旁白的呈现模式、底图和文字样式批量应用到项目中的全部旁白。",

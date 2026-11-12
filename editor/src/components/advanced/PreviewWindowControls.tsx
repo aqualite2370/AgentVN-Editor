@@ -10,6 +10,7 @@ import { manifestAssetsFromProjectAssets } from "../../utils/projectAssets";
 import { parseProjectJson } from "../../utils/projectImport";
 import type { RuntimeScript } from "../../../../shared/cartridge/types";
 import { reportFrontendError } from "../../../../shared/logging/frontendErrorLogger";
+import { CartridgeValidationError } from "../../../../shared/cartridge/validationError";
 
 type PreviewProgressTone = "idle" | "running" | "success" | "error";
 
@@ -56,6 +57,7 @@ const LEGACY_GAMECLI_PREVIEW_MAX_BYTES = 8 * 1024 * 1024;
 
 export interface PreviewWindowSession {
   message?: string;
+  diagnostics?: Array<{ code: string; message: string }>;
   progress: PreviewProgressState;
   logs: PreviewLogEntry[];
 }
@@ -76,6 +78,7 @@ export function PreviewWindowControls({ sessionRef, onBusyChange, onBack }: {
   const inFlightRef = useRef(false);
   const lifetimeRef = useRef<object | null>(null);
   const [message, setMessage] = useState<string | undefined>(sessionRef?.current?.message);
+  const [diagnostics, setDiagnostics] = useState(sessionRef?.current?.diagnostics ?? []);
   const [progress, setProgress] = useState<PreviewProgressState>(sessionRef?.current?.progress ?? {
     percent: 0,
     label: "等待预览",
@@ -91,8 +94,8 @@ export function PreviewWindowControls({ sessionRef, onBusyChange, onBack }: {
   }, []);
 
   useEffect(() => {
-    if (sessionRef) sessionRef.current = { message, progress, logs };
-  }, [message, progress, logs, sessionRef]);
+    if (sessionRef) sessionRef.current = { message, progress, logs, diagnostics };
+  }, [message, progress, logs, diagnostics, sessionRef]);
 
   // Query only while this task is mounted. Cancel stale reads across operations
   // and remounts; process status must never overwrite the operation's error/log.
@@ -170,6 +173,7 @@ export function PreviewWindowControls({ sessionRef, onBusyChange, onBack }: {
       setLogs([]);
     };
     setMessage("正在从后端重新加载当前工程...");
+    setDiagnostics([]);
     setLogs([]);
     updateProgress(12, "重新加载工程", `正在读取工程 ${projectId} 的已保存详情。`);
     addLog("开始从后端重新加载当前工程。");
@@ -233,6 +237,7 @@ export function PreviewWindowControls({ sessionRef, onBusyChange, onBack }: {
   async function syncPreview() {
     if (!beginOperation()) return;
     setMessage("正在生成临时预览卡带...");
+    setDiagnostics([]);
     setLogs([]);
     updateProgress(4, "准备预览", "正在读取当前编辑器内存状态。");
     addLog("开始生成 GameCLI 预览。");
@@ -243,11 +248,11 @@ export function PreviewWindowControls({ sessionRef, onBusyChange, onBack }: {
       const errors = issues.filter((issue) => issue.severity !== "warning");
       const warnings = issues.filter((issue) => issue.severity === "warning").map((issue) => issue.message);
       if (errors.length > 0) {
-        const detail = errors.map((issue) => issue.message).join("\n");
-        const text = `预览失败：${detail}`;
-        setMessage(text);
+        const detail = `发现 ${errors.length} 项校验问题，请按下方编号查看位置。`;
+        setDiagnostics(errors.map(({ code, message }) => ({ code, message })));
+        setMessage(detail);
         updateProgress(10, "校验失败", detail, "error");
-        addLog(`校验失败：${detail}`, "error");
+        addLog(`校验未通过（${errors.length} 项）。`, "error");
         setNotice({
           tone: "error",
           message: "GameCLI 预览前校验失败",
@@ -344,7 +349,11 @@ export function PreviewWindowControls({ sessionRef, onBusyChange, onBack }: {
       addLog(result.message, "success");
     } catch (error) {
       reportFrontendError("editor.preview", error, { operation: "open" });
-      const detail = errorText(error, "GameCLI 预览启动失败。");
+      const validationFailure = error instanceof CartridgeValidationError;
+      const detail = validationFailure
+        ? `发现 ${error.issues.length} 项校验问题，请按下方编号查看位置。`
+        : errorText(error, "GameCLI 预览启动失败。");
+      if (validationFailure) setDiagnostics(error.issues);
       setMessage(detail);
       updateProgress(progress.percent, "预览失败", detail, "error");
       addLog(detail, "error");
@@ -354,7 +363,9 @@ export function PreviewWindowControls({ sessionRef, onBusyChange, onBack }: {
         source: "GameCLI Preview",
         detail,
         error,
-        action: "确认正在使用 AgentVN 桌面版；检查 GameCLI 是否已构建，或设置 AGENTVN_GAMECLI_EXE 指向可执行文件。",
+        action: validationFailure
+          ? "按预览详情中的场景和事件序号修正素材，再重试。"
+          : "确认正在使用 AgentVN 桌面版；检查 GameCLI 是否已构建，或设置 AGENTVN_GAMECLI_EXE 指向可执行文件。",
         context: {
           selectedNodeId: selectedNode?.id,
           entrySceneId: previewScript.entry_scene_id,
@@ -443,6 +454,13 @@ export function PreviewWindowControls({ sessionRef, onBusyChange, onBack }: {
         <section className="gamecli-preview-detail" aria-label="GameCLI 预览详情">
           <strong>预览详情</strong>
           <p>{message}</p>
+          {diagnostics.length > 0 && (
+            <ol className="gamecli-preview-issues" aria-label="预览校验问题">
+              {diagnostics.map((issue, index) => (
+                <li key={`${issue.code}-${index}`}>{issue.message}</li>
+              ))}
+            </ol>
+          )}
         </section>
       )}
       <details className="preview-launch-maintenance">

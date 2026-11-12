@@ -1,4 +1,5 @@
 import inspect
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -15,6 +16,7 @@ from app.models.novel_import import (
     CharacterCandidate,
     ConflictPoint,
     NovelAiChapterScenePlan,
+    NovelAiChapterSceneBatch,
     NovelAiAdaptSceneRequest,
     NovelAiBranchSuggestionResponse,
     NovelAiChunkAnalysis,
@@ -38,6 +40,18 @@ from app.services.novel_import_service import NovelImportService, suggested_scen
 
 def _provider_selection() -> dict[str, object]:
     return {"connection_id": "conn", "model_id": "model", "base_url": "http://localhost", "api_key": "sk-test"}
+
+
+def _bounded_batch(prompt):
+    data = json.loads(prompt.split("本批输入 JSON:\n", 1)[1])
+    text, start, count = data["text"], data["start_offset"], data["min_scene_count"]
+    cuts = [round(len(text) * i / count) for i in range(count + 1)]
+    return NovelAiChapterSceneBatch(scenes=[{
+        "title": f"场景{i + 1}", "summary": "人物关系发生变化。",
+        "start_offset": start + cuts[i], "end_offset": start + cuts[i + 1],
+        "start_quote": text[cuts[i]:cuts[i + 1]][:24],
+        "end_quote": text[cuts[i]:cuts[i + 1]][-24:],
+    } for i in range(count)])
 
 
 def test_novel_adaptation_prompt_covers_every_editor_event_type() -> None:
@@ -613,9 +627,9 @@ def test_novel_import_ai_routes_use_mcp_tool_path(monkeypatch) -> None:
         if model is NovelAiOutlineIndex:
             assert "人物和地点索引" in system_prompt
             return _outline_index()
-        if model is NovelAiChapterScenePlan:
+        if model is NovelAiChapterSceneBatch:
             assert "SceneCandidate" in system_prompt
-            return _chapter_scene_plan()
+            return _bounded_batch(prompt)
         if model is SceneBeat:
             assert "SceneBeat" in system_prompt
             return _adapt_response().adapted_scene.scene_beat
@@ -687,14 +701,14 @@ def test_novel_import_ai_routes_use_mcp_tool_path(monkeypatch) -> None:
         NovelAiOutlineMainline,
         NovelAiOutlineStructure,
         NovelAiOutlineIndex,
-        NovelAiChapterScenePlan,
+        NovelAiChapterSceneBatch,
         NovelAiConflictAnalysisResponse,
         SceneBeat,
         NovelAiConflictAnalysisResponse,
     ]
 
 
-def test_novel_import_ai_plan_chapter_repairs_scene_minimum_and_branch_shortfall(monkeypatch) -> None:
+def test_novel_import_ai_plan_chapter_budgets_scene_minimum_and_reports_branch_shortfall(monkeypatch) -> None:
     calls: list[type[object]] = []
     paragraph = "夜里，林澈在车站等待。陈雨问：“你真的要走吗？”雨声落下，灯光闪烁。\n\n"
     text = (paragraph * ((6000 // len(paragraph)) + 2))[:6000]
@@ -711,54 +725,9 @@ def test_novel_import_ai_plan_chapter_repairs_scene_minimum_and_branch_shortfall
 
     def fake_create_with_tools(model, system_prompt, prompt, **kwargs):  # type: ignore[no-untyped-def]
         calls.append(model)
-        if model is NovelAiChapterScenePlan:
-            assert f"scenes quantity minimum: {min_scene_count}" in prompt
-            assert "source_span" in system_prompt
-            if calls.count(NovelAiChapterScenePlan) > 1:
-                scene_length = len(text) // min_scene_count
-                return NovelAiChapterScenePlan(
-                    chapter_id="chapter_long",
-                    scenes=[
-                        SceneCandidate(
-                            scene_candidate_id=f"scene_{index + 1}",
-                            chapter_id="chapter_long",
-                            title=f"场景 {index + 1}",
-                            index=index,
-                            start_offset=index * scene_length,
-                            end_offset=len(text) if index == min_scene_count - 1 else (index + 1) * scene_length,
-                            location_hint="车站",
-                            time_hint="夜里",
-                            characters=["林澈", "陈雨"],
-                            source_excerpt=text[index * scene_length:(index + 1) * scene_length][:200],
-                            summary=f"原文场景 {index + 1}。",
-                            confidence=0.8,
-                        )
-                        for index in range(min_scene_count)
-                    ],
-                    warnings=[],
-                    needs_review=False,
-                )
-            return NovelAiChapterScenePlan(
-                chapter_id="chapter_long",
-                scenes=[
-                    SceneCandidate(
-                        scene_candidate_id="scene_only",
-                        chapter_id="chapter_long",
-                        title="单场景",
-                        index=0,
-                        start_offset=0,
-                        end_offset=len(text),
-                        location_hint="车站",
-                        time_hint="夜里",
-                        characters=["林澈", "陈雨"],
-                        source_excerpt=text[:200],
-                        summary="模型只返回了一个场景。",
-                        confidence=0.8,
-                    )
-                ],
-                warnings=[],
-                needs_review=False,
-            )
+        if model is NovelAiChapterSceneBatch:
+            assert "start_offset" in system_prompt
+            return _bounded_batch(prompt)
         if model is NovelAiConflictAnalysisResponse:
             return NovelAiConflictAnalysisResponse(conflict_points=[], warnings=[])
         if model is NovelAiBranchSuggestionResponse:
@@ -792,10 +761,11 @@ def test_novel_import_ai_plan_chapter_repairs_scene_minimum_and_branch_shortfall
     assert payload["branch_suggestions"] == []
     assert not any("fallback adaptation scenes" in warning for warning in payload["warnings"])
     assert any("本章可用分支建议少于目标" in warning for warning in payload["warnings"])
-    assert calls == [NovelAiChapterScenePlan, NovelAiChapterScenePlan, NovelAiConflictAnalysisResponse, NovelAiBranchSuggestionResponse]
+    assert calls == [NovelAiChapterSceneBatch] * 4 + [NovelAiConflictAnalysisResponse, NovelAiBranchSuggestionResponse]
+    assert "".join(scene["source_excerpt"] for scene in payload["scenes"]) == text
 
 
-def test_novel_import_retries_empty_sensitive_scene_plan_without_accepting_it(monkeypatch) -> None:
+def test_novel_import_rejects_empty_sensitive_scene_plan_without_automatic_paid_retry(monkeypatch) -> None:
     calls: list[type[object]] = []
     chapter = ChapterCandidate(
         chapter_id="chapter_sensitive",
@@ -810,55 +780,17 @@ def test_novel_import_retries_empty_sensitive_scene_plan_without_accepting_it(mo
 
     def fake_create_with_tools(model, system_prompt, prompt, **kwargs):  # type: ignore[no-untyped-def]
         calls.append(model)
-        if model is NovelAiChapterScenePlan:
-            attempt = calls.count(NovelAiChapterScenePlan)
-            if attempt <= 2:
-                if attempt == 2:
-                    assert "Do not omit the chapter because it contains mature or sensitive material" in prompt
-                return NovelAiChapterScenePlan(
-                    chapter_id=chapter.chapter_id,
-                    scenes=[],
-                    warnings=["Sensitive content was omitted."],
-                    needs_review=True,
-                )
-            midpoint = len(text) // 2
-            return NovelAiChapterScenePlan(
-                chapter_id=chapter.chapter_id,
-                scenes=[
-                    SceneCandidate(
-                        scene_candidate_id="sensitive_1",
-                        chapter_id=chapter.chapter_id,
-                        title="Before",
-                        index=0,
-                        start_offset=0,
-                        end_offset=midpoint,
-                        source_excerpt=text[:200],
-                        summary="The characters confront a change in trust.",
-                        confidence=0.8,
-                    ),
-                    SceneCandidate(
-                        scene_candidate_id="sensitive_2",
-                        chapter_id=chapter.chapter_id,
-                        title="After",
-                        index=1,
-                        start_offset=midpoint,
-                        end_offset=len(text),
-                        source_excerpt=text[midpoint:midpoint + 200],
-                        summary="They decide how the relationship proceeds.",
-                        confidence=0.8,
-                    ),
-                ],
-                warnings=["Sensitive details were adapted non-graphically."],
-                needs_review=True,
-            )
+        if model is NovelAiChapterSceneBatch:
+            assert "不因敏感内容省略" in system_prompt
+            return NovelAiChapterSceneBatch(scenes=[], warnings=["Sensitive content was omitted."])
         if model is NovelAiConflictAnalysisResponse:
             return NovelAiConflictAnalysisResponse(conflict_points=[], warnings=[])
         raise AssertionError(model)
 
     service = NovelImportService()
     monkeypatch.setattr(service.provider, "create_with_tools", fake_create_with_tools)
-    response = service.ai_plan_chapter(
-        NovelAiPlanChapterRequest(
+    with pytest.raises(AIProviderError, match="已完成子批保留"):
+        service.ai_plan_chapter(NovelAiPlanChapterRequest(
             document_id="doc_sensitive",
             chapter=chapter,
             outline_summary="Relationship-focused story.",
@@ -867,15 +799,11 @@ def test_novel_import_retries_empty_sensitive_scene_plan_without_accepting_it(mo
             suggested_scene_count=2,
             min_scene_count=2,
             allow_branch_suggestions=False,
-        )
-    )
-
-    assert len(response.scenes) == 2
-    assert calls.count(NovelAiChapterScenePlan) == 3
-    assert all(scene.commands for scene in response.scenes)
+        ))
+    assert calls == [NovelAiChapterSceneBatch]
 
 
-def test_novel_import_uses_same_model_for_continuous_source_segments_after_empty_whole_chapter(monkeypatch) -> None:
+def test_novel_import_uses_same_model_for_prebudgeted_continuous_source_segments(monkeypatch) -> None:
     chapter = ChapterCandidate(
         chapter_id="chapter_segmented",
         title="Segmented chapter",
@@ -889,29 +817,10 @@ def test_novel_import_uses_same_model_for_continuous_source_segments_after_empty
     prompts: list[str] = []
 
     def fake_create_with_tools(model, system_prompt, prompt, **kwargs):  # type: ignore[no-untyped-def]
-        if model is NovelAiChapterScenePlan:
+        if model is NovelAiChapterSceneBatch:
             prompts.append(prompt)
-            if "source segment" not in prompt:
-                return NovelAiChapterScenePlan(chapter_id=chapter.chapter_id, scenes=[], warnings=[], needs_review=True)
-            segment_number = 1 if "source segment 1/2" in prompt else 2
-            return NovelAiChapterScenePlan(
-                chapter_id=f"{chapter.chapter_id}_segment_{segment_number}",
-                scenes=[
-                    SceneCandidate(
-                        scene_candidate_id=f"segment_scene_{segment_number}",
-                        chapter_id=f"{chapter.chapter_id}_segment_{segment_number}",
-                        title=f"Segment {segment_number}",
-                        index=0,
-                        start_offset=0,
-                        end_offset=10,
-                        source_excerpt="grounded excerpt",
-                        summary=f"Grounded segment {segment_number}.",
-                        confidence=0.8,
-                    )
-                ],
-                warnings=[],
-                needs_review=False,
-            )
+            assert kwargs["selection"] is None
+            return _bounded_batch(prompt)
         if model is NovelAiConflictAnalysisResponse:
             return NovelAiConflictAnalysisResponse(conflict_points=[], warnings=[])
         raise AssertionError(model)
@@ -932,11 +841,10 @@ def test_novel_import_uses_same_model_for_continuous_source_segments_after_empty
     )
 
     assert len(response.scenes) == 2
-    assert len(prompts) == 5
-    assert sum("source segment" in prompt for prompt in prompts) == 2
+    assert len(prompts) == 2
     assert response.scenes[0].source_span.start_offset == chapter.start_offset
     assert response.scenes[1].source_span.start_offset > response.scenes[0].source_span.start_offset
-    assert any("continuous source segments" in warning for warning in response.warnings)
+    assert "".join(scene.source_excerpt for scene in response.scenes) == text
 
 
 def test_novel_import_rejects_false_incomplete_source_claim() -> None:
@@ -1396,8 +1304,8 @@ def test_novel_import_ai_plan_chapter_stream_emits_delta_before_final(monkeypatc
         calls.append(model)
         yield ("status", f"streaming {model.__name__}")
         yield ("delta", f"delta:{model.__name__};")
-        if model is NovelAiChapterScenePlan:
-            yield ("final", _chapter_scene_plan())
+        if model is NovelAiChapterSceneBatch:
+            yield ("final", _bounded_batch(prompt))
             return
         if model is NovelAiConflictAnalysisResponse:
             yield ("final", NovelAiConflictAnalysisResponse(conflict_points=[], warnings=[]))
@@ -1421,10 +1329,10 @@ def test_novel_import_ai_plan_chapter_stream_emits_delta_before_final(monkeypatc
     assert response.status_code == 200
     assert response.text.index("event: delta") < response.text.index("event: final")
     assert "event: checkpoint" in response.text
-    assert calls == [NovelAiChapterScenePlan, NovelAiConflictAnalysisResponse]
+    assert calls == [NovelAiChapterSceneBatch, NovelAiConflictAnalysisResponse]
 
 
-def test_novel_import_structured_stream_does_not_duplicate_provider_retry(monkeypatch) -> None:
+def test_novel_import_structured_stream_honors_disabled_retry(monkeypatch) -> None:
     service = NovelImportService()
     calls = 0
 
@@ -1435,6 +1343,8 @@ def test_novel_import_structured_stream_does_not_duplicate_provider_retry(monkey
         yield  # pragma: no cover
 
     monkeypatch.setattr(service.provider, "stream_with_tools", fake_stream_with_tools)
+    monkeypatch.setattr("app.services.novel_import_service.retry_budget", type(
+        "DisabledBudget", (), {"get": staticmethod(lambda: 0)})())
     with pytest.raises(AIProviderError, match="temporary structured generation failure"):
         list(
             service._stream_structured_result(

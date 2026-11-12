@@ -1,3 +1,4 @@
+import { NumberInput } from "../common/NumberInput";
 import type { VideoCommand } from "../../types/commands";
 import { backgroundFitOptions } from "../../utils/localizedOptions";
 import { AssetPicker } from "../common/AssetPicker";
@@ -39,7 +40,7 @@ export function VideoCommandEditor({
       </label>
       <label>
         淡入时间（毫秒）
-        <input
+        <NumberInput
           type="number"
           min="0"
           max="10000"
@@ -51,7 +52,7 @@ export function VideoCommandEditor({
       </label>
       <label>
         淡出时间（毫秒）
-        <input
+        <NumberInput
           type="number"
           min="0"
           max="10000"

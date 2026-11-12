@@ -106,3 +106,42 @@ def test_novel_websocket_returns_diagnostic_sanitized_error(monkeypatch) -> None
     assert error_event["payload"]["exceptionType"] == "AIProviderError"
     assert "sk-***" in error_event["payload"]["message"]
     assert "sk-secret1234567890" not in error_event["payload"]["message"]
+
+
+def test_novel_websocket_resumes_before_first_ack_without_second_generation(monkeypatch) -> None:
+    calls = []
+
+    def once(request):
+        calls.append(request)
+        yield from _fake_scan_stream(request)
+
+    monkeypatch.setattr(routes_novel_ws.service, "stream_ai_scan_chunk", once)
+    client = TestClient(create_app())
+    job_id = "novel_job_unacknowledged_test"
+    with client.websocket_connect("/api/ws/novel") as websocket:
+        assert websocket.receive_json()["type"] == "connected"
+        websocket.send_json({
+            "command": "start_novel_job", "jobId": job_id,
+            "requestId": "unacknowledged_request", "operation": "scan_chunk",
+            "payload": {
+                "document_id": "doc_1", "chunk_id": "chunk_1", "index": 0,
+                "text": "hello", "start_offset": 0, "end_offset": 5,
+            },
+        })
+        # Disconnect without reading a single job event or acknowledging it.
+
+    with client.websocket_connect("/api/ws/novel") as websocket:
+        assert websocket.receive_json()["type"] == "connected"
+        websocket.send_json({"command": "subscribe_job", "jobId": job_id, "lastSeq": 0})
+        seen = []
+        for _ in range(12):
+            event = websocket.receive_json()
+            seen.append(event)
+            if event["type"] == "final":
+                break
+
+    assert seen[0]["seq"] == 1
+    assert seen[-1]["type"] == "final"
+    assert seen[-1]["payload"]["summary"] == "ok"
+    assert all(event["jobId"] == job_id for event in seen)
+    assert len(calls) == 1

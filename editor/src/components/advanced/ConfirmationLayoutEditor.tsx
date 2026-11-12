@@ -1,3 +1,4 @@
+import { NumberInput } from "../common/NumberInput";
 import { useState } from "react";
 import type { UILayoutComponentStyle, UISkinLayout } from "../../../../shared/cartridge/uiSkin";
 import {
@@ -84,7 +85,7 @@ export function ConfirmationLayoutEditor({ draft, previewDraft = draft, assets, 
       {region === "panelStyle" && <section aria-label="确认提示几何">
         <p>位置和尺寸为画面百分比；正文超出时在面板内滚动，不裁掉操作入口。</p>
         {(["x", "y", "width", "height"] as const).map(key => <label key={key}>区域 {key}
-          <input type="number" aria-label={`确认区域${key}`} value={rect[key]}
+          <NumberInput emptyValue="" type="number" aria-label={`确认区域${key}`} value={rect[key]}
             onChange={event => {
               if (event.currentTarget.value !== "" && Number.isFinite(event.currentTarget.valueAsNumber))
                 update({ ...config, rect: constrainConfirmationRect({ ...rect, [key]: event.currentTarget.valueAsNumber }) });
@@ -108,7 +109,7 @@ export function ConfirmationLayoutEditor({ draft, previewDraft = draft, assets, 
         ["padding", "内边距", 18, 0, 96], ["gap", "间距", 16, 0, 60],
       ] : [["fontSize", "字号", 20, 8, 96], ["fontWeight", "字重", 500, 100, 900]])
         .map(([key, label, fallback, min, max]) => <label key={key}> {label}
-          <input aria-label={`确认${label}`} type="number" min={min} max={max}
+          <NumberInput emptyValue="" aria-label={`确认${label}`} type="number" min={min} max={max}
             value={Number(style[key as keyof UILayoutComponentStyle] ?? fallback)}
             onChange={event => {
               if (event.currentTarget.value !== "" && Number.isFinite(event.currentTarget.valueAsNumber))

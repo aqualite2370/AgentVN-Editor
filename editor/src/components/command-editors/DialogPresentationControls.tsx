@@ -1,3 +1,4 @@
+import { NumberInput } from "../common/NumberInput";
 import type { BubblePositionConfig, DialogPresentationMode } from "../../../../shared/cartridge/types";
 import { useProjectStore } from "../../store/projectStore";
 import { FieldHelp } from "../common/FieldHelp";
@@ -30,7 +31,7 @@ export function DialogPresentationControls({ command, onChange }: {
       : key === "x" ? 50 : key === "y" ? 20
         : key === "offset_x" ? position?.offset_x ?? 0 : position?.offset_y ?? 0;
     return <label key={key}>{label}
-      <input type="number" aria-label={label} min={fixed ? 0 : -100} max={100} step={1} value={value}
+      <NumberInput type="number" aria-label={label} min={fixed ? 0 : -100} max={100} step={1} value={value}
         onChange={event => {
           const n = event.currentTarget.valueAsNumber;
           if (!Number.isFinite(n) || n < (fixed ? 0 : -100) || n > 100) return;

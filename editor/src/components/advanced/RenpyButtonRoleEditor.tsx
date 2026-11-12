@@ -1,3 +1,4 @@
+import { NumberInput } from "../common/NumberInput";
 import { useMemo, useState } from "react";
 import {
   RENPY_BUTTON_ROLES,
@@ -121,7 +122,7 @@ export function RenpyButtonRoleEditor({ draft, page, roles = RENPY_BUTTON_ROLES,
     </label>
     <div className="renpy-button-role-grid">
       {geometryFields.map(([key, label]) => <label key={key}>{label}
-        <input aria-label={label} type="number" min={key === "fontSize" ? 8 : 0}
+        <NumberInput aria-label={label} type="number" min={key === "fontSize" ? 8 : 0}
           max={key === "fontSize" ? 128 : key === "width" ? 2048 : key === "height" ? 1024 : 256}
           value={resolved.geometry[key]} onChange={(event) => {
             const value = event.currentTarget.valueAsNumber;
@@ -143,7 +144,7 @@ export function RenpyButtonRoleEditor({ draft, page, roles = RENPY_BUTTON_ROLES,
       </label>;
     })}
     <label>边框宽度
-      <input aria-label="按钮边框宽度" type="number" min={0} max={32} step={0.5}
+      <NumberInput aria-label="按钮边框宽度" type="number" min={0} max={32} step={0.5}
         value={resolved.states[state].borderWidth ?? 0}
         onChange={(event) => {
           const value = event.currentTarget.valueAsNumber;
@@ -151,7 +152,7 @@ export function RenpyButtonRoleEditor({ draft, page, roles = RENPY_BUTTON_ROLES,
         }} />
     </label>
     <label>不透明度
-      <input aria-label="按钮不透明度" type="number" min={0} max={1} step={0.05}
+      <NumberInput aria-label="按钮不透明度" type="number" min={0} max={1} step={0.05}
         value={resolved.states[state].opacity ?? 1}
         onChange={(event) => {
           const value = event.currentTarget.valueAsNumber;

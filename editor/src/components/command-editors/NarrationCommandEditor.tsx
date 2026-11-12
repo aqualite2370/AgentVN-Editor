@@ -1,4 +1,4 @@
-import { Users } from "lucide-react";
+import { List, Users } from "lucide-react";
 import { useId } from "react";
 import type { NarrationCommand } from "../../types/commands";
 import { useEditorStore } from "../../store/editorStore";
@@ -9,6 +9,7 @@ import { RichSelect, type RichSelectOption } from "../common/RichSelect";
 import { DialogTextLengthHint } from "./DialogTextLengthHint";
 import { DialogTextStyleControls, pickDialogTextStyle } from "./DialogTextStyleControls";
 import { DialogPresentationControls } from "./DialogPresentationControls";
+import { applyNarrationStyleToCommands } from "../../utils/narrationStyleApply";
 
 type NarrationStyle = NonNullable<NarrationCommand["dialog_style"]>;
 type NarrationPresentation = NonNullable<NarrationCommand["narration_style"]>;
@@ -40,7 +41,12 @@ function cleanNarrationStyle(style: NarrationStyle | null | undefined): Narratio
     : null;
 }
 
-export function NarrationCommandEditor({ command, onChange }: { command: NarrationCommand; onChange: (command: NarrationCommand) => void }) {
+export function NarrationCommandEditor({ command, onChange, sceneCommands, onSceneCommandsChange }: {
+  command: NarrationCommand;
+  onChange: (command: NarrationCommand) => void;
+  sceneCommands?: import("../../types/commands").GameCommand[];
+  onSceneCommandsChange?: (commands: import("../../types/commands").GameCommand[]) => void;
+}) {
   const textLengthHintId = useId();
   const applyNarrationStyleToAll = useEditorStore((state) => state.applyNarrationStyleToAll);
   const setNotice = useEditorStore((state) => state.setNotice);
@@ -64,6 +70,15 @@ export function NarrationCommandEditor({ command, onChange }: { command: Narrati
         : "\u6240\u6709\u65c1\u767d\u5df2\u4f7f\u7528\u5f53\u524d\u663e\u793a\u6837\u5f0f\u3002",
       changedCount > 0 ? "success" : "info",
     );
+  }
+
+  function applyStyleToSceneNarrations() {
+    if (!sceneCommands || !onSceneCommandsChange) return;
+    const applied = applyNarrationStyleToCommands(sceneCommands, cleanNarrationStyle(effectiveStyle), narrationPresentation);
+    if (applied.changedCount) onSceneCommandsChange(applied.commands);
+    setNotice(applied.changedCount
+      ? `已应用到该场景的 ${applied.changedCount} 条旁白。`
+      : "该场景旁白已使用当前样式。", applied.changedCount ? "success" : "info");
   }
 
   return (
@@ -127,11 +142,20 @@ export function NarrationCommandEditor({ command, onChange }: { command: Narrati
       <div className="dialog-visual-actions">
         <button
           type="button"
+          data-help-key="command.narration.style.applyScene"
+          disabled={!sceneCommands || !onSceneCommandsChange}
+          onClick={applyStyleToSceneNarrations}
+        >
+          <List size={15} />
+          应用到该场景旁白
+        </button>
+        <button
+          type="button"
           data-help-key="command.narration.style.applyAll"
           onClick={applyStyleToAllNarrations}
         >
           <Users size={15} />
-          {"\u5c06\u5f53\u524d\u663e\u793a\u6837\u5f0f\u5e94\u7528\u5230\u5168\u90e8\u65c1\u767d"}
+          应用到全部旁白
         </button>
       </div>
       <AssetPicker

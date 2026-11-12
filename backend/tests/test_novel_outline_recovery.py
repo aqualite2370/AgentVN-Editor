@@ -47,6 +47,72 @@ def fake_model(calls, fail_at=None):
     return stream
 
 
+def test_mainline_text_limits_are_enforced_by_structured_schema_and_pipeline():
+    schema = NovelAiOutlineMainline.model_json_schema()
+    assert schema["properties"]["summary"]["maxLength"] == 300
+    assert schema["properties"]["main_plot"]["maxLength"] == 1200
+    with pytest.raises(ValueError):
+        NovelAiOutlineMainline(document_id="doc", title="测试", summary="摘要",
+            main_plot="主线" * 601)
+
+    from app.services.novel_outline_pipeline import OutlinePipeline
+    service, payload = NovelImportService(), request(1)
+    pipeline = OutlinePipeline(service, payload)
+    system, _ = pipeline.prompts("mainline", payload.analyses)
+    assert "summary最多300字，main_plot最多1200字" in system
+
+
+def test_mainline_prompt_is_tighter_and_reuses_legacy_successful_batches(monkeypatch):
+    from app.services.novel_outline_pipeline import OutlinePipeline, VERSION, digest
+
+    service = NovelImportService()
+    payload = request(1)
+    original = OutlinePipeline(service, payload)
+    old_system, old_user = original.prompts(
+        "mainline", payload.analyses, legacy_mainline=True)
+    new_system, new_user = original.prompts("mainline", payload.analyses)
+    assert old_user == new_user
+    assert "summary控制在120字内" not in old_system
+    assert "summary控制在120字内" in new_system
+    assert "不列章节清单、不复述分块原文" in new_system
+
+    cached_result = NovelAiOutlineMainline(
+        document_id=payload.document_id,
+        title=payload.title,
+        summary="保留的主线摘要。",
+        main_plot="保留的主线内容。",
+        coverage_confidence=0.9,
+    )
+    cache_key = digest({
+        "version": VERSION,
+        "stage": "mainline",
+        "system": old_system,
+        "user": old_user,
+    })
+    resumed_request = request(1, partial_batches=[{
+        "key": cache_key,
+        "stage": "mainline",
+        "payload": cached_result.model_dump(mode="json"),
+    }])
+    resumed = OutlinePipeline(service, resumed_request)
+
+    def unexpected_model_call(*args, **kwargs):
+        raise AssertionError("a valid legacy mainline checkpoint must avoid another model request")
+
+    monkeypatch.setattr(service, "_stream_structured_result", unexpected_model_call)
+    generator = resumed.call("mainline", resumed_request.analyses, None, 1, 1)
+    traces = []
+    while True:
+        try:
+            traces.append(next(generator))
+        except StopIteration as finished:
+            result = finished.value
+            break
+    assert result.summary == cached_result.summary
+    assert any(event == "trace" and value["title"] == "复用已保存批次"
+        for event, value in traces)
+
+
 def test_long_outline_bounds_every_call_and_keeps_all_chapters(monkeypatch):
     service, calls = NovelImportService(), []
     monkeypatch.setattr(service.provider, "stream_with_tools", fake_model(calls))
@@ -62,14 +128,14 @@ def test_failed_batch_resume_reuses_successful_calls(monkeypatch):
     service, calls, saved = NovelImportService(), [], []
     monkeypatch.setattr(service.provider, "stream_with_tools", fake_model(calls, fail_at=4))
     with pytest.raises(AIProviderError, match="length"):
-        for event, value in service.stream_ai_build_outline(request()):
+        for event, value in service.stream_ai_build_outline(request(max_retries=0)):
             if event == "checkpoint" and value["stage"] == "batch":
                 saved.append(value["payload"])
     assert len(saved) == 3
     finished_calls = calls[:-1]
     resumed = []
     monkeypatch.setattr(service.provider, "stream_with_tools", fake_model(resumed))
-    events = list(service.stream_ai_build_outline(request(partial_batches=saved)))
+    events = list(service.stream_ai_build_outline(request(partial_batches=saved, max_retries=0)))
     assert not any(call in resumed for call in finished_calls)
     assert len(next(v for e, v in events if e == "final").chapters) == 13
 

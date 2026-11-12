@@ -16,6 +16,7 @@ from app.models.novel_import import (
     AdaptSceneResponse,
     NovelAiBranchSuggestionResponse,
     NovelAiChapterScenePlan,
+    NovelAiChapterSceneBatch,
     NovelAiChunkAnalysis,
     NovelAiChunkEntityIndex,
     NovelAiChunkSummary,
@@ -139,6 +140,11 @@ class AgentVNToolRegistry:
                 name="plan_novel_chapter_scenes",
                 description="Plan validated visual-novel scenes for one imported novel chapter.",
                 response_model=NovelAiChapterScenePlan,
+            ),
+            AgentVNTool(
+                name="plan_novel_scene_batch",
+                description="Plan at most two bounded scenes from one authoritative chapter source batch; never return commands or duplicate source text.",
+                response_model=NovelAiChapterSceneBatch,
             ),
             AgentVNTool(
                 name="analyze_novel_conflicts",

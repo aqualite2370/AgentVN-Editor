@@ -330,7 +330,7 @@ export function CommandListEditor({
             {expanded && (
               <div className="command-card-body">
                 {command.type === "dialog" && <DialogCommandEditor command={command} onChange={(next) => update(index, next)} />}
-                {command.type === "narration" && <NarrationCommandEditor command={command} onChange={(next) => update(index, next)} />}
+                {command.type === "narration" && <NarrationCommandEditor command={command} onChange={(next) => update(index, next)} sceneCommands={commands} onSceneCommandsChange={onChange} />}
                 {command.type === "hide_dialog" && <p className="workbench-note">播放到这里时会隐藏当前对白或旁白框，并立即继续下一事件。</p>}
                 {command.type === "background" && <BackgroundCommandEditor command={command} onChange={(next) => update(index, next)} />}
                 {command.type === "show_image" && <ShowImageCommandEditor command={command} onChange={(next) => update(index, next)} />}

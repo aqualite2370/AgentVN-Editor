@@ -1,3 +1,4 @@
+import { NumberInput } from "../common/NumberInput";
 import { AlertTriangle, BookOpen, CheckCircle2, ChevronDown, Copy, Download, Pause, Play, RotateCcw, SkipForward, WandSparkles, XCircle } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
@@ -9,12 +10,16 @@ import type { ChapterCandidate, CharacterCandidate, CharacterCandidateReview, No
 import type { NovelImportPreflight, SourceDocument } from "../../novel-import/types";
 import { buildChapterProcessingRows, findMatchingNovelProcessJob, isNovelProcessJobActive, mergeNovelProcessResults } from "../../novel-import/novelProcessing";
 import { novelImportStatusLabel } from "../../novel-import/displayLabels";
+import { inspectNovelEntryConnection } from "../../novel-import/entryConnection";
 import { estimateTokens } from "../../novel-import/textChunker";
 import { buildProjectAssetAudit } from "../../utils/assetAudit";
 import { assetTypeDisplayLabel } from "../../../../shared/cartridge/assetTaxonomy";
 import { GlassSelectionGroup } from "../common/GlassSelectionGroup";
 import { RoseTwoLoader } from "../common/RoseTwoLoader";
 import { RichSelect } from "../common/RichSelect";
+import { NovelDetails } from "./NovelDetails";
+import "./novel-workbench-usability.css";
+import { requestAdvancedTools } from "../advanced/advancedToolsBridge";
 
 const stages: Array<{ id: NovelAiStage; label: string; description: string }> = [
   { id: "landing", label: "导入文本", description: "读取小说并检查模型" },
@@ -110,16 +115,15 @@ function processingTierLabel(preflight: NovelImportPreflight): string {
   return "小文本";
 }
 
-function StageTimeline({ activeStage }: { activeStage: NovelAiStage }) {
+function StageTimeline({ activeStage, isProcessing }: { activeStage: NovelAiStage; isProcessing: boolean }) {
   const activeIndex = stageIndex(activeStage);
   return (
     <ol className="novel-ai-timeline compact">
       {stages.map((stage, index) => (
         <li key={stage.id} className={index < activeIndex ? "is-done" : index === activeIndex ? "is-active" : ""}>
-          <span>{index < activeIndex ? <CheckCircle2 size={14} /> : index === activeIndex ? <RoseTwoLoader className="novel-stage-spinner" particleCount={32} /> : index + 1}</span>
+          <span>{index < activeIndex ? <CheckCircle2 size={14} /> : index === activeIndex && isProcessing ? <RoseTwoLoader className="novel-stage-spinner" particleCount={32} /> : index + 1}</span>
           <div>
             <strong>{stage.label}</strong>
-            <small>{stage.description}</small>
           </div>
         </li>
       ))}
@@ -143,10 +147,8 @@ function NovelStageHeader({
     <header className="novel-stage-header">
       <div>
         <span className="panel-kicker">小说导入</span>
-        <strong>大模型长文规划工作流</strong>
-        <p className={errorSummary ? "novel-stage-error-hint" : undefined}>
-          {errorSummary ? `当前：${stage.label}。该阶段解析失败，请查看右上角报错通知中的完整报告后重试。` : `当前：${stage.label}。AI 会先解析全文大纲，确认后再规划场景并写入蓝图。`}
-        </p>
+        <strong>{stage.label}</strong>
+        {errorSummary && <span className="novel-stage-error-hint">已暂停，请查看下方错误。</span>}
       </div>
       <div className="novel-stage-header-actions">
         <span className="novel-stage-pill">{stage.label}</span>
@@ -178,29 +180,16 @@ function NovelSecondaryDrawer({
   className?: string;
   children: ReactNode;
 }) {
-  return (
-    <article className={`novel-expand-control novel-secondary-drawer${active ? " is-active" : ""}${open ? " is-expanded" : ""}${className ? ` ${className}` : ""}`}>
-      <button type="button" className="novel-expand-toggle novel-secondary-drawer-summary" data-help-key="novel.drawerToggle" aria-expanded={open} onClick={onToggle}>
-        <div>
-          <strong>{title}</strong>
-          <span>{description}</span>
-        </div>
-        <span className="novel-secondary-drawer-meta">
-          {badge && <small>{badge}</small>}
-          <ChevronDown className="novel-expand-chevron" size={16} />
-        </span>
-      </button>
-      <div className="novel-expand-content-wrap">
-        <div className="novel-expand-content novel-secondary-drawer-body">{children}</div>
-      </div>
-    </article>
-  );
+  return <NovelDetails {...{ title, description, badge, active, open, onToggle, className }}>{children}</NovelDetails>;
 }
 
 function ModelStreamPanel() {
+  const processing = useNovelImportStore(state => state.isProcessing);
+  const stop = useNovelImportStore(state => state.stopAiAnalysis);
   const progress = useNovelImportStore((state) => state.progress);
   const stream = useNovelImportStore((state) => state.modelStream);
-  const toggle = useNovelImportStore((state) => state.toggleModelStream);
+  // Streaming updates must not expand diagnostics over the user's review.
+  const [open, setOpen] = useState(false);
   if (!progress && !stream.responseText && stream.traces.length === 0) return null;
   return (
     <NovelSecondaryDrawer
@@ -209,15 +198,10 @@ function ModelStreamPanel() {
       description={stream.status || progress?.message || "等待模型响应"}
       badge={progress ? `${progress.current}/${progress.total}` : stream.traces.length > 0 ? `${stream.traces.length} 条日志` : undefined}
       active={Boolean(progress)}
-      open={stream.open}
-      onToggle={toggle}
+      open={open}
+      onToggle={() => setOpen((value) => !value)}
     >
-      {progress && (
-        <div className="novel-model-stream-progress">
-          <progress value={progress.current} max={Math.max(1, progress.total)} />
-          <span>{progress.current}/{progress.total}</span>
-        </div>
-      )}
+      {processing && <button type="button" onClick={stop} data-help-key="novel.analysis.stop">停止解析</button>}
       <section className="novel-model-stream-body" aria-label="模型完整响应">
         <h4>处理详情</h4>
         {(stream.rawLength ?? 0) > stream.responseText.length && (
@@ -588,7 +572,11 @@ function validationStatusLabel(status: NovelImportValidationReport["status"]): s
 
 function NovelValidationReportPanel() {
   const reports = useNovelImportStore((state) => state.session.validation_reports);
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
+  const hasBlockingErrors = reports.some((report) => report.errors.length > 0);
+  useEffect(() => {
+    if (hasBlockingErrors) setOpen(true);
+  }, [hasBlockingErrors]);
   if (reports.length === 0) return null;
 
   const passedCount = reports.reduce((sum, report) => sum + report.passed.length, 0);
@@ -1120,12 +1108,12 @@ function NovelChapterSplitEntry() {
         <details className="novel-processing-advanced">
           <summary>高级处理参数</summary>
           <div className="novel-processing-config-grid">
-            <label><span>目标字符</span><input type="number" data-help-key="novel.process.chunkTargetChars" min={2000} max={60000} value={processing.config.chunkTargetChars} onChange={(event) => updateConfig({ chunkTargetChars: Number(event.target.value) })} /></label>
-            <label><span>最大字符</span><input type="number" data-help-key="novel.process.chunkMaxChars" min={4000} max={60000} value={processing.config.chunkMaxChars} onChange={(event) => updateConfig({ chunkMaxChars: Number(event.target.value) })} /></label>
-            <label><span>最小字符</span><input type="number" data-help-key="novel.process.chunkMinChars" min={500} max={20000} value={processing.config.chunkMinChars} onChange={(event) => updateConfig({ chunkMinChars: Number(event.target.value) })} /></label>
-            <label><span>上下文重叠字符</span><input type="number" data-help-key="novel.process.chunkOverlapChars" min={0} max={4000} value={processing.config.chunkOverlapChars} onChange={(event) => updateConfig({ chunkOverlapChars: Number(event.target.value) })} /></label>
-            <label><span>最大并发</span><input type="number" data-help-key="novel.process.maxConcurrency" min={1} max={10} value={processing.config.maxConcurrency} onChange={(event) => updateConfig({ maxConcurrency: Number(event.target.value) })} /></label>
-            <label><span>最大重试</span><input type="number" data-help-key="novel.process.maxRetryCount" min={0} max={10} value={processing.config.maxRetryCount} onChange={(event) => updateConfig({ maxRetryCount: Number(event.target.value) })} /></label>
+            <label><span>目标字符</span><NumberInput type="number" data-help-key="novel.process.chunkTargetChars" min={2000} max={60000} value={processing.config.chunkTargetChars} onChange={(event) => updateConfig({ chunkTargetChars: Number(event.target.value) })} /></label>
+            <label><span>最大字符</span><NumberInput type="number" data-help-key="novel.process.chunkMaxChars" min={4000} max={60000} value={processing.config.chunkMaxChars} onChange={(event) => updateConfig({ chunkMaxChars: Number(event.target.value) })} /></label>
+            <label><span>最小字符</span><NumberInput type="number" data-help-key="novel.process.chunkMinChars" min={500} max={20000} value={processing.config.chunkMinChars} onChange={(event) => updateConfig({ chunkMinChars: Number(event.target.value) })} /></label>
+            <label><span>上下文重叠字符</span><NumberInput type="number" data-help-key="novel.process.chunkOverlapChars" min={0} max={4000} value={processing.config.chunkOverlapChars} onChange={(event) => updateConfig({ chunkOverlapChars: Number(event.target.value) })} /></label>
+            <label><span>最大并发</span><NumberInput type="number" data-help-key="novel.process.maxConcurrency" min={1} max={10} value={processing.config.maxConcurrency} onChange={(event) => updateConfig({ maxConcurrency: Number(event.target.value) })} /></label>
+            <label><span>自动重试次数</span><NumberInput type="number" data-help-key="novel.process.maxRetryCount" min={0} max={10} emptyValue={5} value={processing.config.maxRetryCount} onChange={(event) => updateConfig({ maxRetryCount: Number(event.target.value) })} /></label>
           </div>
           <div className="novel-processing-draft-grid">
             <label><span>输出格式</span><input data-help-key="novel.process.outputFormat" value={processing.outputFormat} onChange={(event) => updateDraft({ outputFormat: event.target.value })} /></label>
@@ -1281,6 +1269,7 @@ function NovelChapterSplitEntry() {
 }
 
 function StatusPanel() {
+  const [open, setOpen] = useState(false);
   const session = useNovelImportStore((state) => state.session);
   const pendingImport = useNovelImportStore((state) => state.pendingImport);
   const importJob = useNovelImportStore((state) => state.importJob);
@@ -1304,8 +1293,16 @@ function StatusPanel() {
   const preflight = pendingImport?.preflight ?? session.import_record?.preflight ?? preflightFromDocument(session.document);
 
   return (
-    <aside className="novel-ai-status-panel">
-      <strong>运行状态</strong>
+    <NovelDetails className="novel-task-diagnostics" title="任务详情"
+      description={session.document ? `${session.document.file_name} · ${checkpointSummary === "无" ? "尚无断点" : `已存断点：${checkpointSummary}`}` : "模型、预算与断点"}
+      open={open} onToggle={() => setOpen((value) => !value)}>
+      <aside className="novel-ai-status-panel">
+      <div className="novel-diagnostics-heading">
+        <p className="novel-muted-note">只读状态；修改模型和预算请前往设置。</p>
+        <button type="button" onClick={() => requestAdvancedTools({ tab: "providers", workspaceNavigation: true })}>
+          模型设置
+        </button>
+      </div>
       <dl>
         <div><dt>当前模型</dt><dd>{model.label}</dd></div>
         <div><dt>当前阶段</dt><dd>{progress?.stageLabel ?? getStageMeta(session.ai_stage).label}</dd></div>
@@ -1323,11 +1320,14 @@ function StatusPanel() {
         <div><dt>质量评分</dt><dd>{session.quality_report ? `${session.quality_report.score}/${session.quality_report.threshold} · ${qualityRiskLabel(session.quality_report.risk_level)}` : "待评估"}</dd></div>
         <div><dt>预计节点</dt><dd>{estimatedNodes || "待规划"}</dd></div>
       </dl>
-    </aside>
+      </aside>
+    </NovelDetails>
   );
 }
 
 function NovelImportLanding() {
+  const retryLimit = useNovelImportStore((state) => state.processing.config.maxRetryCount);
+  const updateRetryConfig = useNovelImportStore((state) => state.updateNovelProcessingConfig);
   const session = useNovelImportStore((state) => state.session);
   const pendingImport = useNovelImportStore((state) => state.pendingImport);
   const importFile = useNovelImportStore((state) => state.importFile);
@@ -1359,9 +1359,8 @@ function NovelImportLanding() {
     <section className={`novel-ai-landing novel-ai-launchpad${activePreflight ? " has-preflight" : ""}`}>
       <div className="novel-ai-launchbar">
         <div className="novel-ai-copy">
-          <span className="panel-kicker">AI 小说导入</span>
-          <h3>长篇小说转蓝图控制台</h3>
-          <p>大模型会分批阅读全文，先生成完整文章大纲。确认大纲后，系统会自动规划场景并逐个写入蓝图节点。</p>
+          <h3>选择小说文件</h3>
+          <p>导入文本 → 解析大纲 → 审核并生成蓝图。</p>
         </div>
         <div className="novel-ai-main-actions">
           <label className={`file-button novel-ai-compact-button${isProcessing ? " is-disabled" : ""}`} data-help-key="novel.importFile" aria-disabled={isProcessing}>
@@ -1398,6 +1397,17 @@ function NovelImportLanding() {
       )}
       {document && !pendingImport && session.status !== "chapters_split" && (
         <section className="novel-direct-options" aria-label="小说直接处理选项">
+          <details className="novel-processing-advanced">
+            <summary>解析参数</summary>
+            <div className="novel-processing-config-grid">
+              <label><span>自动重试次数</span>
+                <NumberInput aria-label="自动重试次数" data-help-key="novel.analysis.maxRetryCount"
+                  min={0} max={10} value={retryLimit} emptyValue={5} disabled={isProcessing}
+                  onChange={event => updateRetryConfig({ maxRetryCount: Number(event.target.value) })} />
+              </label>
+            </div>
+            <p className="muted">默认5次，设为0关闭。仅重试失败请求，保留成功断点。</p>
+          </details>
           <label className="novel-branch-toggle">
             <input
               type="checkbox"
@@ -1416,13 +1426,14 @@ function NovelImportLanding() {
               type="button"
               className="novel-expand-toggle"
               aria-expanded={textCheckOpen}
-              data-help-key="novel.normalizedTextToggle"
+              aria-label={`${textCheckOpen ? "收起" : "展开"}清洗后文本`}
+              data-hover-help-suppressed="true"
               onClick={() => setTextCheckOpen((value) => !value)}
             >
               <span className="novel-expand-summary">
-                <strong>展开文本检查与修正</strong>
-                <small>查看清洗后的原文，并在 AI 扫描前微调内容。</small>
+                <strong>清洗后文本</strong>
               </span>
+              <span className="editor-disclosure-state">{textCheckOpen ? "收起" : "展开"}</span>
               <ChevronDown className="novel-expand-chevron" size={16} />
             </button>
             <div className="novel-expand-content-wrap">
@@ -1439,6 +1450,9 @@ function NovelImportLanding() {
 }
 
 function NovelAiScanPanel() {
+  const retryLimit = useNovelImportStore(state => state.processing.config.maxRetryCount);
+  const updateRetryConfig = useNovelImportStore(state => state.updateNovelProcessingConfig);
+  const stop = useNovelImportStore(state => state.stopAiAnalysis);
   const analyses = useNovelImportStore((state) => state.session.ai_chunk_analyses);
   const isProcessing = useNovelImportStore((state) => state.isProcessing);
   const startAiAnalysis = useNovelImportStore((state) => state.startAiAnalysis);
@@ -1449,6 +1463,15 @@ function NovelAiScanPanel() {
       <p>{isProcessing
         ? "正在分批阅读并合成大纲，已完成结果自动保留。"
         : "解析已暂停，继续时复用已完成的扫描和大纲批次。"}</p>
+      {isProcessing
+        ? <button type="button" onClick={stop} data-help-key="novel.scan.stop">停止解析</button>
+        : <details className="novel-processing-advanced">
+            <summary>解析参数</summary>
+            <label>自动重试次数
+              <NumberInput aria-label="扫描自动重试次数" min={0} max={10} value={retryLimit} emptyValue={5}
+                onChange={event => updateRetryConfig({ maxRetryCount: Number(event.target.value) })} />
+            </label>
+          </details>}
       {!isProcessing && (
         <div className="novel-ai-main-actions">
           <button type="button" className="primary-action novel-ai-compact-button ai-glow-button"
@@ -1508,6 +1531,7 @@ function NovelNextActionBanner({
 }
 
 function NovelOutlineReview() {
+  const [chapterProcessingOpen, setChapterProcessingOpen] = useState(false);
   const outline = useNovelImportStore((state) => state.session.ai_outline);
   const chapters = useNovelImportStore((state) => state.session.chapters);
   const characters = useNovelImportStore((state) => state.session.characters);
@@ -1540,7 +1564,6 @@ function NovelOutlineReview() {
         <p>{outline.main_plot}</p>
         {outline.needs_review && <p className="inline-warning"><AlertTriangle size={14} /> 模型认为覆盖率不足，请重点复核章节范围。</p>}
       </article>
-      <NovelChapterSplitEntry />
       <div className="novel-outline-grid">
         <section className="novel-outline-section">
           <h4>章节列表</h4>
@@ -1571,6 +1594,10 @@ function NovelOutlineReview() {
           />
         </section>
       </div>
+      <NovelDetails title="按章节单独处理" description="选择部分章节，调整处理参数" open={chapterProcessingOpen}
+        onToggle={() => setChapterProcessingOpen((value) => !value)}>
+        <NovelChapterSplitEntry />
+      </NovelDetails>
     </section>
   );
 }
@@ -1721,11 +1748,16 @@ function NovelImportReportPanel() {
   const continueWithQualityRisk = useNovelImportStore((state) => state.continueWithQualityRisk);
   const nodes = useEditorStore((state) => state.nodes);
   const selectNode = useEditorStore((state) => state.selectNode);
+  const edges = useEditorStore((state) => state.edges);
+  const connectImportedLineToEntry = useNovelImportStore((state) => state.connectImportedLineToEntry);
+  const [entryError, setEntryError] = useState<string>();
+  const entry = useMemo(() => inspectNovelEntryConnection(nodes, edges, importJob?.importLineId),
+    [nodes, edges, importJob?.importLineId]);
   const assetManifest = useProjectStore((state) => state.assetManifest);
   const importedNodes = useMemo(() => {
-    const scoped = nodes.filter((node) => node.data.editorMeta?.importSessionId === session.session_id);
-    return scoped.length > 0 ? scoped : nodes.filter((node) => node.data.editorMeta?.source === "imported");
-  }, [nodes, session.session_id]);
+    return nodes.filter((node) => node.data.editorMeta?.importSessionId === session.session_id
+      || (Boolean(importJob?.importLineId) && node.data.editorMeta?.importLineId === importJob?.importLineId));
+  }, [nodes, session.session_id, importJob?.importLineId]);
   const assetAudit = useMemo(() => buildProjectAssetAudit(importedNodes, assetManifest, { includeOptional: true }), [assetManifest, importedNodes]);
   return (
     <section className="novel-primary-panel novel-import-report-panel">
@@ -1766,7 +1798,18 @@ function NovelImportReportPanel() {
           ))}
         </div>
       )}
-      <p>空白蓝图会接入入口主线；已有蓝图会保留原入口和连线，在画布空白处另开小说工程线。</p>
+      <div data-testid="novel-entry-connection" role="status">
+        <p>{entry.message}</p>
+        {entry.status === "available" && (
+          <button type="button" data-help-key="novel.connectEntry" disabled={isProcessing} onClick={() => {
+            try { connectImportedLineToEntry(); setEntryError(undefined); }
+            catch (error) { setEntryError(error instanceof Error ? error.message : "接入失败，请检查入口连线。"); }
+          }}>
+            <Play size={15} />接入游戏入口
+          </button>
+        )}
+        {entryError && <p role="alert">{entryError}</p>}
+      </div>
     </section>
   );
 }
@@ -1780,7 +1823,13 @@ export function NovelImportWizard() {
   const resetSession = useNovelImportStore((state) => state.resetSession);
   const retryQualityCheck = useNovelImportStore((state) => state.retryQualityCheck);
   const continueWithQualityRisk = useNovelImportStore((state) => state.continueWithQualityRisk);
-  const latestErrorSummary = useMemo(() => getLatestImportErrorSummary(errors), [errors]);
+  const completed = !isProcessing && session.status === "imported_to_graph"
+    && session.ai_stage === "report" && importJob?.status === "completed"
+    && importJob.total > 0 && importJob.generatedCount === importJob.total
+    && session.adapted_scenes.length >= importJob.total && importJob.failedSceneIds.length === 0;
+  const [historyOpen, setHistoryOpen] = useState(false);
+  useEffect(() => setHistoryOpen(false), [session.session_id, completed]);
+  const latestErrorSummary = useMemo(() => completed ? undefined : getLatestImportErrorSummary(errors), [errors, completed]);
 
   const activePanel = useMemo(() => {
     if (session.status === "chapters_split") return <NovelChapterSplitEntry />;
@@ -1790,22 +1839,18 @@ export function NovelImportWizard() {
     if (session.ai_stage === "report") return <NovelImportReportPanel />;
     return <NovelImportLanding />;
   }, [session.ai_stage, session.status]);
-  const visibleWarnings = warnings.slice(-4);
-  const hasRunFeedback = Boolean(importJob) || errors.length > 0 || visibleWarnings.length > 0;
+  const visibleWarnings = completed ? [] : warnings.slice(-4);
+  const hasRunFeedback = errors.length > 0 || visibleWarnings.length > 0;
 
   return (
     <section className="advanced-tools-panel novel-import-wizard novel-ai-import">
       <NovelStageHeader activeStage={session.ai_stage} isProcessing={isProcessing} errorSummary={latestErrorSummary} onReset={resetSession} />
-      <StageTimeline activeStage={session.ai_stage} />
+      <StageTimeline activeStage={session.ai_stage} isProcessing={isProcessing} />
       <NovelOperationHeartbeat />
       <div className="novel-ai-layout">
         <main>
+          <StatusPanel />
           {activePanel}
-          {latestErrorSummary && (
-            <p className="inline-error novel-error-summary" role="alert" aria-live="assertive">
-              导入解析失败：{latestErrorSummary}{errors.length > 1 ? `（共 ${errors.length} 条错误，当前显示最新一条）` : ""}
-            </p>
-          )}
           {session.quality_report && session.ai_stage !== "report" && (
             <NovelQualityPanel
               report={session.quality_report}
@@ -1822,13 +1867,18 @@ export function NovelImportWizard() {
             <NovelAiResultPanel />
             <NovelPersistentResultsPanel />
           </div>
-          {hasRunFeedback && (
+          {completed && (errors.length > 0 || warnings.length > 0) && (
+            <NovelDetails title="历史运行记录" description="生成已完成；以下保留过程中的警告与错误。"
+              badge={`${errors.length + warnings.length} 条`} open={historyOpen}
+              onToggle={() => setHistoryOpen((value) => !value)} className="novel-run-history">
+              {errors.map((error, index) => <p key={`error:${index}`} className="inline-error">{error}</p>)}
+              {warnings.map((warning, index) => <p key={`warning:${index}`} className="inline-warning">{warning}</p>)}
+            </NovelDetails>
+          )}
+          {!completed && hasRunFeedback && (
             <section className="novel-run-feedback" aria-live="polite">
-              {importJob && (
-                <p className="inline-status">蓝图生成：{importJob.generatedCount}/{importJob.total}，失败 {importJob.failedSceneIds.length} 个，状态 {novelImportStatusLabel(importJob.status)}</p>
-              )}
               {errors.length > 0 && (
-                <section className="novel-run-log is-error" aria-label="运行错误摘要">
+                <section className="novel-run-log is-error" aria-label="运行错误摘要" role="alert">
                   <header>
                     <strong>运行错误</strong>
                     <span>{errors.length} 条</span>
@@ -1844,7 +1894,6 @@ export function NovelImportWizard() {
             </section>
           )}
         </main>
-        <StatusPanel />
       </div>
     </section>
   );

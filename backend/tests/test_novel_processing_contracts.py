@@ -35,7 +35,9 @@ def test_novel_processing_config_defaults_and_validation() -> None:
     assert config.chunkMinChars == 2_000
     assert config.chunkOverlapChars == 500
     assert config.maxConcurrentAgents == 3
-    assert config.maxRetryCount == 2
+    assert config.maxRetryCount == 5
+    assert NovelProcessingConfig(maxRetryCount=0).maxRetryCount == 0
+    assert NovelProcessingConfig(maxRetryCount=2).maxRetryCount == 2
     assert config.lowChapterConfidenceThreshold == 0.65
     assert config.previousContextSummaryMaxChars == 800
     assert config.chapterSummaryMaxChars == 1_500

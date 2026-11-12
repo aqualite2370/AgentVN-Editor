@@ -18,6 +18,14 @@ export interface PreflightIssue {
   message: string;
   solution: string;
   subject?: string;
+  locations?: PreflightIssueLocation[];
+}
+
+export interface PreflightIssueLocation {
+  scene: string;
+  eventNumber?: number;
+  action: string;
+  field: string;
 }
 
 export interface PreflightCheck {
@@ -470,17 +478,78 @@ function validateAssetReferences(script: RuntimeScript, assets: AssetRef[], node
   const assetsById = new Map(assets.map((asset) => [asset.asset_id, asset]));
   const references = nodes?.length ? collectEditorAssetReferences(nodes, assets) : collectAssetReferencesFromScript(script);
   const issues: PreflightIssue[] = [];
+  const missing = new Map<string, {
+    assetId: string;
+    assetType: string;
+    locations: PreflightIssueLocation[];
+    subject: string;
+  }>();
+  const actionLabels: Record<string, string> = {
+    background: "设置背景",
+    show_image: "显示图片",
+    video: "播放视频",
+    sprite: "显示立绘",
+    bgm: "播放音乐",
+    sfx: "播放音效",
+    animation: "播放动画",
+    dialog: "对白",
+    narration: "旁白",
+    gallery_anchor: "图鉴展示",
+    loading_animation: "开场动画",
+    loading_audio: "开场音频",
+  };
+  const fieldLabels: Record<string, string> = {
+    background_id: "背景素材",
+    image_id: "图片素材",
+    video_id: "视频素材",
+    sprite_id: "立绘素材",
+    bgm_id: "音乐素材",
+    sfx_id: "音效素材",
+    animation_id: "动画素材",
+    animation_asset_id: "动画素材",
+    portrait: "头像素材",
+    voice: "语音素材",
+    font_asset_id: "字体素材",
+    "dialog_style.background_asset_id": "对白框背景",
+    asset_id: "引用素材",
+    video_asset_id: "视频素材",
+  };
   for (const ref of references) {
     const assetId = ref.asset_id.trim();
     const asset = assetsById.get(assetId);
     if (!assetId || !asset) {
-      issues.push(issue(
-        "assets",
-        "warning",
-        "asset_reference_missing",
-        `素材引用缺失：${ref.asset_id || "空值"}（${ref.asset_type}）被 ${ref.source} 引用，但素材库中没有对应 asset_id。导出会写入 placeholder，占位发布前建议替换为最终素材。`,
-        assetId || ref.asset_id,
-      ));
+      const editorRef = ref as Partial<EditorAssetReference>;
+      const commandIndex = editorRef.command_index;
+      const commandType = editorRef.command_type;
+      const field = editorRef.field;
+      const sceneTitle = editorRef.scene_title?.trim();
+      const sceneIndex = script.scenes.findIndex((scene) => scene.scene_id === editorRef.scene_id);
+      const sceneLabel = sceneTitle
+        ? `场景「${sceneTitle}」`
+        : sceneIndex >= 0 ? `场景 #${sceneIndex + 1}` : "场景";
+      const action = commandType === "bgm" && editorRef.action === "stop"
+        ? "停止音乐"
+        : actionLabels[commandType ?? ""] ?? "工程设置";
+      const location: PreflightIssueLocation = {
+        scene: sceneLabel,
+        eventNumber: commandIndex !== undefined && commandIndex >= 0 ? commandIndex + 1 : undefined,
+        action,
+        field: fieldLabels[field ?? ""] ?? "素材",
+      };
+      const key = `${assetId || "(空编号)"}:${ref.asset_type}`;
+      const row = missing.get(key) ?? {
+        assetId,
+        assetType: ref.asset_type,
+        locations: [],
+        subject: assetId || ref.source,
+      };
+      if (!row.locations.some((current) => current.scene === location.scene
+        && current.eventNumber === location.eventNumber
+        && current.action === location.action
+        && current.field === location.field)) {
+        row.locations.push(location);
+      }
+      missing.set(key, row);
     } else if (asset.metadata.placeholder) {
       issues.push(issue(
         "assets",
@@ -490,6 +559,17 @@ function validateAssetReferences(script: RuntimeScript, assets: AssetRef[], node
         ref.asset_id,
       ));
     }
+  }
+  for (const row of missing.values()) {
+    const missingIssue = issue(
+      "assets",
+      "warning",
+      "asset_reference_missing",
+      `素材「${row.assetId || "空编号"}」（${row.assetType}）未加入工程素材库。`,
+      row.subject,
+    );
+    missingIssue.locations = row.locations;
+    issues.push(missingIssue);
   }
   const loadingAnimation = script.loading_animation;
   if (loadingAnimation?.kind === "video" && !loadingAnimation.video_asset_id.trim()) {

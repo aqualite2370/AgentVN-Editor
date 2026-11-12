@@ -185,6 +185,7 @@ def test_tool_registry_covers_every_production_structured_output() -> None:
         "build_novel_outline_structure",
         "build_novel_outline_index",
         "plan_novel_chapter_scenes",
+        "plan_novel_scene_batch",
         "analyze_novel_conflicts",
         "suggest_novel_branches",
         "polish_scene_links",
@@ -308,7 +309,7 @@ def test_deepseek_flash_json_repair_uses_short_repair_budget() -> None:
     assert client.chat.completions.calls[1]["max_tokens"] == 2048
 
 
-def test_deepseek_flash_json_repair_keeps_complex_schema_token_floor() -> None:
+def test_novel_json_failure_preserves_token_floor_without_paid_repair() -> None:
     provider = AIProvider()
     invalid = '{"chapter_id": "chapter_1", "scenes": [{"bad": true}]}'
     repaired = json.dumps(
@@ -337,16 +338,19 @@ def test_deepseek_flash_json_repair_keeps_complex_schema_token_floor() -> None:
     )
     client = FakeLLMClient([FakeToolMessage(content=invalid), FakeToolMessage(content=repaired)])
 
-    result = provider._create_json_structured(  # type: ignore[attr-defined]
-        client,
-        NovelAiChapterScenePlan,
-        "system",
-        "user",
-        {"model": "deepseek-v4-flash", "temperature": 0, "max_tokens": 4096},
-    )
+    with pytest.raises(AIProviderError, match="未自动重试"):
+        provider._create_json_structured(  # type: ignore[attr-defined]
+            client,
+            NovelAiChapterScenePlan,
+            "system",
+            "user",
+            {"model": "deepseek-v4-flash", "temperature": 0, "max_tokens": 4096},
+        )
 
-    assert result.scenes[0].commands[0].type == "narration"
-    assert client.chat.completions.calls[1]["max_tokens"] == 5200
+    assert len(client.chat.completions.calls) == 1
+    kwargs = {"model": "deepseek-v4-flash", "max_tokens": 4096}
+    provider._apply_structured_token_floor(NovelAiChapterScenePlan, kwargs)
+    assert kwargs["max_tokens"] == 5200
 
 
 def test_deepseek_pro_json_repair_uses_pro_repair_budget() -> None:

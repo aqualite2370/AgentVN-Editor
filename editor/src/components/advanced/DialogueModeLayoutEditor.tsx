@@ -1,3 +1,4 @@
+import { NumberInput } from "../common/NumberInput";
 import { useRef, useState, type CSSProperties, type PointerEvent } from "react";
 import type { UISkinLayout, UILayoutComponentStyle, UILayoutRect } from "../../../../shared/cartridge/uiSkin";
 import {
@@ -70,7 +71,7 @@ export function DialogueModeLayoutEditor({ draft, previewDraft = draft, mode, on
       <div className="dialogue-mode-number">
         <RangeControl value={value} min={min} max={max} step={key === "opacity" ? 0.05 : 1}
           ariaLabel={`${label}${fieldLabel}滑块`} onChange={value => setStyle(key, value)} />
-        <input type="number" aria-label={`${label}${fieldLabel}`} value={value} min={min} max={max}
+        <NumberInput emptyValue="" type="number" aria-label={`${label}${fieldLabel}`} value={value} min={min} max={max}
           step={key === "opacity" ? 0.05 : 1}
           onChange={event => {
             if (event.currentTarget.value !== "") setStyle(key, Math.max(min, Math.min(max, Number(event.currentTarget.value))));
@@ -185,7 +186,7 @@ export function DialogueModeLayoutEditor({ draft, previewDraft = draft, mode, on
           <div className="dialogue-mode-number">
             <RangeControl ariaLabel={`${label}区域${key}滑块`} value={rect[key]} min={key === "width" || key === "height" ? 1 : 0}
               max={100} onChange={value => update({ rect: constrainDialogueLayoutRect({ ...rect, [key]: value }) })} />
-            <input type="number" aria-label={`${label}区域${key}`} value={rect[key]} min={key === "width" || key === "height" ? 1 : 0}
+            <NumberInput emptyValue="" type="number" aria-label={`${label}区域${key}`} value={rect[key]} min={key === "width" || key === "height" ? 1 : 0}
               max={100} step={1} onChange={event => {
                 if (event.currentTarget.value !== "") update({ rect: constrainDialogueLayoutRect({ ...rect,
                   [key]: Number(event.currentTarget.value) }) });

@@ -1,3 +1,4 @@
+import { NumberInput } from "../common/NumberInput";
 import { useEffect, useRef } from "react";
 import { nanoid } from "nanoid";
 import type { ReferenceImage } from "../../providers/types";
@@ -55,7 +56,7 @@ export function ReferenceImagePicker({ images, onChange }: { images: ReferenceIm
             <img src={image.blob_url} alt={image.note ?? image.image_id} />
             <label>
               权重
-              <input
+              <NumberInput
                 type="number"
                 min={0}
                 max={1}

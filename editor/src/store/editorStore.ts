@@ -19,6 +19,7 @@ import { reportFrontendError } from "../../../shared/logging/frontendErrorLogger
 import { normalizeBgmCommandFields } from "../../../shared/cartridge/bgmTransition";
 import { normalizeCameraCommandFields } from "../../../shared/camera/cameraMotion";
 import { normalizeOpeningAudioTracks } from "../utils/openingAudio";
+import { applyNarrationStyleToCommands } from "../utils/narrationStyleApply";
 
 export type EditorNoticeTone = "info" | "success" | "warning" | "error";
 type RecentNodeEffectSource = "manual" | "ai" | "imported" | "duplicate" | "declutter";
@@ -1043,41 +1044,14 @@ export const useEditorStore = create<EditorStoreState & EditorStoreActions>()(
         return changedCount;
       },
       applyNarrationStyleToAll: (style, narrationStyle) => {
-        const normalizedDialogStyle: NarrationCommand["dialog_style"] = style
-          ? {
-              background_asset_id: style.background_asset_id ?? null,
-              background_fit: style.background_fit ?? null,
-              theme_color: style.theme_color ?? null,
-              text_color: style.text_color ?? null,
-              font_size: style.font_size ?? null,
-              font_weight: style.font_weight ?? null,
-              font_style: style.font_style ?? null,
-            }
-          : null;
-        const nextDialogStyleMode = normalizedDialogStyle ? "manual" as const : "inherit" as const;
-        const serializedStyle = JSON.stringify(normalizedDialogStyle);
         let changedCount = 0;
         set((state) => {
           const nodes = state.nodes.map((node) => {
             if (!node.data.scene) return node;
-            let nodeChanged = false;
-            const commands = node.data.scene.commands.map((command) => {
-              if (command.type !== "narration") return command;
-              if (
-                (command.narration_style ?? "dialog") === narrationStyle
-                && (command.dialog_style_mode ?? (command.dialog_style ? "manual" : "inherit")) === nextDialogStyleMode
-                && JSON.stringify(command.dialog_style ?? null) === serializedStyle
-              ) return command;
-              changedCount += 1;
-              nodeChanged = true;
-              return {
-                ...command,
-                narration_style: narrationStyle,
-                dialog_style_mode: nextDialogStyleMode,
-                dialog_style: normalizedDialogStyle ? { ...normalizedDialogStyle } : null,
-              };
-            });
-            if (!nodeChanged) return node;
+            const applied = applyNarrationStyleToCommands(node.data.scene.commands, style, narrationStyle);
+            if (!applied.changedCount) return node;
+            changedCount += applied.changedCount;
+            const commands = applied.commands;
             const editorMeta = node.data.editorMeta?.source === "ai_generated"
               ? { ...node.data.editorMeta, source: "ai_edited" as const }
               : node.data.editorMeta;

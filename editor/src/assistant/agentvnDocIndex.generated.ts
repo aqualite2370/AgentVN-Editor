@@ -68,9 +68,9 @@ export const agentvnDocIndexMetadata = {
     },
     {
       "path": "docs/ASSISTANT_USER_GUIDE.md",
-      "sha256": "47b76622bca612da60a4b744d87c35d6351e9440ace2b16ef13265fe22ebd1ee",
-      "characters": 7174,
-      "chunks": 14
+      "sha256": "35d85fa6c30b0e209f403f22a4090bbc8fdd0c93f7e186e6872a2de3d179025a",
+      "characters": 7774,
+      "chunks": 15
     },
     {
       "path": "docs/CARTRIDGE_EXPORT.md",
@@ -194,8 +194,8 @@ export const agentvnDocIndexMetadata = {
     },
     {
       "path": "editor/src/components/common/hoverHelpCatalog.ts",
-      "sha256": "b2d890e949de866392f0a942faf75c9558aca4e18a8eb8159e0f724719063c04",
-      "chunks": 597
+      "sha256": "52fd7816b229af93223017bbe87e8c8d8517e4eb5e1ee113061958fc6cd163f5",
+      "chunks": 598
     }
   ]
 };
@@ -889,6 +889,16 @@ export const agentvnDocIndex: readonly AssistantDocChunk[] = [
       "layout-background"
     ],
     "text": "## layout-background | Ren’Py 控件背景图、颜色与继承\n\n当前源码的主页文字入口：选项→游戏客户端→Ren’Py→标题主页，选择“标题信息”。右侧“主页文字”可分别打开/关闭标题和版本，不隐藏背景，也不修改工程名称与版本。点击“自定义标题文字”或“自定义版本文字”后编辑；留空就不显示该段文字，点击对应“恢复…工程继承”才重新沿用工程信息。隐藏后仍保留自定义文字。选择内建菜单按钮后，“菜单按钮文字”只改文案，保留原动作。保存布局后再保存工程包；游戏导出使用当前活动布局，新标题文字设置需要Runtime 0.26.0。此段是源码操作说明，具体安装版的能力以其版本与实际验收记录为准。\n\n入口：顶部“选项”→“游戏客户端”→布局类型“Ren’Py”。在中间实际预览点击要改的按钮/容器，或从左侧控件列表选择；右侧“当前控件 · 外观”就是单控件设置。\n“当前控件背景图”可选工程内图片；没有图片时先点“导入图片”。“清除图片”移除当前配置。图片如何显示：铺满并裁切（cover）、完整显示（contain）、拉伸铺满（stretch）。按钮可先选普通、悬停/焦点、选中、禁用状态，再设置该状态的图片和颜色。不要把整个页面背景、控件背景和编辑器画布背景混为一谈。\n普通模式无需写代码。右侧可调背景颜色、文字颜色、边框、字号、内容留白、间距、圆角；默认只修改当前控件。字段显示“当前控件覆盖”“继承普通状态”“页面/主题继承”，并提供恢复继承。共享按钮主题在共享样式中单独设置，不能为了改一个按钮批量改全局。\n如果进阶代码覆盖某个属性，界面会标出“代码覆盖”与来源；在代码区修改该值或移除相应覆盖，不能以图形设置悄悄擦掉代码。改完点“保存布局”，再预览并导出核对。AgentVN 与 Ren’Py 两套布局分别保存。\n关键词：background image、button、panel、底图、背景图片、容器贴图、Ren'Py、Ren’Py、进阶布局。\n实现：RuntimeLayoutDesigner、RenpyControlAppearanceEditor、RenpyRuntimePreview。\n\n"
+  },
+  {
+    "id": "guide-gallery-layout-1",
+    "source": "docs/ASSISTANT_USER_GUIDE.md",
+    "title": "画廊锚点、回看与分页设置",
+    "tags": [
+      "current-operation-guide",
+      "gallery-layout"
+    ],
+    "text": "## gallery-layout | 画廊锚点、回看与分页设置\n\n在场景事件中加入“画廊锚点”，填写标题、图片和说明。玩家实际经过锚点后，对应条目才会解锁；仅在编辑器中设置锚点不等于玩家已经解锁。回看从该锚点所属场景开头播放，退出回看后恢复原剧情，不覆盖原存档和回退记录。\n顶部外部预览中的解锁只在本次预览内保留，不写入正式玩家记录。正式游戏的解锁记录按游戏保存，重开后仍可回看；测试预览与正式游戏的记录不能互相代证。\n源码入口：选项→游戏客户端→AgentVN 或 Ren’Py→画廊。选择“画廊面板/画廊网格”，右栏“画廊排列”调整每行条目、每页行数和条目间距，默认4列2行；超过一页后在底部使用上一页、下一页。选择“画廊条目”或“画廊翻页按钮”可修改背景图、颜色、文字、边框、圆角和按钮状态，同类条目共用一套样式。面板可单独设置位置、尺寸和背景。\n保存布局后再保存工程或导出。两套布局独立；新增画廊排列及样式需要 Runtime 0.30.0，具体安装包是否包含以交付记录为准。图片加载失败会显示诊断和重试入口，仍可回看已解锁场景。\n关键词：鉴赏、CG、gallery、unlock、画廊没有显示、锚点跳转、回看、画廊分页、网格行列、翻页按钮。\n实现：GalleryScreen、GalleryGridSettings、galleryAnchorManager、runtimeStore。\n\n"
   },
   {
     "id": "guide-game-aspect-1",
@@ -7791,6 +7801,16 @@ export const agentvnDocIndex: readonly AssistantDocChunk[] = [
       "command.narration.presentation"
     ],
     "text": "帮助键：command.narration.presentation\npurpose: 决定当前旁白沿用底部旁白框，还是使用经典暗幕居中样式。\nusage: “现有旁白框”保持原有行为；“暗幕居中”会压暗场景、隐藏旁白框，并把文本直接显示在屏幕中央。\neffect: 导出后写入 NarrationCommand.narration_style。旧项目未设置时默认按现有旁白框播放。"
+  },
+  {
+    "id": "help-command.narration.style.applyScene",
+    "source": "editor/src/components/common/hoverHelpCatalog.ts",
+    "title": "控件帮助：应用到该场景旁白",
+    "tags": [
+      "control-help",
+      "command.narration.style.applyScene"
+    ],
+    "text": "帮助键：command.narration.style.applyScene\npurpose: 将当前显示样式应用到这个场景的全部旁白。\nusage: 修改呈现模式、底图和文字样式；保留各句文本、独立字体及对白模式。\neffect: 其他场景不变，整次操作可撤销。"
   },
   {
     "id": "help-command.narration.style.applyAll",

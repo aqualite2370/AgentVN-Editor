@@ -36,6 +36,7 @@ import { awaitModuleLoad, recoverableComponentLoader } from "../../utils/recover
 import { AssistantCreationWorkbenchWindow } from "../assistant/AssistantCreationWorkbenchWindow";
 import { useAssistantCreationRecoveryWindow } from "../../assistant/useAssistantCreationRecoveryWindow";
 import { editorWorkspaceDuration, pruneHiddenLayoutSnapshot, readEditorMotionTokens, type EditorMotionTokens } from "../../utils/editorTransitionPresentation";
+import { createEditorContainerMorph, visibleMorphRect } from "../../utils/editorContainerMorph";
 
 const loadExportCartridgePanel = recoverableComponentLoader(() =>
   import("../../cartridge/ExportCartridgePanel"), (module) => module.ExportCartridgePanel);
@@ -152,18 +153,23 @@ function LoadedToolbarPanelTransition({
   panelKey,
   onEntered,
   motionTokens,
+  geometryHandoff,
 }: {
   children: ReactNode;
   panelKey: ToolbarPanel;
   onEntered: () => void;
   motionTokens: EditorMotionTokens;
+  geometryHandoff: boolean;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const onEnteredRef = useRef(onEntered);
   onEnteredRef.current = onEntered;
 
   useLayoutEffect(() => {
-    const target = hostRef.current?.firstElementChild;
+    // The envelope owns this handoff's single content clock. Starting another
+    // fade here would expose the target behind a still-readable source page.
+    if (geometryHandoff) return;
+    const target = hostRef.current;
     if (!(target instanceof HTMLElement)) return;
     const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
     // The navigation reads these values before attaching its destination.
@@ -205,7 +211,10 @@ function NovelWorkbenchLoading() {
   );
 }
 
-export function EditorToolbar({ onReturnHome }: { onReturnHome: () => void }) {
+export function EditorToolbar({ onReturnHome, onWorkspaceActiveChange }: {
+  onReturnHome: () => void;
+  onWorkspaceActiveChange?: (active: boolean) => void;
+}) {
   const workspace = useWorkspaceController();
   const [renderedPanel, setRenderedPanel] = useState<ToolbarPanel | null>(null);
   const [panelStage, setPanelStage] = useState<ToolbarPanelStage>("closed");
@@ -262,7 +271,9 @@ export function EditorToolbar({ onReturnHome }: { onReturnHome: () => void }) {
   const previousPopoverRectRef = useRef<DOMRect | null>(null);
   const popoverMotionTokensRef = useRef<EditorMotionTokens | null>(null);
   const popoverMorphRef = useRef<Animation | null>(null);
+  const popoverEnvelopeRef = useRef<ReturnType<typeof createEditorContainerMorph> | null>(null);
   const popoverMorphGhostRef = useRef<HTMLElement | null>(null);
+  const popoverRetiringGhostsRef = useRef(new Set<HTMLElement>());
   const popoverMorphBridgedContentRef = useRef<HTMLElement | null>(null);
   const retainPopoverMorphGhostRef = useRef(false);
   const popoverMorphSettleTimerRef = useRef<number | null>(null);
@@ -274,7 +285,7 @@ export function EditorToolbar({ onReturnHome }: { onReturnHome: () => void }) {
   const visiblePanel = renderedPanel;
   // React commits during a WAAPI morph must preserve its measured origin.
   // Reading the owner avoids an extra render solely to start the animation.
-  const popoverClassName = `toolbar-popover${primaryTask ? " workspace-task-panel" : ""}${visiblePanel === "preview" ? " preview" : ""}${visiblePanel === "cartridge" ? " cartridge" : ""}${visiblePanel === "advanced" ? " advanced" : ""}${visiblePanel === "assistant" ? " assistant" : ""}${visiblePanel === "timeline" ? " timeline" : ""}${popoverLayoutModeRef.current && visiblePanel === "advanced" ? " is-layout-mode" : ""}${popoverMorphRef.current ? " is-morphing" : ""}${popoverEntryComplete ? " is-entered" : ""}${panelStage === "open" ? " is-open" : ""}${panelStage === "closing" ? " is-closing" : ""}`;
+  const popoverClassName = `toolbar-popover${primaryTask ? " workspace-task-panel" : ""}${visiblePanel === "preview" ? " preview" : ""}${visiblePanel === "cartridge" ? " cartridge" : ""}${visiblePanel === "advanced" ? " advanced" : ""}${visiblePanel === "assistant" ? " assistant" : ""}${visiblePanel === "timeline" ? " timeline" : ""}${popoverLayoutModeRef.current && visiblePanel === "advanced" ? " is-layout-mode" : ""}${popoverMorphRef.current ? " is-morphing" : ""}${popoverEnvelopeRef.current ? " has-container-morph" : ""}${popoverEntryComplete ? " is-entered" : ""}${panelStage === "open" ? " is-open" : ""}${panelStage === "closing" ? " is-closing" : ""}`;
   const aiToolsActive = activePanel === "assistant" || novelWorkbenchOpen;
   const settingsToolsActive = activePanel === "advanced";
   const timelineToolsActive = activePanel === "timeline";
@@ -304,6 +315,7 @@ export function EditorToolbar({ onReturnHome }: { onReturnHome: () => void }) {
     const update = () => {
       updateTaskTop();
       updateTaskBounds();
+      alignOptionsNavigation();
     };
     update();
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
@@ -341,7 +353,8 @@ export function EditorToolbar({ onReturnHome }: { onReturnHome: () => void }) {
     // Loading and the ready modal share one input lease. Restore the original
     // state only when this owner unmounts, not on each loading/active update.
     if (content.inert !== nextInert) content.inert = nextInert;
-  }, [surfaceLoading, activeSurface]);
+    onWorkspaceActiveChange?.(!nextInert);
+  }, [surfaceLoading, activeSurface, onWorkspaceActiveChange]);
 
   useLayoutEffect(() => () => {
     const owner = workspaceInertOwnerRef.current;
@@ -393,8 +406,23 @@ export function EditorToolbar({ onReturnHome }: { onReturnHome: () => void }) {
   function removePopoverMorphGhost() {
     popoverMorphBridgedContentRef.current?.removeAttribute("data-geometry-snapshot-owner");
     popoverMorphBridgedContentRef.current = null;
-    popoverMorphGhostRef.current?.remove();
+    for (const ghost of [...popoverRetiringGhostsRef.current, popoverMorphGhostRef.current]) {
+      ghost?.getAnimations().forEach(animation => {
+        animation.onfinish = null;
+        animation.cancel();
+      });
+      ghost?.remove();
+    }
+    popoverRetiringGhostsRef.current.clear();
     popoverMorphGhostRef.current = null;
+  }
+
+  function playPopoverGhosts() {
+    for (const ghost of [...popoverRetiringGhostsRef.current, popoverMorphGhostRef.current]) {
+      ghost?.getAnimations().forEach(animation => {
+        if (animation.playState === "paused") animation.play();
+      });
+    }
   }
 
   function capturePopoverMotionStart(direction: "enter" | "exit") {
@@ -413,15 +441,40 @@ export function EditorToolbar({ onReturnHome }: { onReturnHome: () => void }) {
     const motionTokens = options.motionTokens ?? readEditorMotionTokens();
     popoverMotionTokensRef.current = motionTokens;
     const node = popoverRef.current;
-    previousPopoverRectRef.current = node ? node.getBoundingClientRect() : null;
-    removePopoverMorphGhost();
+    previousPopoverRectRef.current = popoverEnvelopeRef.current
+      ? visibleMorphRect(popoverEnvelopeRef.current.shell) : node ? node.getBoundingClientRect() : null;
+    // A redirect captures the pixels already being presented. Do not drop a
+    // still-visible outgoing layer just because the new target is not opaque.
+    popoverMorphBridgedContentRef.current?.removeAttribute("data-geometry-snapshot-owner");
+    popoverMorphBridgedContentRef.current = null;
+    for (const ghost of [...popoverRetiringGhostsRef.current, popoverMorphGhostRef.current]) {
+      if (!ghost) continue;
+      const opacity = Number(getComputedStyle(ghost).opacity);
+      ghost.getAnimations().forEach(animation => { animation.onfinish = null; animation.cancel(); });
+      if (opacity < 0.003) {
+        ghost.remove();
+        popoverRetiringGhostsRef.current.delete(ghost);
+      } else {
+        ghost.style.opacity = String(opacity);
+        popoverRetiringGhostsRef.current.add(ghost);
+      }
+    }
+    popoverMorphGhostRef.current = null;
     retainPopoverMorphGhostRef.current = Boolean(options.preserveSnapshot);
     if (!node || !previousPopoverRectRef.current) {
       retainPopoverMorphGhostRef.current = false;
+      removePopoverMorphGhost();
       return;
     }
 
-    const rect = previousPopoverRectRef.current;
+    // A snapshot keeps natural destination dimensions, never a stretched copy
+    // of the envelope's intermediate width.
+    const rect = node.getBoundingClientRect();
+    const visibleRect = previousPopoverRectRef.current;
+    const liveContent = node.querySelector<HTMLElement>(options.preserveSnapshot
+      ? ".toolbar-panel-presentation-layer" : ".advanced-tab-viewport");
+    const liveContentOpacity = liveContent ? getComputedStyle(liveContent).opacity : "1";
+    const liveBackground = getComputedStyle(node).background;
     const ghost = node.cloneNode(true) as HTMLElement;
     ghost.classList.remove(
       "is-morphing",
@@ -432,6 +485,7 @@ export function EditorToolbar({ onReturnHome }: { onReturnHome: () => void }) {
       "is-open",
     );
     ghost.classList.add("toolbar-popover-morph-ghost");
+    ghost.classList.remove("has-container-morph");
     ghost.setAttribute("aria-hidden", "true");
     ghost.inert = true;
     ghost.removeAttribute("id");
@@ -495,6 +549,11 @@ export function EditorToolbar({ onReturnHome }: { onReturnHome: () => void }) {
     ghost.style.setProperty("overflow", "hidden", "important");
     ghost.style.setProperty("animation", "none", "important");
     ghost.style.setProperty("transition", "none", "important");
+    ghost.style.background = liveBackground;
+    ghost.style.clipPath = `inset(${Math.max(0, visibleRect.top - rect.top)}px ${Math.max(0, rect.right - visibleRect.right)}px ${Math.max(0, rect.bottom - visibleRect.bottom)}px ${Math.max(0, visibleRect.left - rect.left)}px)`;
+    const frozenContent = ghost.querySelector<HTMLElement>(options.preserveSnapshot
+      ? ".toolbar-panel-presentation-layer" : ".advanced-tab-viewport");
+    if (frozenContent instanceof HTMLElement) frozenContent.style.opacity = liveContentOpacity;
     if (removed) ghost.dataset.editorSnapshotLayoutPruned = String(removed);
     document.body.appendChild(ghost);
     // A detached clone has no scrollable layout: assigning its scroll position
@@ -515,38 +574,42 @@ export function EditorToolbar({ onReturnHome }: { onReturnHome: () => void }) {
       popoverMorphBridgedContentRef.current = bridgedContent;
     }
 
-    const easing = motionTokens.containerEasing;
-    const reduced = prefersReducedMotion();
-    // Top-level surface handoffs retain the established slow outgoing layer.
-    // Tab snapshots only bridge geometry and must finish before that morph.
-    // These are separate motion owners even though both use a DOM snapshot.
-    const surfaceHandoff = Boolean(options.preserveSnapshot);
-    const ghostFade = ghost.animate(
-      [{ opacity: 1 }, { opacity: 0 }],
-      {
-        duration: editorWorkspaceDuration(surfaceHandoff
-          ? reduced ? reducedSurfacePresentationMs : Math.min(576, popoverMorphMs * 0.6)
-          : reduced ? Math.min(240, reducedPopoverMorphMs * 0.375) : Math.min(360, popoverMorphMs * 0.375), motionTokens),
-        delay: editorWorkspaceDuration(reduced ? 0 : surfaceHandoff
-          ? Math.min(384, popoverMorphMs * 0.4)
-          : Math.min(120, popoverMorphMs * 0.125), motionTokens),
-        easing: easing || "cubic-bezier(0.77, 0, 0.175, 1)",
-        fill: "both",
-      },
-    );
-    // A tab snapshot is captured before React commits the destination
-    // geometry. Start its clock with that morph, so commit/render time cannot
-    // consume the overlap before the destination's content begins to appear.
-    if (options.pauseUntilMorph) ghostFade.pause();
-    ghostFade.onfinish = () => {
-      if (popoverMorphGhostRef.current === ghost) removePopoverMorphGhost();
-    };
+    const duration = editorWorkspaceDuration(prefersReducedMotion()
+      ? reducedPopoverMorphMs : popoverMorphMs * motionTokens.motionScale, motionTokens);
+    for (const layer of [...popoverRetiringGhostsRef.current, ghost]) {
+      const startOpacity = Number(getComputedStyle(layer).opacity);
+      const fade = layer.animate([
+        { opacity: startOpacity }, { opacity: 0, offset: 0.42 }, { opacity: 0 },
+      ], { duration, easing: motionTokens.containerEasing || "cubic-bezier(0.32,0.72,0,1)", fill: "both" });
+      if (options.pauseUntilMorph) fade.pause();
+      fade.onfinish = () => {
+        if (popoverMorphGhostRef.current === layer) removePopoverMorphGhost();
+        else { layer.remove(); popoverRetiringGhostsRef.current.delete(layer); }
+      };
+    }
   }
 
   function clearPopoverMorphSettleTimer() {
     if (popoverMorphSettleTimerRef.current === null) return;
     window.clearTimeout(popoverMorphSettleTimerRef.current);
     popoverMorphSettleTimerRef.current = null;
+  }
+
+  function alignOptionsNavigation() {
+    const node = popoverRef.current;
+    const nav = node?.querySelector<HTMLElement>(".advanced-tools-panel > nav");
+    if (!node || !nav) return;
+    nav.style.marginInlineStart = "";
+    if (window.innerWidth < 901 || window.innerHeight < 481) return;
+    if (!node.classList.contains("is-layout-mode")) return;
+    // Measure the compact CSS endpoint in this same layout commit. Its fixed
+    // containing block and scrollbar gutter differ from the wide desk's;
+    // projecting from viewport coordinates moves the targets by one gutter.
+    // Restore the wide class before paint; contents never render at this size.
+    node.classList.remove("is-layout-mode");
+    const left = nav.getBoundingClientRect().left;
+    node.classList.add("is-layout-mode");
+    nav.style.marginInlineStart = `${Math.max(0, left - nav.getBoundingClientRect().left)}px`;
   }
 
   function setAdvancedLayoutMode(nextLayoutMode: boolean, options: AdvancedLayoutModeOptions = {}): number {
@@ -586,6 +649,7 @@ export function EditorToolbar({ onReturnHome }: { onReturnHome: () => void }) {
   }
 
   useLayoutEffect(() => {
+    alignOptionsNavigation();
     const previousRect = previousPopoverRectRef.current;
     const preserveSnapshot = retainPopoverMorphGhostRef.current;
     const node = popoverRef.current;
@@ -600,6 +664,8 @@ export function EditorToolbar({ onReturnHome }: { onReturnHome: () => void }) {
     clearPopoverMorphSettleTimer();
     popoverMorphRef.current?.cancel();
     popoverMorphRef.current = null;
+    popoverEnvelopeRef.current?.cleanup();
+    popoverEnvelopeRef.current = null;
     node.classList.remove("is-morphing", "is-morph-settled");
     const reduced = prefersReducedMotion();
     const nextRect = node.getBoundingClientRect();
@@ -612,7 +678,7 @@ export function EditorToolbar({ onReturnHome }: { onReturnHome: () => void }) {
       || Math.abs(fullDeltaY) > 1
       || Math.abs(fullScaleX - 1) > 0.01
       || Math.abs(fullScaleY - 1) > 0.01;
-    if (!moved) {
+    if (!moved && !preserveSnapshot) {
       // Narrow layouts can share the same outer rectangle for regular and
       // wide tabs. Their content already has its own crossfade; a geometry
       // snapshot would duplicate that content without any morph to own it.
@@ -622,35 +688,8 @@ export function EditorToolbar({ onReturnHome }: { onReturnHome: () => void }) {
     }
     if (!sizeMorph && !preserveSnapshot) removePopoverMorphGhost();
 
-    // Reduced motion still bridges geometry. Docked workbenches must fit
-    // their canvas track, not merely the much wider viewport: a small 1.08
-    // scale at its right edge otherwise covers the preserved Inspector.
-    const canvasTrack = node.classList.contains("workspace-task-panel")
-      && !node.classList.contains("cartridge")
-      ? document.querySelector<HTMLElement>(".editor-workspace > .flow-surface")?.getBoundingClientRect()
-      : undefined;
-    const trackFitsDestination = canvasTrack
-      && nextRect.left >= canvasTrack.left - 1 && nextRect.right <= canvasTrack.right + 1;
-    const motionLeft = trackFitsDestination ? canvasTrack.left : 0;
-    const motionRight = trackFitsDestination ? canvasTrack.right : window.innerWidth;
-    // Both endpoints fit; the shared monotonic easing then keeps every
-    // intermediate rectangle inside the same preserved boundary.
-    const deltaX = reduced
-      ? Math.max(-Math.min(24, nextRect.left - motionLeft),
-        Math.min(24, motionRight - nextRect.right, fullDeltaX))
-      : fullDeltaX;
-    const deltaY = reduced
-      ? Math.max(-Math.min(24, nextRect.top),
-        Math.min(24, window.innerHeight - nextRect.bottom, fullDeltaY))
-      : fullDeltaY;
-    const scaleX = reduced
-      ? Math.max(0.92, Math.min(1.08, fullScaleX,
-        (motionRight - nextRect.left - deltaX) / Math.max(nextRect.width, 1)))
-      : fullScaleX;
-    const scaleY = reduced
-      ? Math.max(0.92, Math.min(1.08, fullScaleY,
-        (window.innerHeight - nextRect.top - deltaY) / Math.max(nextRect.height, 1)))
-      : fullScaleY;
+    // Both endpoints use the measured workbench bounds. Only the separate
+    // envelope changes geometry; content retains its final natural scale.
     node.classList.add("is-morphing");
     const motionTokens = popoverMotionTokensRef.current ?? readEditorMotionTokens();
     const duration = editorWorkspaceDuration(reduced
@@ -658,42 +697,25 @@ export function EditorToolbar({ onReturnHome }: { onReturnHome: () => void }) {
       : popoverMorphMs * motionTokens.motionScale, motionTokens);
     if (duration <= 0) return;
     const easing = motionTokens.containerEasing;
-    const contentEasing = motionTokens.contentEasing;
-    const content = node.querySelector<HTMLElement>(".advanced-tools-panel");
-    const contentAnimation = sizeMorph ? content?.animate(
+    const content = node.querySelector<HTMLElement>(preserveSnapshot
+      ? ".toolbar-panel-presentation-layer" : ".advanced-tab-viewport");
+    const contentAnimation = sizeMorph || preserveSnapshot ? content?.animate(
       [
-        { opacity: 0 },
-        { opacity: 1 },
-      ],
-      {
-        duration: editorWorkspaceDuration(reduced ? 400 : Math.min(160, popoverMorphMs * motionTokens.motionScale * 0.17), motionTokens),
-        delay: editorWorkspaceDuration(reduced ? 160 : Math.min(320, popoverMorphMs * motionTokens.motionScale * 0.34), motionTokens),
-        easing: contentEasing || "cubic-bezier(0.23, 1, 0.32, 1)",
-        fill: "both",
-      },
-    ) : undefined;
-    const animation = node.animate(
-      [
-        {
-          transform: `translate(${deltaX}px, ${deltaY}px) scale(${scaleX}, ${scaleY})`,
-          opacity: 0.96,
-        },
-        {
-          transform: "translate(0, 0) scale(1, 1)",
-          opacity: 1,
-        },
+        { opacity: 0, transform: reduced ? "none" : "translateY(4px)" },
+        { opacity: 0, transform: reduced ? "none" : "translateY(4px)", offset: 0.24 },
+        { opacity: 1, transform: "translateY(0)" },
       ],
       {
         duration,
-        easing: easing || "cubic-bezier(0.23, 1, 0.32, 1)",
+        easing: easing || "cubic-bezier(0.32,0.72,0,1)",
         fill: "both",
       },
-    );
-    if (!preserveSnapshot) {
-      popoverMorphGhostRef.current?.getAnimations().forEach(ghostAnimation => {
-        if (ghostAnimation.playState === "paused") ghostAnimation.play();
-      });
-    }
+    ) : undefined;
+    const envelope = createEditorContainerMorph(node, previousRect, nextRect, duration,
+      easing || "cubic-bezier(0.32, 0.72, 0, 1)");
+    popoverEnvelopeRef.current = envelope;
+    const animation = envelope.animation;
+    playPopoverGhosts();
     popoverMorphRef.current = animation;
     let cleaned = false;
     const cleanupMorphAnimation = () => {
@@ -702,6 +724,9 @@ export function EditorToolbar({ onReturnHome }: { onReturnHome: () => void }) {
       animation.oncancel = null;
       animation.cancel();
       contentAnimation?.cancel();
+      // A queued cancel belongs to the old effect, not its successor.
+      envelope.cleanup();
+      if (popoverEnvelopeRef.current === envelope) popoverEnvelopeRef.current = null;
       if (popoverMorphRef.current === animation) {
         node.style.transform = "";
         node.style.opacity = "";
@@ -717,6 +742,7 @@ export function EditorToolbar({ onReturnHome }: { onReturnHome: () => void }) {
       // Tab geometry bridges finish with the real container. Surface handoffs
       // own a separate outgoing fade, cleaned by its actual finish callback.
       if (!preserveSnapshot) removePopoverMorphGhost();
+      setPopoverEntryComplete(true);
       node.classList.add("is-morph-settled");
       popoverMorphSettleTimerRef.current = window.setTimeout(() => {
         node.classList.remove("is-morphing");
@@ -854,21 +880,24 @@ export function EditorToolbar({ onReturnHome }: { onReturnHome: () => void }) {
       }
     }
     if (token !== surfaceTokenRef.current) return;
+    // Keep the import workbench during loading; retire its modal/focus layer
+    // only once the requested destination is ready to own interaction.
+    if (surface !== "import" && novelWorkbenchOpen) closeNovelWorkbench();
     const motionTokens = readEditorMotionTokens();
     popoverMotionTokensRef.current = motionTokens;
     setSurfaceLoading(false);
     displayedSurfaceRef.current = surface;
     clearCloseTimer();
     clearPopoverMorphSettleTimer();
-    popoverMorphRef.current?.cancel();
     const shouldMorphSurfaceHandoff = sourceSurface !== "edit"
       && sourceSurface !== "import"
       && surface !== "edit"
       && surface !== "import"
       && visiblePanel !== null;
     if (shouldMorphSurfaceHandoff) {
-      capturePopoverRect({ preserveSnapshot: true, motionTokens });
+      capturePopoverRect({ preserveSnapshot: true, pauseUntilMorph: true, motionTokens });
     } else {
+      popoverMorphRef.current?.cancel();
       removePopoverMorphGhost();
       previousPopoverRectRef.current = null;
     }
@@ -1285,6 +1314,8 @@ export function EditorToolbar({ onReturnHome }: { onReturnHome: () => void }) {
     clearNovelWorkbenchCloseTimer();
     clearPopoverMorphSettleTimer();
     popoverMorphRef.current?.cancel();
+    popoverEnvelopeRef.current?.cleanup();
+    popoverEnvelopeRef.current = null;
     removePopoverMorphGhost();
     closingPanelRef.current = null;
   }, []);
@@ -1338,12 +1369,13 @@ export function EditorToolbar({ onReturnHome }: { onReturnHome: () => void }) {
     <div className={popoverClassName} ref={popoverRef} onAnimationEnd={handlePopoverAnimationEnd}
       inert={surfaceLoading || panelStage === "closing"}
       data-workspace-task={primaryTask ? activeSurface : undefined}>
-      <Suspense fallback={<ToolbarPanelLoading panel={visiblePanel} />}>
         <LoadedToolbarPanelTransition
           panelKey={visiblePanel}
           onEntered={() => setPopoverEntryComplete(true)}
           motionTokens={popoverMotionTokensRef.current!}
+          geometryHandoff={previousPopoverRectRef.current !== null || popoverEnvelopeRef.current !== null}
         >
+        <Suspense fallback={<ToolbarPanelLoading panel={visiblePanel} />}>
           {visiblePanel === "preview" ? (
             <PreviewWindowControls
               sessionRef={previewSessionRef}
@@ -1366,8 +1398,8 @@ export function EditorToolbar({ onReturnHome }: { onReturnHome: () => void }) {
           ) : (
             <AdvancedToolsPanel request={advancedRequest} onLayoutModeChange={setAdvancedLayoutMode} />
           )}
+        </Suspense>
         </LoadedToolbarPanelTransition>
-      </Suspense>
     </div>
   ) : null;
 

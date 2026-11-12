@@ -364,6 +364,7 @@
 }
 
 .asset-studio-field > input:not([type="range"]),
+.asset-studio-field > .editor-number-control > input,
 .asset-studio-field > textarea,
 .asset-studio-field > select,
 .asset-studio-history-filters input,
@@ -391,6 +392,7 @@
 }
 
 .asset-studio-field > input:not([type="range"]):hover:not(:disabled),
+.asset-studio-field > .editor-number-control > input:hover:not(:disabled),
 .asset-studio-field > textarea:hover:not(:disabled),
 .asset-studio-field > select:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--accent) 34%, var(--studio-border));

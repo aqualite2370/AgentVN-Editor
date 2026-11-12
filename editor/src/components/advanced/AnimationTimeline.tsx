@@ -1,3 +1,4 @@
+import { NumberInput } from "../common/NumberInput";
 import type { AnimationKeyframe } from "../../animation/types";
 
 function updateKeyframe(
@@ -52,7 +53,7 @@ export function AnimationTimeline({
             <div className="timeline-row-grid">
               <label>
                 进度
-                <input
+                <NumberInput
                   type="number"
                   min="0"
                   max="1"
@@ -64,7 +65,7 @@ export function AnimationTimeline({
               </label>
               <label>
                 透明度
-                <input
+                <NumberInput emptyValue=""
                   type="number"
                   min="0"
                   max="1"
@@ -80,7 +81,7 @@ export function AnimationTimeline({
               </label>
               <label>
                 横向位移
-                <input
+                <NumberInput emptyValue=""
                   type="number"
                   value={keyframe.x ?? ""}
                   placeholder="0"
@@ -93,7 +94,7 @@ export function AnimationTimeline({
               </label>
               <label>
                 纵向位移
-                <input
+                <NumberInput emptyValue=""
                   type="number"
                   value={keyframe.y ?? ""}
                   placeholder="0"
@@ -106,7 +107,7 @@ export function AnimationTimeline({
               </label>
               <label>
                 缩放
-                <input
+                <NumberInput emptyValue=""
                   type="number"
                   step="0.01"
                   value={keyframe.scale ?? ""}
@@ -120,7 +121,7 @@ export function AnimationTimeline({
               </label>
               <label>
                 旋转
-                <input
+                <NumberInput emptyValue=""
                   type="number"
                   step="1"
                   value={keyframe.rotate ?? ""}
@@ -134,7 +135,7 @@ export function AnimationTimeline({
               </label>
               <label>
                 模糊
-                <input
+                <NumberInput emptyValue=""
                   type="number"
                   step="0.5"
                   value={keyframe.blur ?? ""}
@@ -148,7 +149,7 @@ export function AnimationTimeline({
               </label>
               <label>
                 亮度
-                <input
+                <NumberInput emptyValue=""
                   type="number"
                   step="0.05"
                   value={keyframe.brightness ?? ""}

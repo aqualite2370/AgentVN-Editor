@@ -1,3 +1,4 @@
+import { NumberInput } from "../common/NumberInput";
 import type { BgmAction, BgmCommand } from "../../types/commands";
 import { bgmActionOptions } from "../../utils/localizedOptions";
 import { FieldHelp } from "../common/FieldHelp";
@@ -42,7 +43,7 @@ export function BgmCommandEditor({ command, onChange }: { command: BgmCommand; o
       {normalized.action === "play" && (
         <label>
           音量 <FieldHelp field="volume" />
-          <input
+          <NumberInput
             type="number"
             min="0"
             max="1"
@@ -69,7 +70,7 @@ export function BgmCommandEditor({ command, onChange }: { command: BgmCommand; o
       {effect === "fade" && (
         <label>
           {normalized.action === "play" ? "淡入时长（毫秒）" : "淡出时长（毫秒）"} <FieldHelp field="fade_ms" />
-          <input
+          <NumberInput
             type="number"
             min="0"
             step="100"

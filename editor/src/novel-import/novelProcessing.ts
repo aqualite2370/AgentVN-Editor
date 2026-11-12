@@ -118,7 +118,7 @@ export const defaultNovelProcessingConfig: NovelProcessingConfig = {
   chunkOverlapChars: 500,
   chunkMinChars: 2000,
   maxConcurrency: 3,
-  maxRetryCount: 2,
+  maxRetryCount: 5,
 };
 
 export const emptyNovelProcessingState: NovelProcessingState = {

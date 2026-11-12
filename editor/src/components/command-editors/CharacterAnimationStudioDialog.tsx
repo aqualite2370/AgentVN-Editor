@@ -1,3 +1,4 @@
+import { NumberInput } from "../common/NumberInput";
 import {
   Check,
   Clock3,
@@ -573,11 +574,11 @@ export function CharacterAnimationStudioDialog({
               </label>
               <label>
                 时长 ms
-                <input type="number" min={80} max={10000} step={20} value={duration} disabled={disabled} data-help-key="command.sprite.animationConfig.duration" onChange={(event) => setConfig({ duration_ms: Number(event.target.value) })} />
+                <NumberInput type="number" min={80} max={10000} step={20} value={duration} disabled={disabled} data-help-key="command.sprite.animationConfig.duration" onChange={(event) => setConfig({ duration_ms: Number(event.target.value) })} />
               </label>
               <label>
                 延迟 ms
-                <input type="number" min={0} max={10000} step={20} value={delay} disabled={disabled} data-help-key="command.sprite.animationConfig.delay" onChange={(event) => setConfig({ delay_ms: Number(event.target.value) })} />
+                <NumberInput type="number" min={0} max={10000} step={20} value={delay} disabled={disabled} data-help-key="command.sprite.animationConfig.delay" onChange={(event) => setConfig({ delay_ms: Number(event.target.value) })} />
               </label>
               <label>
                 全局缓动
@@ -652,7 +653,7 @@ export function CharacterAnimationStudioDialog({
             <div className="studio-field-grid">
               <label>
                 进度
-                <input
+                <NumberInput
                   type="number"
                   min={0}
                   max={1}
@@ -670,7 +671,7 @@ export function CharacterAnimationStudioDialog({
               {propertyTracks.map((track) => (
                 <label key={track.key}>
                   {track.label}{track.unit ? ` ${track.unit}` : ""}
-                  <input
+                  <NumberInput emptyValue=""
                     type="number"
                     step={track.key === "scale" || track.key === "brightness" || track.key === "opacity" ? 0.05 : 1}
                     min={track.key === "opacity" ? 0 : undefined}

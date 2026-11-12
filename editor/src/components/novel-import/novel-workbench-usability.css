@@ -1,0 +1,164 @@
+/* Scoped information layout; shared workspace tracks and motion tokens stay intact. */
+.novel-ai-import.advanced-tools-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+}
+.novel-ai-import > .novel-stage-header {
+  padding-block: 6px;
+  border: 0;
+  background: none;
+  box-shadow: none;
+}
+.novel-ai-import > .novel-stage-header .panel-kicker,
+.novel-ai-import > .novel-stage-header .novel-stage-pill { display: none; }
+.novel-ai-import > .novel-ai-timeline { flex: 0 0 auto; }
+.novel-ai-import .novel-ai-layout,
+.advanced-tools-panel.layout-mode .novel-ai-import .novel-ai-layout {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: auto;
+  overflow: hidden;
+  gap: 0;
+}
+.novel-ai-import .novel-ai-layout > main,
+.advanced-tools-panel.layout-mode .novel-ai-import .novel-ai-layout > main,
+.advanced-tools-panel.layout-mode .novel-ai-import .novel-ai-layout > main:has(.novel-model-stream-panel) {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  align-items: stretch;
+  gap: 16px;
+  min-height: 0;
+  height: auto;
+  overflow: auto;
+  padding: 0 4px 8px 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+}
+.novel-ai-import .novel-ai-layout > main > * { flex: 0 0 auto; min-width: 0; width: 100%; }
+.novel-ai-import .novel-ai-layout .novel-ai-launchpad { max-width: none; align-self: stretch; }
+.novel-ai-import .novel-stage-header > div:first-child { display: flex; align-items: center; gap: 12px; }
+.novel-ai-import .novel-stage-header strong { font-size: 15px; }
+.novel-ai-import .novel-stage-error-hint { color: var(--danger); font-size: 12px; }
+.novel-ai-import .novel-task-diagnostics .novel-ai-status-panel {
+  position: static;
+  padding: 0;
+  max-height: none;
+  border: 0;
+  background: none;
+  box-shadow: none;
+}
+.novel-ai-import .novel-ai-status-panel dl { grid-template-columns: repeat(auto-fit,minmax(260px,1fr)); gap: 6px; }
+.novel-ai-import .novel-ai-status-panel dl div { padding: 6px 8px; box-shadow: none; }
+.novel-ai-import .novel-diagnostics-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.novel-ai-import .novel-task-diagnostics .novel-expand-toggle { min-height: 40px; }
+.novel-ai-import .novel-operation-heartbeat { flex: 0 0 auto; }
+.novel-ai-import .novel-secondary-stack:empty { display: none; }
+.novel-ai-import .novel-outline-review { gap: 16px; }
+.novel-ai-import .novel-secondary-stack { gap: 14px; }
+.novel-ai-import .novel-secondary-drawer,
+.novel-ai-import .novel-expand-control.novel-text-check {
+  border-color: color-mix(in srgb, var(--line-strong) 48%, var(--line));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--surface-2) 48%, var(--surface));
+  box-shadow: none;
+}
+.novel-ai-import .novel-secondary-drawer.is-active {
+  border-color: color-mix(in srgb, var(--accent-2) 48%, var(--line));
+  background: color-mix(in srgb, var(--surface-2) 54%, var(--surface));
+}
+.novel-ai-import .novel-secondary-drawer:is(:hover, :focus-within, .is-expanded),
+.novel-ai-import .novel-expand-control.novel-text-check:is(:hover, :focus-within, .is-expanded) {
+  transform: none;
+  box-shadow: none;
+}
+.novel-ai-import .novel-expand-control:after { display: none; }
+.novel-ai-import .novel-expand-control > .novel-expand-toggle {
+  min-height: 44px;
+  padding: 11px 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.novel-ai-import .novel-expand-control > .novel-expand-toggle:is(:hover, :focus-visible) {
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+.novel-ai-import .editor-disclosure-state {
+  padding: 0;
+  background: transparent;
+  color: var(--muted);
+}
+.novel-ai-import .novel-expand-control.is-expanded {
+  border-color: color-mix(in srgb, var(--novel-expand-accent) 46%, var(--line));
+  background: color-mix(in srgb, var(--surface-2) 62%, var(--surface));
+}
+.novel-ai-import .novel-secondary-drawer-body {
+  gap: 14px;
+  margin: 2px 12px 12px;
+  padding: 14px 2px 2px;
+  border-top: 1px solid color-mix(in srgb, var(--line) 66%, transparent);
+}
+.novel-secondary-drawer .novel-disclosure-description {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.novel-ai-import .novel-text-check .novel-expand-content { padding: 12px; }
+.novel-ai-import .novel-expand-summary { gap: 0; }
+.novel-ai-import .novel-text-check .novel-expand-toggle { grid-template-columns: minmax(0, 1fr) auto auto; }
+.novel-ai-import .novel-secondary-drawer-summary span,
+.novel-ai-import .novel-expand-summary small { white-space: normal; }
+
+.novel-task-layer .novel-task-body {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+.novel-task-layer .novel-task-workbench {
+  bottom: auto;
+  height: auto;
+  max-height: calc(100% - 24px);
+}
+.novel-task-layer .novel-task-body > * { flex: 0 0 auto; min-width: 0; }
+.novel-task-layer .novel-task-overview .novel-task-stat-grid { grid-template-columns: repeat(4,minmax(0,1fr)); }
+.novel-task-layer .novel-task-overview .novel-task-stat { padding: 7px 9px; box-shadow: none; }
+.novel-task-layer .novel-task-provenance { color: var(--muted); font-size: 11px; }
+.novel-task-layer .novel-token-panel { display: block; padding: 0; border: 0; background: none; box-shadow: none; }
+.novel-task-layer .novel-task-technical-details { padding: 0; }
+.novel-task-layer .novel-token-view-content { height: auto; max-height: 280px; min-height: 0; overflow: auto; }
+.novel-task-layer .novel-token-panel .novel-secondary-drawer-body > header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.novel-task-layer .novel-task-technical-details-body { display: flex; flex-direction: column; gap: 10px; }
+.novel-ai-import .novel-secondary-drawer,
+.novel-task-layer .novel-secondary-drawer { box-shadow: none; }
+.novel-ai-import .novel-secondary-drawer:hover,
+.novel-ai-import .novel-secondary-drawer:focus-within,
+.novel-ai-import .novel-secondary-drawer.is-expanded,
+.novel-task-layer .novel-secondary-drawer:hover,
+.novel-task-layer .novel-secondary-drawer:focus-within,
+.novel-task-layer .novel-secondary-drawer.is-expanded { transform: none; box-shadow: none; }
+/* Keep collapse transitions, but collapsed children must not remain visible or tabbable. */
+.novel-secondary-drawer > .novel-expand-content-wrap[aria-hidden="true"] {
+  visibility: hidden;
+  transition: grid-template-rows var(--motion-fast) var(--ease-standard), visibility 0s var(--motion-fast);
+}
+.novel-secondary-drawer.is-expanded > .novel-expand-content-wrap {
+  visibility: visible;
+  transition: grid-template-rows var(--motion-fast) var(--ease-standard), visibility 0s;
+}
+@media (max-width: 720px) {
+  .novel-task-layer .novel-task-overview .novel-task-stat-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+}

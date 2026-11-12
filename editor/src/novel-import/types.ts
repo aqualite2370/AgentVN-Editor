@@ -280,6 +280,9 @@ export interface NovelImportSession {
   ai_chunk_analyses: NovelAiChunkAnalysis[];
   scan_partials: Record<string, NovelAiChunkPartial>;
   outline_partials: NovelAiOutlinePartial;
+  scene_plan_partials?: Record<string, NovelAiSceneBatchCheckpoint[]>;
+  /** Completed model responses awaiting the normal validated graph writer. */
+  adaptation_checkpoints?: Record<string, NovelAdaptationCheckpoint>;
   planned_chapter_ids: string[];
   validation_reports: NovelImportValidationReport[];
   ai_outline?: NovelAiOutline;
@@ -568,6 +571,11 @@ export interface NovelAiOutlineBatchCheckpoint {
   payload: NovelAiOutlineMainline | NovelAiOutlineStructure | NovelAiOutlineIndex;
 }
 
+export interface NovelAiSceneBatchCheckpoint {
+  key: string;
+  payload: Record<string, unknown>;
+}
+
 export interface ProgressiveImportJob {
   importLineId: string;
   graphImportMode?: "blank_autoconnect" | "append_isolated";
@@ -644,6 +652,12 @@ export interface AdaptSceneResponse {
   branch_suggestions: BranchSuggestion[];
   conflict_points: ConflictPoint[];
   warnings: string[];
+}
+
+export interface NovelAdaptationCheckpoint {
+  inputFingerprint: string;
+  response: AdaptSceneResponse;
+  createdAt: string;
 }
 
 export interface ImportReport {

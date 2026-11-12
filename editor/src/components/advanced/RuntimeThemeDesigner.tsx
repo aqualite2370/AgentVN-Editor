@@ -1,3 +1,4 @@
+import { NumberInput } from "../common/NumberInput";
 import { useDeferredValue, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { CheckCircle2, Monitor, Palette, RotateCcw, Save, Smartphone, Type } from "lucide-react";
 import {
@@ -415,7 +416,7 @@ function NumberControl({
       <span>{label}</span>
       <div>
         <RangeControl min={min} max={max} step={step} value={current} helpKey="theme.customNumber" ariaLabel={`${label} slider`} onChange={(nextValue) => onChange(nextValue)} />
-        <input type="number" min={min} max={max} step={step} value={current} data-help-key="theme.customNumber" onChange={(event) => onChange(event.target.value === "" ? undefined : Number(event.target.value))} />
+        <NumberInput emptyValue="" type="number" min={min} max={max} step={step} value={current} data-help-key="theme.customNumber" onChange={(event) => onChange(event.target.value === "" ? undefined : Number(event.target.value))} />
       </div>
     </label>
   );

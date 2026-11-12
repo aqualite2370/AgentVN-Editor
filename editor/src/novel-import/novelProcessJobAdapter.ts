@@ -24,6 +24,7 @@ import type {
 import type { AgentTask, ChunkRecord, NovelProcessJob as LocalNovelProcessJob, NovelProcessingState } from "./novelProcessing";
 import { estimateTokensFromCjkCharCount } from "../utils/contextBudget";
 import { reportFrontendError } from "../../../shared/logging/frontendErrorLogger";
+import { readLargeNovelTaskCache, readSmallNovelTaskCache, writeNovelTaskCache } from "./taskCache";
 
 export const novelProcessTaskSnapshotKey = "agentvn.novelProcessTaskWorkbench.snapshot";
 
@@ -644,8 +645,8 @@ export function createMockNovelProcessSnapshot(input: NovelProcessMockInput): No
     qualityIssues: failedChunks > 0 ? [{
       code: "mock_snapshot_failed_chunks",
       severity: "danger",
-      message: "mock adapter 快照包含失败项，不能作为完整通过依据。",
-      action: "继续等待后端 job，或重跑失败阶段。",
+      message: "解析尚有失败内容，已完成的结果仍然保留。",
+      action: "从保存的断点继续，或在导入工作台检查错误。",
     }] : [],
     tokenStats,
     agents,
@@ -661,10 +662,14 @@ export function createMockNovelProcessSnapshot(input: NovelProcessMockInput): No
 
 export function readPersistedNovelProcessTaskSnapshot(projectId: string): NovelProcessTaskSnapshot | undefined {
   try {
-    const scopedRaw = window.localStorage.getItem(projectSnapshotKey(projectId));
-    if (scopedRaw) {
-      return normalizeSnapshotForProject(JSON.parse(scopedRaw) as NovelProcessTaskSnapshot, projectId);
+    const scoped = readSmallNovelTaskCache<NovelProcessTaskSnapshot>(`workbench:${projectId}`, projectSnapshotKey(projectId));
+    if (scoped) {
+      return normalizeSnapshotForProject(scoped, projectId);
     }
+    // A locator is a verified scoped cache too. Its async restore must finish
+    // before considering a legacy global record; otherwise migration could
+    // overwrite the newer IndexedDB snapshot with obsolete task history.
+    if (window.localStorage.getItem(projectSnapshotKey(projectId))) return undefined;
     const legacyRaw = window.localStorage.getItem(novelProcessTaskSnapshotKey);
     if (!legacyRaw) return undefined;
     const legacy = JSON.parse(legacyRaw) as NovelProcessTaskSnapshot;
@@ -673,8 +678,14 @@ export function readPersistedNovelProcessTaskSnapshot(projectId: string): NovelP
     if (legacy.projectId !== projectId) return undefined;
     const migrated = normalizeSnapshotForProject(legacy, projectId);
     if (!migrated) return undefined;
-    persistNovelProcessTaskSnapshot(projectId, migrated);
-    window.localStorage.removeItem(novelProcessTaskSnapshotKey);
+    void writeNovelTaskCache(`workbench:${projectId}`, migrated, projectSnapshotKey(projectId)).then(() => {
+      // A large snapshot commits asynchronously. Retain the legacy recovery
+      // record until the scoped copy is durable, and never remove a newer one.
+      if (window.localStorage.getItem(novelProcessTaskSnapshotKey) === legacyRaw)
+        window.localStorage.removeItem(novelProcessTaskSnapshotKey);
+    }).catch(error => reportFrontendError("editor.novel-process", error, {
+      operation: "migrate-task-snapshot", projectId,
+    }));
     return migrated;
   } catch (error) {
     reportFrontendError("editor.novel-process", error, {
@@ -686,15 +697,17 @@ export function readPersistedNovelProcessTaskSnapshot(projectId: string): NovelP
 }
 
 export function persistNovelProcessTaskSnapshot(projectId: string, snapshot: NovelProcessTaskSnapshot): void {
-  try {
-    window.localStorage.setItem(projectSnapshotKey(projectId), JSON.stringify({ ...snapshot, projectId }));
-  } catch (error) {
+  void writeNovelTaskCache(`workbench:${projectId}`, { ...snapshot, projectId }, projectSnapshotKey(projectId)).catch(error => {
     reportFrontendError("editor.novel-process", error, {
       operation: "persist-task-snapshot",
       projectId,
     });
-    // Persistence is best-effort until session 6 wires the shared job store.
-  }
+  });
+}
+
+export async function readPersistedNovelProcessTaskSnapshotAsync(projectId: string): Promise<NovelProcessTaskSnapshot | undefined> {
+  const value = await readLargeNovelTaskCache<NovelProcessTaskSnapshot>(`workbench:${projectId}`, projectSnapshotKey(projectId));
+  return value ? normalizeSnapshotForProject(value, projectId) : readPersistedNovelProcessTaskSnapshot(projectId);
 }
 
 export function updateMockSnapshotStatus(snapshot: NovelProcessTaskSnapshot, status: NovelProcessJobStatus, message: string): NovelProcessTaskSnapshot {

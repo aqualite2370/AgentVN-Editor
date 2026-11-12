@@ -4,6 +4,7 @@ import type { EditorNode } from "../types/nodes";
 import type { MemoryMode } from "../types/memory";
 import { buildPendingVisualAssetsForScene, ensureSceneHasBackgroundPlaceholder } from "../utils/assetAudit";
 import { normalizeNovelSceneForRuntime } from "./normalizeNovelSceneForRuntime";
+import { updateSourceMappingAfterEdit } from "./sourceMapping";
 
 export interface NovelImportLayout {
   importLineId: string;
@@ -67,7 +68,7 @@ export function adaptedSceneToNode(
       editorMeta: {
         collapsedInspectorSections: [],
         source: "imported",
-        sourceMapping: adapted.source_mapping,
+        sourceMapping: updateSourceMappingAfterEdit(adapted.source_mapping, scene),
         needsReview: adapted.needs_review,
         importSessionId: layout.sessionId,
         importLineId: layout.importLineId,

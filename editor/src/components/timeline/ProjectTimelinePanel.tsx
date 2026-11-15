@@ -45,7 +45,7 @@ export function ProjectTimelinePanel({ onRestore = restoreEditorTimelineProject 
   const [pendingRestore, setPendingRestore] = useState<ProjectBackupEntry>();
   const [restoring, setRestoring] = useState(false);
   const sequence = useRef(0);
-  const restoringRef = useRef(false);
+  const restoringRef = useRef<symbol | undefined>(undefined);
 
   async function refresh() {
     const owner = editorProjectOwner();
@@ -84,11 +84,15 @@ export function ProjectTimelinePanel({ onRestore = restoreEditorTimelineProject 
   }
 
   useEffect(() => {
+    restoringRef.current = undefined;
     setEntries([]);
     setPendingRestore(undefined);
     setRestoring(false);
     void refresh();
-    return () => { sequence.current += 1; };
+    return () => {
+      sequence.current += 1;
+      restoringRef.current = undefined;
+    };
   }, [project.projectId, generation]);
 
   async function restore(entry: ProjectBackupEntry) {
@@ -96,7 +100,8 @@ export function ProjectTimelinePanel({ onRestore = restoreEditorTimelineProject 
     const owner = editorProjectOwner();
     const request = sequence.current;
     const current = () => request === sequence.current && ownsEditorProject(owner);
-    restoringRef.current = true;
+    const operation = Symbol("timeline-restore");
+    restoringRef.current = operation;
     setRestoring(true);
     try {
       if (entry.project_id !== owner.projectId) throw new Error("该记录不属于当前工程。");
@@ -129,8 +134,12 @@ export function ProjectTimelinePanel({ onRestore = restoreEditorTimelineProject 
         action: "请检查 backup-timeline 文件夹权限，以及目标备份文件是否仍然存在。",
       });
     } finally {
-      restoringRef.current = false;
-      if (request === sequence.current) setRestoring(false);
+      // An old project's read may finish while the new project is restoring.
+      // It must neither hold nor release the new operation's guard.
+      if (restoringRef.current === operation) {
+        restoringRef.current = undefined;
+        if (request === sequence.current) setRestoring(false);
+      }
     }
   }
 

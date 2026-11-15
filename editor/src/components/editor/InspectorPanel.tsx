@@ -289,6 +289,7 @@ export function InspectorPanel() {
   const [isEnrichingCurrentScene, setIsEnrichingCurrentScene] = useState(false);
   const [isBatchMigratingAnimations, setIsBatchMigratingAnimations] = useState(false);
   const node = useSelectedNode();
+  const projectLoadGeneration = useEditorStore((state) => state.projectLoadGeneration);
   const nodes = useEditorStore((state) => state.nodes);
   const edges = useEditorStore((state) => state.edges);
   const globalMemoryMode = useEditorStore((state) => state.memoryMode);
@@ -1056,12 +1057,17 @@ export function InspectorPanel() {
             />
           )}
           <CommandListEditor
+            key={`commands:${projectLoadGeneration}:${activeNode.id}`}
             assetTarget={assetTarget}
             commands={activeNode.data.scene.commands}
             sceneId={activeNode.data.scene.scene_id}
             variableKeys={stateVariableKeys}
             sceneIds={runtimeSceneIds}
-            onChange={(commands) => updateSceneCommands(activeNode.id, commands)}
+            onChange={(commands) => {
+              if (useEditorStore.getState().projectLoadGeneration === projectLoadGeneration) {
+                updateSceneCommands(activeNode.id, commands);
+              }
+            }}
           />
           {workbenchCameraOpen && (
             <CameraStudioDialog

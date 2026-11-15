@@ -31,6 +31,8 @@ const maxExpanded = 3;
 const dropAnimationMs = 220;
 
 interface CommandDragState {
+  commands: GameCommand[];
+  command: GameCommand;
   from: number;
   over: number;
   pointerId: number;
@@ -71,21 +73,29 @@ export function currentPoseBeforeList(commands: GameCommand[], commandIndex: num
   return pose;
 }
 
-export function CommandListEditor({
-  commands,
-  sceneId = "",
-  variableKeys = [],
-  sceneIds = [],
-  onChange,
-  assetTarget,
-}: {
+interface CommandListEditorProps {
   commands: GameCommand[];
   sceneId?: string;
   variableKeys?: string[];
   sceneIds?: string[];
   onChange: (commands: GameCommand[]) => void;
   assetTarget?: { sceneId: string; index: number; field?: string; nonce: number };
-}) {
+}
+
+export function CommandListEditor(props: CommandListEditorProps) {
+  // A different scene owns a different editing session, including pointer state,
+  // expanded fields and an open camera dialog.
+  return <CommandListContents key={props.sceneId ?? ""} {...props} />;
+}
+
+function CommandListContents({
+  commands,
+  sceneId = "",
+  variableKeys = [],
+  sceneIds = [],
+  onChange,
+  assetTarget,
+}: CommandListEditorProps) {
   const listRef = useRef<HTMLDivElement | null>(null);
   const keys = useMemo(() => commands.map(commandKey), [commands]);
   const previousKeysRef = useRef<string[]>(keys);
@@ -96,10 +106,6 @@ export function CommandListEditor({
   const [lastAddedKey, setLastAddedKey] = useState<string>();
   const [insertStudioIndex, setInsertStudioIndex] = useState<number>();
   const dropTimerRef = useRef<number | undefined>(undefined);
-  const prefersReducedMotion = useMemo(
-    () => typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches,
-    []
-  );
   const assetTargetKey = assetTarget?.sceneId === sceneId ? keys[assetTarget.index] : undefined;
   const focusedAssetTargetRef = useRef<typeof assetTarget>(undefined);
   useEffect(() => {
@@ -150,11 +156,19 @@ export function CommandListEditor({
     previousKeysRef.current = keys;
   }, [commands, keys]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     return () => {
-      if (dropTimerRef.current) window.clearTimeout(dropTimerRef.current);
+      if (dropTimerRef.current !== undefined) window.clearTimeout(dropTimerRef.current);
+      dragStateRef.current = null;
     };
   }, []);
+
+  useLayoutEffect(() => {
+    const current = dragStateRef.current;
+    // Editing, undo, deletion or reload during a held pointer invalidates its
+    // original list. A decorative drop can finish, but must never write data.
+    if (current && !current.isDropping && current.commands !== commands) cancelDrag();
+  }, [commands]);
 
   const update = (index: number, command: GameCommand) => onChange(commands.map((item, itemIndex) => itemIndex === index ? command : item));
 
@@ -195,6 +209,7 @@ export function CommandListEditor({
   }
 
   function startDrag(index: number, event: ReactPointerEvent<HTMLButtonElement>) {
+    if (!event.isPrimary || event.button !== 0 || dragStateRef.current) return;
     event.preventDefault();
     const card = event.currentTarget.closest<HTMLElement>(".command-card");
     if (!card) return;
@@ -202,6 +217,8 @@ export function CommandListEditor({
     event.currentTarget.setPointerCapture(event.pointerId);
     setMenuKey(undefined);
     const nextState = {
+      commands,
+      command: commands[index],
       from: index,
       over: index,
       pointerId: event.pointerId,
@@ -241,29 +258,41 @@ export function CommandListEditor({
       finishDrag(dragStateRef.current);
     }
 
+    function handlePointerCancel(event: PointerEvent) {
+      if (event.pointerId === pointerId) cancelDrag();
+    }
+
     window.addEventListener("pointermove", handlePointerMove);
     window.addEventListener("pointerup", handlePointerUp);
-    window.addEventListener("pointercancel", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerCancel);
     return () => {
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
-      window.removeEventListener("pointercancel", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerCancel);
     };
   }, [dragState?.isDropping, dragState?.pointerId]);
 
-  function commitDrag(state: CommandDragState, to: number) {
-    if (to !== state.from) {
-      onChange(moveItem(commands, state.from, to));
-    }
+  function cancelDrag() {
+    if (dropTimerRef.current !== undefined) window.clearTimeout(dropTimerRef.current);
+    dropTimerRef.current = undefined;
     dragStateRef.current = null;
     setDragState(null);
   }
 
   function finishDrag(current: CommandDragState | null) {
     if (!current || current.isDropping) return;
-    const to = Math.max(0, Math.min(commands.length - 1, current.over));
-    if (prefersReducedMotion) {
-      commitDrag(current, to);
+    if (current.commands !== commands) {
+      cancelDrag();
+      return;
+    }
+    const to = Math.max(0, Math.min(current.commands.length - 1, current.over));
+    if (to === current.from) {
+      cancelDrag();
+      return;
+    }
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+      cancelDrag();
+      onChange(moveItem(current.commands, current.from, to));
       return;
     }
     const targetRect = dragTargetRect(to) ?? current.sourceRect;
@@ -276,10 +305,12 @@ export function CommandListEditor({
     };
     dragStateRef.current = nextState;
     setDragState(nextState);
-    if (dropTimerRef.current) window.clearTimeout(dropTimerRef.current);
+    // Pointer release is the actual edit. Saving/undo and later field edits
+    // must see the new order immediately, independently of the landing effect.
+    onChange(moveItem(current.commands, current.from, to));
+    if (dropTimerRef.current !== undefined) window.clearTimeout(dropTimerRef.current);
     dropTimerRef.current = window.setTimeout(() => {
-      commitDrag(nextState, to);
-      dropTimerRef.current = undefined;
+      if (dragStateRef.current === nextState) cancelDrag();
     }, dropAnimationMs);
   }
 
@@ -289,10 +320,10 @@ export function CommandListEditor({
         const key = keys[index];
         const expanded = expandedKeys.includes(key);
         const menuOpen = menuKey === key;
-        const dragActive = dragState?.from === index;
+        const dragActive = (dragState?.isDropping ? dragState.over : dragState?.from) === index;
         const dragDirection = dragState ? Math.sign(dragState.over - dragState.from) : 0;
-        const displacedDown = Boolean(dragState && dragState.from > dragState.over && index >= dragState.over && index < dragState.from);
-        const displacedUp = Boolean(dragState && dragState.from < dragState.over && index > dragState.from && index <= dragState.over);
+        const displacedDown = Boolean(dragState && !dragState.isDropping && dragState.from > dragState.over && index >= dragState.over && index < dragState.from);
+        const displacedUp = Boolean(dragState && !dragState.isDropping && dragState.from < dragState.over && index > dragState.from && index <= dragState.over);
         return (
           <Fragment key={key}>
             <div className="camera-command-insert">
@@ -307,7 +338,11 @@ export function CommandListEditor({
             data-drag-direction={dragDirection}
           >
             <header className="command-card-header">
-              <button type="button" className="command-drag-handle" aria-label="拖拽排序事件卡片" data-help-key="command.drag" onPointerDown={(event) => startDrag(index, event)}>
+              <button type="button" className="command-drag-handle" aria-label="拖拽排序事件卡片" data-help-key="command.drag"
+                onPointerDown={(event) => startDrag(index, event)}
+                onLostPointerCapture={() => {
+                  if (dragStateRef.current && !dragStateRef.current.isDropping) cancelDrag();
+                }}>
                 <GripVertical size={16} />
               </button>
               <button type="button" className="command-card-summary" data-help-key="command.expand" onClick={() => toggleExpanded(key)}>
@@ -406,8 +441,8 @@ export function CommandListEditor({
             <GripVertical size={16} />
           </span>
           <span className="command-drag-preview-copy">
-            <strong>{dragState.from + 1}. {commandLabels[commands[dragState.from].type]}</strong>
-            <small>{commandSummary(commands[dragState.from])}</small>
+            <strong>{dragState.from + 1}. {commandLabels[dragState.command.type]}</strong>
+            <small>{commandSummary(dragState.command)}</small>
           </span>
         </div>
       )}

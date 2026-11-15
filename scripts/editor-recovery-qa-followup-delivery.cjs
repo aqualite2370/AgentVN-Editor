@@ -5,12 +5,21 @@ const fs = require("node:fs"), path = require("node:path"), cp = require("node:c
 const crypto = require("node:crypto"), assert = require("node:assert/strict");
 const { scan } = require("./git-content-inventory.cjs");
 const { hashFileSha256: sha } = require("./lib/file-sha256-bounded.cjs");
-const root = path.resolve(__dirname, ".."), base = "F:/testavn/Android-Sprite-Preview-1975-20261116-03";
+const authorFollowup = process.argv.includes("--author-export");
+assert(process.argv.slice(2).every(arg => arg === "--author-export"));
+const root = path.resolve(__dirname, ".."), base = authorFollowup
+  ? "F:/testavn/Sprite-Author-Export-1975-20261116-03"
+  : "F:/testavn/Android-Sprite-Preview-1975-20261116-03";
 const output = path.join(base, "source-delivery.json");
 assert(!fs.existsSync(output), "Keep the earlier delivery receipt");
-const parent = "c7691849acc6ec901f13e968f59d4cf8a1bce66e";
+const parent = authorFollowup ? "e085ff648b83fedcb0169973c20dbbf8d23c019e"
+  : "c7691849acc6ec901f13e968f59d4cf8a1bce66e";
 const branch = "codex/editor-recovery-1975-qa-20261116";
-const files = [
+const files = authorFollowup ? [
+  "scripts/sprite-author-export-playwright.cjs", "scripts/sprite-author-cartridge-player.cjs",
+  "scripts/sprite-author-cartridge-android-stage.cjs", "scripts/sprite-author-export-cleanup.ps1",
+  "scripts/sprite-author-export-audit.cjs", "scripts/editor-recovery-qa-followup-delivery.cjs",
+] : [
   "scripts/android-dead-handler-event-test.cjs", "scripts/lib/android-dead-handler-event.cjs",
   "scripts/editor-recovery-android-lifecycle-review.cjs",
   "scripts/lib/sprite-preview-fixture.cjs", "scripts/sprite-preview-fixture-test.cjs",
@@ -28,11 +37,18 @@ const state = () => ({ head: git(["rev-parse", "HEAD"]).trim(),
   indexSha256: sha(path.resolve(root, git(["rev-parse", "--git-path", "index"]).trim())) });
 const r = { status: "RUNNING", at: new Date().toISOString(), parent, branch, files: [], before: state(),
   productBuilds: 0, deviceStarts: 0, models: 0,
-  scope: "QA_ONLY_SPRITE_PREVIEW_AND_OFFLINE_WARNING_IDENTITY_NO_PRODUCT_OR_USER_DATA" };
+  scope: authorFollowup ? "QA_ONLY_SOURCE_AUTHOR_AND_FIXED_CARTRIDGE_WITH_ANDROID_PERMISSION_FAILURE_RETAINED"
+    : "QA_ONLY_SPRITE_PREVIEW_AND_OFFLINE_WARNING_IDENTITY_NO_PRODUCT_OR_USER_DATA" };
 const save = () => fs.writeFileSync(output, JSON.stringify(r, null, 2));
 (async () => {
-  const audit = read(path.join(base, "audit.json"));
-  assert.equal(audit.status, "PASS_TARGETED_ANDROID_PREVIEW_GEOMETRY_AND_CLEANUP_WITH_RETAINED_LOG_AND_PHYSICAL_PHONE_LIMITS");
+  const audit = read(path.join(base, authorFollowup ? "completion-audit.json" : "audit.json"));
+  assert.equal(audit.status, authorFollowup
+    ? "PARTIAL_PASS_UI_AUTHOR_AND_WINDOWS_ANDROID_FORMAL_QUERY_FAILED_CLEANUP_PASS"
+    : "PASS_TARGETED_ANDROID_PREVIEW_GEOMETRY_AND_CLEANUP_WITH_RETAINED_LOG_AND_PHYSICAL_PHONE_LIMITS");
+  if (authorFollowup) {
+    assert.equal(audit.featureResults.androidFormalQuery, "FAILED_NATIVE_FILE_PERMISSION_BEFORE_GAME_READY");
+    assert.equal(audit.featureResults.androidNewEmbeddedCartridge, "NOT_RUN");
+  }
   const lifecycle = read("F:/testavn/Client-Presentation-Android-1975-20261116-04/lifecycle-source-review-02/report.json");
   assert.equal(lifecycle.status, "WARNING_BRANCH_AND_WINDOW_ORDER_BOUND_CDP_TRIGGER_UNRESOLVED");
   assert.equal(lifecycle.originalCounts.unresolved, 92);
@@ -52,7 +68,9 @@ const save = () => fs.writeFileSync(output, JSON.stringify(r, null, 2));
   assert.deepEqual(git(["diff-tree", "--no-commit-id", "--name-only", "-r", parent, tree]).trim().split("\n").sort(),
     [...files].sort());
   r.commit = git(["-c", "commit.gpgsign=false", "commit-tree", tree, "-p", parent], {
-    input: "Verify unchanged Android APK sprite geometry through controlled preview\n\nKeep original failed sessions and source-capture evidence. Distinguish explicit sprite fade-out from the generic exit class, retain exact geometry inheritance, and permit one bounded empty pidof re-observation only for the same boot and host. Preserve source and installed evidence boundaries; publish no user data or binaries.\n",
+    input: authorFollowup
+      ? "Verify UI-authored sprite cartridge exports and formal Player consumption\n\nKeep source-browser authoring, byte-identical installed Player consumption and unchanged Android APK query diagnostics separate. Retain Android file-permission failure before gameplay and exact cleanup; do not call it an embedded APK pass. Publish QA sources only, without user data or binaries.\n"
+      : "Verify unchanged Android APK sprite geometry through controlled preview\n\nKeep original failed sessions and source-capture evidence. Distinguish explicit sprite fade-out from the generic exit class, retain exact geometry inheritance, and permit one bounded empty pidof re-observation only for the same boot and host. Preserve source and installed evidence boundaries; publish no user data or binaries.\n",
   }).trim();
   save();
   r.push = git(["push", "origin", `${r.commit}:refs/heads/${branch}`]); save();

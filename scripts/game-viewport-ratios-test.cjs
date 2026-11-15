@@ -7,7 +7,9 @@ new Function("module", "exports", buildSync({
     export * from "./shared/cartridge/gameViewport";
     export { getDefaultUISkinLayout, validateUISkinLayout } from "./shared/cartridge/uiSkin";
     export { createRenpyUILayout, updateActiveRuntimeUILayout, switchRuntimeUILayoutType } from "./shared/cartridge/uiLayoutProfiles";
-    export { minimumRuntimeVersionForLayout } from "./shared/cartridge/runtimeCapabilities";
+    export { minimumRuntimeVersionForLayout, GAME_VIEWPORT_RUNTIME_VERSION,
+      GALLERY_PRESENTATION_RUNTIME_VERSION } from "./shared/cartridge/runtimeCapabilities";
+    export { compareSemver } from "./shared/cartridge/compatibility";
     export { resolveRenpyQuickBar } from "./shared/cartridge/renpyQuickBar";
     export { validateNoEditorFields, validateVersionCompatibility } from "./shared/cartridge/validators";` },
   bundle: true, platform: "node", format: "cjs", write: false,
@@ -57,8 +59,14 @@ test("two profiles persist independent ratios through reopen and active export s
   assert.equal(normal.runtimeUILayout.gameViewport, undefined);
   const restored = q.switchRuntimeUILayoutType(normal, "renpy");
   assert.deepEqual(restored.runtimeUILayout.gameViewport, { aspectRatio: "4:3" });
-  assert.equal(restored.runtimeUILayout.target_runtime, "0.27.0");
-  assert.equal(q.minimumRuntimeVersionForLayout("0.26.0", { ...q.createRenpyUILayout(), gameViewport: { aspectRatio: "16:10" } }), "0.27.0");
+  // Current presets also contain gallery components. Ratio persistence must
+  // preserve their higher capability floor rather than force an old 0.27 pin.
+  assert(q.compareSemver(restored.runtimeUILayout.target_runtime, q.GALLERY_PRESENTATION_RUNTIME_VERSION) >= 0);
+  const ratioOnly = { screens: [], gameViewport: { aspectRatio: "16:10" } };
+  assert.equal(q.minimumRuntimeVersionForLayout("0.26.0", ratioOnly), q.GAME_VIEWPORT_RUNTIME_VERSION);
+  assert(q.compareSemver(q.minimumRuntimeVersionForLayout("0.26.0",
+    { ...q.createRenpyUILayout(), gameViewport: { aspectRatio: "16:10" } }),
+    q.GALLERY_PRESENTATION_RUNTIME_VERSION) >= 0);
   assert.equal(q.minimumRuntimeVersionForLayout("1.0.0", restored.runtimeUILayout), "1.0.0");
 });
 test("runtime viewport exports without weakening the editor-coordinate privacy boundary", () => {

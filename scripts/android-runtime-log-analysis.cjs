@@ -80,7 +80,18 @@ function scopedRuntimeLog(input, packageName, knownPids = []) {
   const cacheImplementationError = /\[ERROR:(?:simple_[a-z_]+|disk_cache)\.cc\(\d+\)\]/i;
   const warnings = scoped.filter(line => cacheImplementationError.test(line)
     || /cache.*(inaccessible|fail)|Unable to create cache|tile memory limits|simple_file_enumerator|Could not reconstruct index/i.test(line));
-  return { pids: [...pids], lines: scoped, warnings: [...new Set(warnings)], fatal: runtimeFailures(lines, packageName, [...pids]) };
+  // Android labels Rust's stderr relay as INFO even for structured Chromium
+  // errors. Keep it in the complete review stream; do not broaden the legacy
+  // cache-only warnings field or infer severity from arbitrary message text.
+  const messages = scoped.filter(line => {
+    const record = line.match(/^\d\d-\d\d\s+\S+\s+\d+\s+\d+\s+([VDIWEF])\s+([^:]+):\s?(.*)$/);
+    if (!record) return false;
+    if (/[WEF]/.test(record[1])) return true;
+    return record[1] === "I" && record[2].trim() === "RustStdoutStderr"
+      && /^(?:\[(?:\d{4}\/[\d.]+:)?(?:WARNING|ERROR|FATAL):|FORTIFY:|thread ['"].*panicked at)/.test(record[3]);
+  });
+  return { pids: [...pids], lines: scoped, warnings: [...new Set(warnings)],
+    messages: [...new Set(messages)], fatal: runtimeFailures(lines, packageName, [...pids]) };
 }
 
 function assessRestartTrials(trials) {

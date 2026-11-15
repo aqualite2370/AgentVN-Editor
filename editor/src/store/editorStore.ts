@@ -25,7 +25,7 @@ export type EditorNoticeTone = "info" | "success" | "warning" | "error";
 type RecentNodeEffectSource = "manual" | "ai" | "imported" | "duplicate" | "declutter";
 const EDITOR_GRAPH_HISTORY_LIMIT = 50;
 
-type EditorGraphHistoryBatch = "node-drag";
+type EditorGraphHistoryBatch = "node-drag" | "graph-delete";
 
 interface EditorGraphHistorySnapshot {
   nodes: EditorNode[];
@@ -194,6 +194,7 @@ function sanitizeNode(node: EditorNode, index: number): EditorNode | undefined {
     : node.data.scene;
   return {
     ...node,
+    ...(node.data.nodeKind === "start" ? { deletable: false } : {}),
     position: { x, y },
     data: {
       ...node.data,
@@ -411,6 +412,24 @@ function clearChoiceTargetForRemovedEdge(nodes: EditorNode[], edge: EditorEdge |
     }
     return node;
   });
+}
+
+function removeGraphNodes(state: EditorStoreState, nodeIds: Set<string>): Partial<EditorStoreState> {
+  const removedEdges = state.edges.filter((edge) => nodeIds.has(edge.source) || nodeIds.has(edge.target));
+  // Resolve scene IDs while the removed nodes still exist.
+  const clearedNodes = removedEdges.reduce((nodes, edge) => clearChoiceTargetForRemovedEdge(nodes, edge), state.nodes);
+  const removedEdgeIds = new Set(removedEdges.map((edge) => edge.id));
+  const selectedNodeRemoved = Boolean(state.selectedNodeId && nodeIds.has(state.selectedNodeId));
+  const selectedEdgeRemoved = Boolean(state.selectedEdgeId && removedEdgeIds.has(state.selectedEdgeId));
+  return {
+    nodes: clearedNodes.filter((node) => !nodeIds.has(node.id)),
+    edges: state.edges.filter((edge) => !removedEdgeIds.has(edge.id)),
+    selectedNodeId: selectedNodeRemoved ? undefined : state.selectedNodeId,
+    selectedEdgeId: selectedEdgeRemoved ? undefined : state.selectedEdgeId,
+    selectionRevision: state.selectionRevision + (selectedNodeRemoved || selectedEdgeRemoved ? 1 : 0),
+    recentNodeEffects: Object.fromEntries(Object.entries(state.recentNodeEffects)
+      .filter(([nodeId]) => !nodeIds.has(nodeId))),
+  };
 }
 
 function safeIdPart(value: string | undefined, fallback: string): string {
@@ -787,24 +806,35 @@ export const useEditorStore = create<EditorStoreState & EditorStoreActions>()(
       }),
       setEdges: (edges) => set((state) => withGraphHistory(state, { edges, dirty: true })),
       onNodesChange: (changes) => set((state) => {
-        const graphChanges = changes.filter((change) => change.type !== "select");
+        const graphChanges = changes.filter((change) =>
+          change.type !== "select" && (change.type !== "remove" ||
+            state.nodes.some((node) => node.id === change.id && node.data.nodeKind !== "start")));
         if (graphChanges.length === 0) return {};
-        const nodes = applyNodeChanges(graphChanges, state.nodes) as EditorNode[];
+        const removedIds = new Set(graphChanges.flatMap((change) => change.type === "remove" ? [change.id] : []));
+        const removed = removedIds.size ? removeGraphNodes(state, removedIds) : {};
+        const nodes = applyNodeChanges(graphChanges.filter((change) => change.type !== "remove"),
+          removed.nodes ?? state.nodes) as EditorNode[];
         if (graphChanges.every((change) => change.type === "dimensions")) {
           return { nodes };
         }
-        return withGraphHistory(state, { nodes, dirty: true });
+        return withGraphHistory(state, { ...removed, nodes, dirty: true });
       }),
       onEdgesChange: (changes) =>
         set((state) => {
-          const graphChanges = changes.filter((change) => change.type !== "select");
+          const graphChanges = changes.filter((change) =>
+            change.type !== "select" && (change.type !== "remove" || state.edges.some((edge) => edge.id === change.id)));
           if (graphChanges.length === 0) return {};
           const removedEdges = graphChanges
             .filter((change) => change.type === "remove")
             .map((change) => state.edges.find((edge) => edge.id === change.id))
             .filter((edge): edge is EditorEdge => Boolean(edge));
           const nodes = removedEdges.reduce((nextNodes, edge) => clearChoiceTargetForRemovedEdge(nextNodes, edge), state.nodes);
-          return withGraphHistory(state, { nodes, edges: applyEdgeChanges(graphChanges, state.edges), dirty: true });
+          return withGraphHistory(state, {
+            nodes,
+            edges: applyEdgeChanges(graphChanges, state.edges),
+            selectedEdgeId: removedEdges.some((edge) => edge.id === state.selectedEdgeId) ? undefined : state.selectedEdgeId,
+            dirty: true,
+          });
         }),
       addNode: (node) =>
         set((state) => {
@@ -849,12 +879,11 @@ export const useEditorStore = create<EditorStoreState & EditorStoreActions>()(
         });
         }),
       deleteNode: (nodeId) =>
-        set((state) => withGraphHistory(state, {
-          nodes: state.nodes.filter((node) => node.id !== nodeId || node.data.nodeKind === "start"),
-          edges: state.edges.filter((edge) => edge.source !== nodeId && edge.target !== nodeId),
-          selectedNodeId: state.selectedNodeId === nodeId ? undefined : state.selectedNodeId,
-          dirty: true,
-        })),
+        set((state) => {
+          const node = state.nodes.find((item) => item.id === nodeId);
+          if (!node || node.data.nodeKind === "start") return {};
+          return withGraphHistory(state, { ...removeGraphNodes(state, new Set([nodeId])), dirty: true });
+        }),
       duplicateNode: (nodeId) => {
         const node = get().nodes.find((item) => item.id === nodeId);
         if (!node || node.data.nodeKind === "start") return;
@@ -1374,6 +1403,7 @@ export const useEditorStore = create<EditorStoreState & EditorStoreActions>()(
       },
       importProjectAsRoute: (project) => {
         const state = get();
+        const ownerGeneration = state.projectLoadGeneration;
         const route = createRouteImportGraph(project, state.nodes, state.edges);
         if (route.nodes.length === 0) {
           set({
@@ -1401,6 +1431,7 @@ export const useEditorStore = create<EditorStoreState & EditorStoreActions>()(
           const importedIds = new Set(highlightedRouteNodes.map((node) => node.id));
           window.setTimeout(() => {
             set((current) => {
+              if (current.projectLoadGeneration !== ownerGeneration) return {};
               const recentNodeEffects = Object.fromEntries(
                 Object.entries(current.recentNodeEffects).filter(([nodeId, effect]) => !importedIds.has(nodeId) || effect.createdAt !== createdAt)
               );
@@ -1408,63 +1439,8 @@ export const useEditorStore = create<EditorStoreState & EditorStoreActions>()(
             });
           }, 5200);
         };
-        if (typeof window !== "undefined" && route.nodes.length > 80) {
-          const firstBatchSize = 12;
-          const nextBatchSize = 24;
-          const appendedEdgeIds = new Set<string>();
-          const pickEdgesForAvailableNodes = (nodeIds: Set<string>) => {
-            const nextEdges = route.edges.filter((edge) => {
-              if (appendedEdgeIds.has(edge.id)) return false;
-              return nodeIds.has(edge.source) && nodeIds.has(edge.target);
-            });
-            nextEdges.forEach((edge) => appendedEdgeIds.add(edge.id));
-            return nextEdges;
-          };
-          const firstNodes = route.nodes.slice(0, firstBatchSize);
-          const firstNodeIds = new Set([...state.nodes.map((node) => node.id), ...firstNodes.map((node) => node.id)]);
-          const firstEdges = pickEdgesForAvailableNodes(firstNodeIds);
-          set((current) => withGraphHistory(current, {
-            nodes: [...current.nodes, ...firstNodes],
-            edges: [...current.edges, ...firstEdges],
-            selectedNodeId: route.selectedNodeId,
-            selectedEdgeId: undefined,
-            dirty: true,
-            recentNodeEffects: {
-              ...current.recentNodeEffects,
-              ...Object.fromEntries(highlightedRouteNodes.filter((node) => firstNodeIds.has(node.id)).map((node) => [node.id, { source: "imported" as const, createdAt }])),
-            },
-            lastError: successNotice,
-          }));
-          const scheduleBatch = (startIndex: number) => {
-            const idleWindow = window as Window & {
-              requestIdleCallback?: (handler: IdleRequestCallback, options?: IdleRequestOptions) => number;
-            };
-            const run = () => {
-              const batchNodes = route.nodes.slice(startIndex, startIndex + nextBatchSize);
-              if (batchNodes.length === 0) return;
-              set((current) => {
-                const availableNodeIds = new Set([...current.nodes.map((node) => node.id), ...batchNodes.map((node) => node.id)]);
-                return {
-                  nodes: [...current.nodes, ...batchNodes],
-                  edges: [...current.edges, ...pickEdgesForAvailableNodes(availableNodeIds)],
-                  dirty: true,
-                };
-              });
-              const nextIndex = startIndex + nextBatchSize;
-              if (nextIndex < route.nodes.length) scheduleBatch(nextIndex);
-            };
-            window.setTimeout(() => {
-              if (idleWindow.requestIdleCallback) {
-                idleWindow.requestIdleCallback(run, { timeout: 120 });
-                return;
-              }
-              window.requestAnimationFrame(run);
-            }, 32);
-          };
-          scheduleBatch(firstBatchSize);
-          clearHighlightedEffects();
-          return { nodes: route.nodes.length, edges: route.edges.length, selectedNodeId: route.selectedNodeId };
-        }
+        // Commit the graph atomically. Rendering may be deferred, but saves,
+        // undo and project switches must never observe a partial route.
         set((current) => withGraphHistory(current, {
           nodes: [...current.nodes, ...route.nodes],
           edges: [...current.edges, ...route.edges],

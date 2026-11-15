@@ -1265,6 +1265,13 @@ export function VisualNovelEditor({
               defaultViewport={viewport}
               onNodesChange={onNodesChange}
               onEdgesChange={onEdgesChange}
+              onBeforeDelete={async (elements) => {
+                if (elements.nodes.length || elements.edges.length) {
+                  useEditorStore.getState().beginGraphHistoryBatch("graph-delete");
+                }
+                return true;
+              }}
+              onDelete={() => useEditorStore.getState().endGraphHistoryBatch("graph-delete")}
               onConnect={connectNodes}
               onInit={(instance) => {
                 reactFlowInstanceRef.current = instance;

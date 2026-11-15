@@ -150,6 +150,7 @@ export function createStartNode(position = { x: 40, y: 220 }, memoryMode: Memory
   return {
     id: "start",
     type: "startNode",
+    deletable: false,
     position,
     data: withBase("start", memoryMode, {
       loadingAnimation: { kind: "default" },

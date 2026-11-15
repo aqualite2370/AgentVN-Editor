@@ -876,7 +876,10 @@ export function InspectorPanel() {
           <button type="button" aria-label="复制节点" data-help-key="inspector.duplicateNode" onClick={() => duplicateNode(activeNode.id)}>
             <Copy size={14} />
           </button>
-          <button type="button" aria-label="删除节点" data-help-key="inspector.deleteNode" onClick={() => deleteNode(activeNode.id)}>
+          <button type="button" aria-label="删除节点" data-help-key="inspector.deleteNode"
+            disabled={activeNode.data.nodeKind === "start"}
+            title={activeNode.data.nodeKind === "start" ? "入口节点不能删除" : "删除节点"}
+            onClick={() => deleteNode(activeNode.id)}>
             <Trash2 size={14} />
           </button>
         </div>

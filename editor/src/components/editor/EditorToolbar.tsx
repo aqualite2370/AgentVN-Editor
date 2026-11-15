@@ -25,7 +25,7 @@ import { buildProjectBundle, writeNativeProjectBundle } from "../../utils/projec
 import { useEditorPreferencesStore } from "../../store/editorPreferencesStore";
 import { parseProjectFile } from "../../utils/projectImport";
 import { writeProjectBackup, type ProjectBackupEntry } from "../../utils/projectTimeline";
-import { restoreEditorTimelineProject } from "../../utils/editorProjectPersistence";
+import { editorProjectOwner, ownsEditorProject, restoreEditorTimelineProject } from "../../utils/editorProjectPersistence";
 import { advancedToolsEventName, type AdvancedToolsRequest } from "../advanced/advancedToolsBridge";
 import { MemoryModeSelector } from "./MemoryModeSelector";
 import { ThemeToneSelector } from "./ThemeToneSelector";
@@ -1474,7 +1474,12 @@ export function EditorToolbar({ onReturnHome, onWorkspaceActiveChange }: {
                 const file = event.target.files?.[0];
                 if (!file) return;
 
+                const owner = editorProjectOwner();
                 const result = await parseProjectFile(file);
+                if (!ownsEditorProject(owner)) {
+                  input.value = "";
+                  return;
+                }
                 if (!result.project) {
                   setNotice({
                     tone: "error",
@@ -1488,12 +1493,14 @@ export function EditorToolbar({ onReturnHome, onWorkspaceActiveChange }: {
 
                 const importResult = importProjectAsRoute(result.project);
                 if (result.project.asset_manifest.length > 0) {
-                  project.setAssetManifest(mergeAssetManifest(project.assetManifest, result.project.asset_manifest));
+                  project.setAssetManifest(mergeAssetManifest(useProjectStore.getState().assetManifest, result.project.asset_manifest));
                 }
 
                 if (importResult.nodes > 0) {
                   const largeImport = importResult.nodes > 80;
                   scheduleCanvasViewportWork(() => {
+                    if (!ownsEditorProject(owner) ||
+                      useEditorStore.getState().selectedNodeId !== importResult.selectedNodeId) return;
                     void reactFlow.fitView({
                       nodes: importResult.selectedNodeId ? [{ id: importResult.selectedNodeId }] : undefined,
                       padding: 0.36,

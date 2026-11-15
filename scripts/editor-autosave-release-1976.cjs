@@ -4,8 +4,13 @@ const fs = require("node:fs"), path = require("node:path"), cp = require("node:c
 const assert = require("node:assert/strict");
 const { hashFileSha256: sha } = require("./lib/file-sha256-bounded.cjs");
 const root = path.resolve(__dirname, "..");
-const base = "F:/testavn/Editor-Autosave-Release-1976-20261116-01";
-const version = "1.9.76";
+const homeOrdering = process.argv[3] === "--home-ordering";
+const base = homeOrdering ? "F:/testavn/Editor-Home-Save-Release-1977-20261116-01"
+  : "F:/testavn/Editor-Autosave-Release-1976-20261116-01";
+const version = homeOrdering ? "1.9.77" : "1.9.76";
+const previousVersion = homeOrdering ? "1.9.76" : "1.9.75";
+const releaseDirectory = homeOrdering ? "editor-home-save-1977" : "editor-autosave-1976";
+const packageLogName = homeOrdering ? "package-editor-1977.log" : "package-editor-1976.log";
 const read = f => JSON.parse(fs.readFileSync(f, "utf8").replace(/^\uFEFF/, ""));
 const desc = f => ({ path: path.resolve(f), bytes: fs.statSync(f).size, sha256: sha(f) });
 function write(f, value) {
@@ -13,7 +18,7 @@ function write(f, value) {
   fs.writeFileSync(f, JSON.stringify(value, null, 2), { flag: "wx" });
 }
 const mode = process.argv[2];
-assert(["--checkpoint", "--seal"].includes(mode)); assert.equal(process.argv.length, 3);
+assert(["--checkpoint", "--seal"].includes(mode)); assert.equal(process.argv.length, homeOrdering ? 4 : 3);
 if (mode === "--checkpoint") {
   assert(!fs.existsSync(base), "Keep existing evidence");
   const directories = [];
@@ -45,8 +50,8 @@ if (mode === "--checkpoint") {
     for (let i = 0; i < 3; i++) if (aa[i] !== bb[i]) return bb[i] - aa[i];
     return 0;
   });
-  assert.equal(comparable[0].version, "1.9.75", "Reassess candidate if a newer real PE exists");
-  assert.equal(read(path.join(root, "editor/package.json")).version, "1.9.75");
+  assert.equal(comparable[0].version, previousVersion, "Reassess candidate if a newer real PE exists");
+  assert.equal(read(path.join(root, "editor/package.json")).version, previousVersion);
   const files = [];
   function backup(relative) {
     const source = path.join(root, relative), target = path.join(base, "before", relative);
@@ -63,7 +68,8 @@ if (mode === "--checkpoint") {
   for (const relative of ["editor/package.json", "editor/package-lock.json", "editor/src-tauri/Cargo.toml",
     "editor/src-tauri/Cargo.lock", "editor/src-tauri/tauri.conf.json", "AgentVN Dev.exe",
     "editor/src-tauri/binaries/creator-backend.exe", "editor/src-tauri/target/release/bundle",
-    "editor/src/components/editor/useEditorProjectAutosave.ts", "plans/ACTIVE_TASKS.md", "AGENTS.md"]) backup(relative);
+    "editor/src/components/editor/useEditorProjectAutosave.ts", "editor/src/api/backendClient.ts",
+    "plans/ACTIVE_TASKS.md", "AGENTS.md"]) backup(relative);
   const daily = "D:/AgentVN/AgentVN Dev.exe";
   write(path.join(base, "checkpoint.json"), { status: "PASS_CHECKPOINT_NOT_BUILD", at: new Date().toISOString(),
     nextVersion: version, history, highestHistorical: comparable[0], files, daily: desc(daily),
@@ -75,11 +81,11 @@ if (mode === "--checkpoint") {
 } else {
   const before = read(path.join(base, "checkpoint.json")), out = path.join(base, "release");
   assert(!fs.existsSync(out));
-  const packageLog = path.join(base, "package-editor-1976.log");
+  const packageLog = path.join(base, packageLogName);
   assert(fs.readFileSync(packageLog, "utf8").includes("Packaging complete."));
   assert.equal(read(path.join(root, "editor/src-tauri/tauri.conf.json")).version, version);
-  const source = path.join(root, "releases/editor-autosave-1976/editor");
-  const names = fs.readdirSync(source).filter(n => /^AgentVN_Editor_v1\.9\.76_.*\.exe$/.test(n));
+  const source = path.join(root, "releases", releaseDirectory, "editor");
+  const names = fs.readdirSync(source).filter(n => n.startsWith(`AgentVN_Editor_v${version}_`) && n.endsWith(".exe"));
   assert.equal(names.length, 1);
   const target = path.join(out, "installers/editor"); fs.mkdirSync(target, { recursive: true });
   const installer = path.join(target, names[0]);
@@ -98,9 +104,10 @@ if (mode === "--checkpoint") {
     version, at: new Date().toISOString(), installer: desc(installer), sourceInstaller: desc(path.join(source, names[0])),
     dev: desc(path.join(root, "AgentVN Dev.exe")), player: desc(path.join(root, "editor/src-tauri/binaries/agentvn-player.exe")),
     backend: desc(path.join(root, "editor/src-tauri/binaries/creator-backend.exe")), payloadReport: desc(payloadReport),
-    source: desc(path.join(root, "editor/src/components/editor/useEditorProjectAutosave.ts")),
+    source: desc(path.join(root, homeOrdering ? "editor/src/api/backendClient.ts" :
+      "editor/src/components/editor/useEditorProjectAutosave.ts")),
     packageLog: desc(packageLog), checkpoint: desc(path.join(base, "checkpoint.json")),
     standalonePlayerBuilds: 0, androidBuilds: 0, modelRequests: 0,
-    boundaries: ["New Editor metadata recovery delta; frozen 1.9.75 and D daily unchanged; actual install still pending"] });
+    boundaries: [`New Editor ${homeOrdering ? "home-save ordering" : "metadata recovery"} delta; frozen ${previousVersion} and D daily unchanged; actual install still pending`] });
   console.log(JSON.stringify(read(path.join(out, "build.json"))));
 }

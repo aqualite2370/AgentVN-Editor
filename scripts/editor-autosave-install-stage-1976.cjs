@@ -3,21 +3,39 @@
 const fs = require("node:fs"), path = require("node:path"), cp = require("node:child_process");
 const assert = require("node:assert/strict");
 const { hashFileSha256: sha } = require("./lib/file-sha256-bounded.cjs");
+const homeFollowup = process.argv[2] === "--home-ordering-followup";
+const homeOrdering = homeFollowup || process.argv[2] === "--home-ordering";
 const remaining = process.argv[2] === "--remaining";
 const followup = remaining || process.argv[2] === "--followup";
-assert(process.argv.length === (followup ? 3 : 2));
-const root = path.resolve(__dirname, ".."), base = path.resolve("F:/testavn/Windows-Isolated-1976-20261116-" + (remaining ? "05" : followup ? "04" : "01"));
+assert(process.argv.length === (followup || homeOrdering ? 3 : 2));
+const root = path.resolve(__dirname, ".."), base = path.resolve(homeOrdering
+  ? "F:/testavn/Windows-Isolated-1977-20261116-" + (homeFollowup ? "02" : "01")
+  : "F:/testavn/Windows-Isolated-1976-20261116-" + (remaining ? "05" : followup ? "04" : "01"));
 const priorScope = "F:/testavn/Windows-Isolated-1972-20261114-01";
-const release = "F:/testavn/Editor-Autosave-Release-1976-20261116-01/release";
+const release = homeOrdering ? "F:/testavn/Editor-Home-Save-Release-1977-20261116-01/release"
+  : "F:/testavn/Editor-Autosave-Release-1976-20261116-01/release";
 const read = f => JSON.parse(fs.readFileSync(f, "utf8").replace(/^\uFEFF/, ""));
 const desc = f => ({ path: path.resolve(f), bytes: fs.statSync(f).size, sha256: sha(f) });
 const build = read(path.join(release, "build.json"));
-const old = read("F:/testavn/Editor-Recovery-20261115-01/release/build.json");
+const old = read(homeOrdering ? "F:/testavn/Editor-Autosave-Release-1976-20261116-01/release/build.json"
+  : "F:/testavn/Editor-Recovery-20261115-01/release/build.json");
 assert.equal(build.status, "PASS_EDITOR_DEV_NSIS_AND_PAYLOAD_ACTUAL_INSTALL_NOT_RUN");
-assert.equal(build.version, "1.9.76"); assert.equal(old.version, "1.9.75");
+assert.equal(build.version, homeOrdering ? "1.9.77" : "1.9.76");
+assert.equal(old.version, homeOrdering ? "1.9.76" : "1.9.75");
 assert.equal(sha(build.installer.path), build.installer.sha256); assert.equal(sha(old.installer.path), old.installer.sha256);
 assert.equal(sha(build.payloadReport.path), build.payloadReport.sha256);
 assert.equal(read(build.payloadReport.path).status, "PASS");
+if (homeFollowup) {
+  const previous = "F:/testavn/Windows-Isolated-1977-20261116-01";
+  const control = read(path.join(previous, "account-controller.json"));
+  assert.equal(control.status, "FINISHED"); assert.equal(control.cleanup.profileLoaded, false);
+  assert.equal(control.cleanup.ownedProcesses.length, 0); assert.equal(control.cleanup.accountDisabled, true);
+  const failed = read(path.join(previous, "resource-01/report.json"));
+  assert.equal(failed.status, "FAILED"); assert(failed.error.includes("strict mode violation"));
+  assert.equal(failed.stages[0].status, "PASS"); assert.equal(failed.stages[1].status, "PASS");
+  const existing = read(path.join(previous, "install-new.json"));
+  assert.equal(existing.status, "PASS"); assert.equal(sha(existing.executable.path), existing.executable.sha256);
+}
 if (followup) {
   const nativePoints = require("./lib/native-editor-recovery-files.cjs").recoveryPoints(
     "F:/testavn/Editor-Recovery-20261115-01/native-metadata-01/data/backup-timeline", "project_mwiaqn42_0_af61e3cf18");
@@ -49,8 +67,9 @@ function write(name, source, transform = scope) {
     `$e=$null;$t=$null;[void][Management.Automation.Language.Parser]::ParseFile('${to}',[ref]$t,[ref]$e);if($e.Count){throw($e|Out-String)}`],
   { windowsHide: true });
 }
+const runner = homeOrdering ? "editor-home-save-installed-1977.cjs" : "editor-autosave-installed-1976.cjs";
 for (const name of ["windows-isolated-account-controller.ps1", "final-project-qa-retire-1956.ps1",
-  "audit-installed-editor-marker.cjs", "editor-autosave-installed-1976.cjs"]) write(name, name);
+  "audit-installed-editor-marker.cjs", runner]) write(name, name);
 write("windows-isolated-account-child.ps1", "windows-isolated-account-child.ps1", text => {
   const marker = "& 'C:\\Program Files\\nodejs\\node.exe' $script @($job.arguments)";
   assert(text.includes(marker));
@@ -86,6 +105,11 @@ for (const name of ["qa-default-editor-session.cjs", "windows-repository-native.
     assert(text.includes(marker));
     text = text.replace(marker, `(${marker} || resolved === path.resolve("F:/testavn/Windows-Isolated-1976-20261116-01/installed-editor"))`);
   }
+  if (homeFollowup && name === "qa-default-editor-session.cjs") {
+    const marker = `resolved === path.resolve("${base.replaceAll("\\", "/")}/installed-editor")`;
+    assert(text.includes(marker));
+    text = text.replace(marker, `(${marker} || resolved === path.resolve("F:/testavn/Windows-Isolated-1977-20261116-01/installed-editor"))`);
+  }
   fs.writeFileSync(f, text);
   copies.push({ source: desc(path.join(root, "scripts/lib", name)), staged: desc(f) });
 }
@@ -101,8 +125,8 @@ function pkg(name, from) {
 for (const name of ["playwright", "jszip"]) pkg(name, path.join(root, "editor"));
 const fixture = remaining ? read("F:/testavn/Windows-Isolated-1976-20261116-04/resource-01/recovery-files/setting.json") :
   read(path.join(root, "scripts/fixtures/editor-isolated-small.vnproj"));
-fixture.project_id = "qa-editor-autosave-upgrade-1976";
-if (!remaining) { fixture.title = "安装版保存恢复1976"; fixture.author = "隔离验收"; }
+fixture.project_id = homeOrdering ? "qa-editor-home-save-ordering-1977" : "qa-editor-autosave-upgrade-1976";
+if (!remaining) { fixture.title = homeOrdering ? "安装版首页保存顺序1977" : "安装版保存恢复1976"; fixture.author = "隔离验收"; }
 fs.writeFileSync(path.join(base, "fixture.vnproj"), JSON.stringify(fixture, null, 2), { flag: "wx" });
 fs.writeFileSync(path.join(base, "candidate.json"), JSON.stringify({
   version: build.version, installer: build.installer, payloadReport: build.payloadReport,
@@ -110,7 +134,7 @@ fs.writeFileSync(path.join(base, "candidate.json"), JSON.stringify({
 fs.writeFileSync(path.join(base, "upgrade-candidate.json"), JSON.stringify({
   old: { ...old.installer, version: old.version }, current: { ...build.installer, version: build.version },
 }, null, 2), { flag: "wx" });
-const entry = path.join(scripts, "editor-autosave-installed-1976.cjs");
+const entry = path.join(scripts, runner);
 fs.writeFileSync(path.join(base, "jobs/job-01.json"), JSON.stringify({
   script: entry, sha256: sha(entry), arguments: [base],
 }, null, 2), { flag: "wx" });
@@ -141,7 +165,8 @@ const closes = require(path.join(scripts, "lib/editor-upgrade-wm-close.cjs")).se
 fs.writeFileSync(path.join(base, "staging.json"), JSON.stringify({
   status: "STAGED_NOT_NATIVE_ACCEPTANCE", at: new Date().toISOString(), copies, packages: [...packages], guards, closes,
   fixture: desc(path.join(base, "fixture.vnproj")), installations: 0, models: 0,
-  scope: followup ? "REUSE_ACTUAL_1976_INSTALL_FRESH_DEFAULT_PROFILE_METADATA_NATIVE_FAILURE_RETRY_RESTORE_RESTART_RETIRE_NO_REINSTALL" :
+  scope: homeOrdering ? "ACTUAL_1977_INSTALL_HOME_SAVE_ORDERING_DEFAULT_PROFILE_RESTART_AND_RETIRE_NOT_UPGRADE" :
+    followup ? "REUSE_ACTUAL_1976_INSTALL_FRESH_DEFAULT_PROFILE_METADATA_NATIVE_FAILURE_RETRY_RESTORE_RESTART_RETIRE_NO_REINSTALL" :
     "TARGETED_1975_TO_1976_DEFAULT_PROFILE_UPGRADE_METADATA_NATIVE_FAILURE_RETRY_TIMELINE_RESTORE_RESTART_RETIRE",
 }, null, 2), { flag: "wx" });
 console.log(JSON.stringify({ status: "STAGED", base, guards, packages: packages.size }));

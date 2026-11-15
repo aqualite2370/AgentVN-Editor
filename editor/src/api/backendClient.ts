@@ -144,7 +144,7 @@ export class BackendClient {
     data: SharedEditorStateUpdate | Record<string, unknown> | (() => SharedEditorStateUpdate | Record<string, unknown>),
     options: { onPersisted?: (state: SharedEditorState) => void } = {},
   ): Promise<SharedEditorState> {
-    const write = this.projectStateWrites.then(async () => {
+    return this.enqueueProjectWrite(async () => {
       const payload = typeof data === "function" ? data() : data;
       const response = await this.request<{ ok: boolean; data: SharedEditorState }>("/api/project/state", {
         method: "POST",
@@ -155,6 +155,13 @@ export class BackendClient {
       options.onPersisted?.(response.data);
       return response.data;
     });
+  }
+
+  private enqueueProjectWrite<T>(operation: () => Promise<T>): Promise<T> {
+    // Project detail saves (home/import) and graph autosaves target the same
+    // backend record. A separate PUT can otherwise arrive after a newer POST
+    // and silently replace that newer author revision.
+    const write = this.projectStateWrites.then(operation);
     this.projectStateWrites = write.then(() => undefined, () => undefined);
     return write;
   }
@@ -187,14 +194,16 @@ export class BackendClient {
     project: import("../types/nodes").EditorProjectFile,
     options: { sourceSizeBytes?: number } = {},
   ): Promise<import("../types/nodes").EditorProjectFile> {
-    const response = await this.request<{ ok: boolean; data: import("../types/nodes").EditorProjectFile }>(`/api/project/projects/${encodeURIComponent(project.project_id)}`, {
-      method: "PUT",
-      headers: options.sourceSizeBytes !== undefined
-        ? { "X-AgentVN-Source-Size-Bytes": String(Math.max(0, Math.round(options.sourceSizeBytes))) }
-        : undefined,
-      body: JSON.stringify(project),
-    }, { timeoutMs: 180000 });
-    return response.data;
+    return this.enqueueProjectWrite(async () => {
+      const response = await this.request<{ ok: boolean; data: import("../types/nodes").EditorProjectFile }>(`/api/project/projects/${encodeURIComponent(project.project_id)}`, {
+        method: "PUT",
+        headers: options.sourceSizeBytes !== undefined
+          ? { "X-AgentVN-Source-Size-Bytes": String(Math.max(0, Math.round(options.sourceSizeBytes))) }
+          : undefined,
+        body: JSON.stringify(project),
+      }, { timeoutMs: 180000 });
+      return response.data;
+    });
   }
 
   async importProjectFile(file: File): Promise<import("../types/nodes").EditorProjectFile> {

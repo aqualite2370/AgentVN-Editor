@@ -6,13 +6,17 @@ const { hashFileSha256: sha } = require("./lib/file-sha256-bounded.cjs");
 const root = path.resolve(__dirname, "..");
 const homeOrdering = process.argv[3] === "--home-ordering";
 const graphIntegrity = process.argv[3] === "--graph-integrity";
-const base = graphIntegrity ? "F:/testavn/Editor-Graph-Release-1978-20261116-01"
+const eventIntegrity = process.argv[3] === "--event-integrity";
+const base = eventIntegrity ? "F:/testavn/Editor-Event-Release-1979-20261116-01"
+  : graphIntegrity ? "F:/testavn/Editor-Graph-Release-1978-20261116-01"
   : homeOrdering ? "F:/testavn/Editor-Home-Save-Release-1977-20261116-01"
   : "F:/testavn/Editor-Autosave-Release-1976-20261116-01";
-const version = graphIntegrity ? "1.9.78" : homeOrdering ? "1.9.77" : "1.9.76";
-const previousVersion = graphIntegrity ? "1.9.77" : homeOrdering ? "1.9.76" : "1.9.75";
-const releaseDirectory = graphIntegrity ? "editor-graph-1978" : homeOrdering ? "editor-home-save-1977" : "editor-autosave-1976";
-const packageLogName = graphIntegrity ? "package-editor-1978-02.log" : homeOrdering ? "package-editor-1977.log" : "package-editor-1976.log";
+const version = eventIntegrity ? "1.9.79" : graphIntegrity ? "1.9.78" : homeOrdering ? "1.9.77" : "1.9.76";
+const previousVersion = eventIntegrity ? "1.9.78" : graphIntegrity ? "1.9.77" : homeOrdering ? "1.9.76" : "1.9.75";
+const releaseDirectory = eventIntegrity ? "editor-events-1979" : graphIntegrity ? "editor-graph-1978" : homeOrdering ? "editor-home-save-1977" : "editor-autosave-1976";
+const packageLogName = eventIntegrity ? "package-editor-1979.log" : graphIntegrity ? "package-editor-1978-02.log" : homeOrdering ? "package-editor-1977.log" : "package-editor-1976.log";
+const eventSources = ["editor/src/components/command-editors/CommandListEditor.tsx",
+  "editor/src/components/editor/InspectorPanel.tsx", "editor/src/components/timeline/ProjectTimelinePanel.tsx"];
 const graphSources = ["editor/src/store/editorStore.ts", "editor/src/utils/nodeFactory.ts",
   "editor/src/components/editor/VisualNovelEditor.tsx", "editor/src/components/editor/InspectorPanel.tsx",
   "editor/src/components/editor/EditorToolbar.tsx"];
@@ -23,7 +27,7 @@ function write(f, value) {
   fs.writeFileSync(f, JSON.stringify(value, null, 2), { flag: "wx" });
 }
 const mode = process.argv[2];
-assert(["--checkpoint", "--seal"].includes(mode)); assert.equal(process.argv.length, homeOrdering || graphIntegrity ? 4 : 3);
+assert(["--checkpoint", "--seal"].includes(mode)); assert.equal(process.argv.length, homeOrdering || graphIntegrity || eventIntegrity ? 4 : 3);
 if (mode === "--checkpoint") {
   assert(!fs.existsSync(base), "Keep existing evidence");
   const directories = [];
@@ -41,7 +45,7 @@ if (mode === "--checkpoint") {
       const dir = path.join("F:/testavn", item.name, "installers/editor");
       if (fs.existsSync(dir)) directories.push(dir);
     }
-    if (graphIntegrity) {
+    if (graphIntegrity || eventIntegrity) {
       const dir = path.join("F:/testavn", item.name, "release/installers/editor");
       if (fs.existsSync(dir)) directories.push(dir);
     }
@@ -77,10 +81,11 @@ if (mode === "--checkpoint") {
   for (const relative of ["editor/package.json", "editor/package-lock.json", "editor/src-tauri/Cargo.toml",
     "editor/src-tauri/Cargo.lock", "editor/src-tauri/tauri.conf.json", "AgentVN Dev.exe",
     "editor/src-tauri/binaries/creator-backend.exe",
-    ...(graphIntegrity ? graphSources : ["editor/src-tauri/target/release/bundle"]),
+    ...(eventIntegrity ? eventSources : graphIntegrity ? graphSources : ["editor/src-tauri/target/release/bundle"]),
     "editor/src/components/editor/useEditorProjectAutosave.ts", "editor/src/api/backendClient.ts",
     "plans/ACTIVE_TASKS.md", "AGENTS.md"]) backup(relative);
-  const frozenPrevious = graphIntegrity ? read("F:/testavn/Editor-Home-Save-Release-1977-20261116-01/release/build.json") : null;
+  const frozenPrevious = eventIntegrity ? read("F:/testavn/Editor-Graph-Release-1978-20261116-01/release/build.json")
+    : graphIntegrity ? read("F:/testavn/Editor-Home-Save-Release-1977-20261116-01/release/build.json") : null;
   if (frozenPrevious) {
     assert.equal(frozenPrevious.version, previousVersion);
     assert.equal(sha(frozenPrevious.installer.path), frozenPrevious.installer.sha256);
@@ -124,19 +129,27 @@ if (mode === "--checkpoint") {
     assert(fs.readFileSync(path.join(base, "dev-build.log"), "utf8").includes("Dev container built:"));
     assert(fs.readFileSync(path.join(base, "frontend-build.log"), "utf8").includes("built in"));
   }
+  if (eventIntegrity) {
+    assert(fs.readFileSync(path.join(base, "dev-build.log"), "utf8").includes("Dev container built:"));
+    assert(fs.readFileSync(path.join(base, "frontend-build.log"), "utf8").includes("built in"));
+    assert.equal(read("F:/testavn/Editor-Event-Boundaries-20261116-01/terminal-audit-01.json").status,
+      "PASS_SOURCE_EVENT_AND_TIMELINE_BOUNDARIES");
+  }
   write(path.join(out, "build.json"), { status: "PASS_EDITOR_DEV_NSIS_AND_PAYLOAD_ACTUAL_INSTALL_NOT_RUN",
     version, at: new Date().toISOString(), installer: desc(installer), sourceInstaller: desc(path.join(source, names[0])),
     dev: desc(path.join(root, "AgentVN Dev.exe")), player: desc(path.join(root, "editor/src-tauri/binaries/agentvn-player.exe")),
     backend: desc(path.join(root, "editor/src-tauri/binaries/creator-backend.exe")), payloadReport: desc(payloadReport),
-    source: desc(path.join(root, graphIntegrity ? graphSources[0] : homeOrdering ? "editor/src/api/backendClient.ts" :
+    source: desc(path.join(root, eventIntegrity ? eventSources[0] : graphIntegrity ? graphSources[0] : homeOrdering ? "editor/src/api/backendClient.ts" :
       "editor/src/components/editor/useEditorProjectAutosave.ts")),
     ...(graphIntegrity ? { graphSources: graphSources.map(f => desc(path.join(root, f))) } : {}),
+    ...(eventIntegrity ? { eventSources: eventSources.map(f => desc(path.join(root, f))),
+      logs: ["typecheck.log", "frontend-build.log", "dev-build.log"].map(f => desc(path.join(base, f))) } : {}),
     ...(graphIntegrity ? { logs: ["typecheck.log", "frontend-build.log", "dev-build.log"].map(f => desc(path.join(base, f))),
       rejectedPackagingPreflight: { ...desc(path.join(base, "package-editor-1978.log")),
         reason: "ReleaseRoot outside canonical workspace rejected before product packaging; guard preserved",
         productPackageBuilds: 0 } } : {}),
     packageLog: desc(packageLog), checkpoint: desc(path.join(base, "checkpoint.json")),
     standalonePlayerBuilds: 0, androidBuilds: 0, modelRequests: 0,
-    boundaries: [`New Editor ${graphIntegrity ? "atomic graph deletion and route import" : homeOrdering ? "home-save ordering" : "metadata recovery"} delta; frozen ${previousVersion} and D daily unchanged; actual install still pending`] });
+    boundaries: [`New Editor ${eventIntegrity ? "event reorder and timeline restoration ownership" : graphIntegrity ? "atomic graph deletion and route import" : homeOrdering ? "home-save ordering" : "metadata recovery"} delta; frozen ${previousVersion} and D daily unchanged; actual install still pending`] });
   console.log(JSON.stringify(read(path.join(out, "build.json"))));
 }

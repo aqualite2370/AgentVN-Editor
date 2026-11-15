@@ -7,29 +7,57 @@ const homeFollowup = process.argv[2] === "--home-ordering-followup";
 const homeOrdering = homeFollowup || process.argv[2] === "--home-ordering";
 const graphFollowup = process.argv[2] === "--graph-integrity-followup";
 const graphIntegrity = graphFollowup || process.argv[2] === "--graph-integrity";
+const eventRemaining = process.argv[2] === "--event-integrity-remaining";
+const eventFollowup = eventRemaining || process.argv[2] === "--event-integrity-followup";
+const eventIntegrity = eventFollowup || process.argv[2] === "--event-integrity";
 const remaining = process.argv[2] === "--remaining";
 const followup = remaining || process.argv[2] === "--followup";
-assert(process.argv.length === (followup || homeOrdering || graphIntegrity ? 3 : 2));
-const root = path.resolve(__dirname, ".."), base = path.resolve(graphIntegrity
+assert(process.argv.length === (followup || homeOrdering || graphIntegrity || eventIntegrity ? 3 : 2));
+const root = path.resolve(__dirname, ".."), base = path.resolve(eventIntegrity
+  ? "F:/testavn/Windows-Isolated-1979-20261116-" + (eventRemaining ? "03" : eventFollowup ? "02" : "01") : graphIntegrity
   ? "F:/testavn/Windows-Isolated-1978-20261116-" + (graphFollowup ? "02" : "01") : homeOrdering
   ? "F:/testavn/Windows-Isolated-1977-20261116-" + (homeFollowup ? "02" : "01")
   : "F:/testavn/Windows-Isolated-1976-20261116-" + (remaining ? "05" : followup ? "04" : "01"));
 const priorScope = "F:/testavn/Windows-Isolated-1972-20261114-01";
-const release = graphIntegrity ? "F:/testavn/Editor-Graph-Release-1978-20261116-01/release"
+const release = eventIntegrity ? "F:/testavn/Editor-Event-Release-1979-20261116-01/release"
+  : graphIntegrity ? "F:/testavn/Editor-Graph-Release-1978-20261116-01/release"
   : homeOrdering ? "F:/testavn/Editor-Home-Save-Release-1977-20261116-01/release"
   : "F:/testavn/Editor-Autosave-Release-1976-20261116-01/release";
 const read = f => JSON.parse(fs.readFileSync(f, "utf8").replace(/^\uFEFF/, ""));
 const desc = f => ({ path: path.resolve(f), bytes: fs.statSync(f).size, sha256: sha(f) });
 const build = read(path.join(release, "build.json"));
-const old = read(graphIntegrity ? "F:/testavn/Editor-Home-Save-Release-1977-20261116-01/release/build.json"
+const old = read(eventIntegrity ? "F:/testavn/Editor-Graph-Release-1978-20261116-01/release/build.json"
+  : graphIntegrity ? "F:/testavn/Editor-Home-Save-Release-1977-20261116-01/release/build.json"
   : homeOrdering ? "F:/testavn/Editor-Autosave-Release-1976-20261116-01/release/build.json"
   : "F:/testavn/Editor-Recovery-20261115-01/release/build.json");
 assert.equal(build.status, "PASS_EDITOR_DEV_NSIS_AND_PAYLOAD_ACTUAL_INSTALL_NOT_RUN");
-assert.equal(build.version, graphIntegrity ? "1.9.78" : homeOrdering ? "1.9.77" : "1.9.76");
-assert.equal(old.version, graphIntegrity ? "1.9.77" : homeOrdering ? "1.9.76" : "1.9.75");
+assert.equal(build.version, eventIntegrity ? "1.9.79" : graphIntegrity ? "1.9.78" : homeOrdering ? "1.9.77" : "1.9.76");
+assert.equal(old.version, eventIntegrity ? "1.9.78" : graphIntegrity ? "1.9.77" : homeOrdering ? "1.9.76" : "1.9.75");
 assert.equal(sha(build.installer.path), build.installer.sha256); assert.equal(sha(old.installer.path), old.installer.sha256);
 assert.equal(sha(build.payloadReport.path), build.payloadReport.sha256);
 assert.equal(read(build.payloadReport.path).status, "PASS");
+if (eventFollowup) {
+  const previous = "F:/testavn/Windows-Isolated-1979-20261116-01";
+  const retired = read(path.join(previous, "account-retirement-01.json"));
+  assert.equal(retired.status, "PASS"); assert(retired.cleanup.accountDeleted && retired.cleanup.profileDeleted);
+  const failure = read(path.join(previous, "resource-01/report.json"));
+  assert.equal(failure.status, "FAILED"); assert.equal(failure.cleanupStatus, "PASS");
+  assert(failure.stages[2].error.includes("command-card-summary"));
+  assert.equal(sha(read(path.join(previous, "install-new.json")).executable.path),
+    read(path.join(previous, "install-new.json")).executable.sha256);
+}
+if (eventRemaining) {
+  const previous = "F:/testavn/Windows-Isolated-1979-20261116-02";
+  const retired = read(path.join(previous, "account-retirement-01.json"));
+  assert.equal(retired.status, "PASS"); assert(retired.cleanup.accountDeleted && retired.cleanup.profileDeleted);
+  const failure = read(path.join(previous, "resource-01/report.json"));
+  assert.equal(failure.status, "FAILED"); assert.equal(failure.cleanupStatus, "PASS");
+  assert(failure.stages.slice(0, 4).every(s => s.status === "PASS"));
+  assert(failure.stages[4].error.includes("exact newer graph"));
+  const capture = read(path.join(previous, "backup-diagnostic-01.json"));
+  assert.equal(capture.status, "PASS_CAPTURE_ONLY_NOT_PRODUCT_ASSERTION");
+  for (const file of capture.files) assert.equal(sha(file.path), file.sha256);
+}
 let inheritedFixture;
 if (graphFollowup) {
   const previous = "F:/testavn/Windows-Isolated-1978-20261116-01";
@@ -91,7 +119,7 @@ function write(name, source, transform = scope) {
     `$e=$null;$t=$null;[void][Management.Automation.Language.Parser]::ParseFile('${to}',[ref]$t,[ref]$e);if($e.Count){throw($e|Out-String)}`],
   { windowsHide: true });
 }
-const runner = graphIntegrity ? "editor-graph-installed-1978.cjs"
+const runner = eventIntegrity ? "editor-event-installed-1979.cjs" : graphIntegrity ? "editor-graph-installed-1978.cjs"
   : homeOrdering ? "editor-home-save-installed-1977.cjs" : "editor-autosave-installed-1976.cjs";
 for (const name of ["windows-isolated-account-controller.ps1", "final-project-qa-retire-1956.ps1",
   "audit-installed-editor-marker.cjs", runner]) write(name, name);
@@ -140,6 +168,11 @@ for (const name of ["qa-default-editor-session.cjs", "windows-repository-native.
     assert(text.includes(marker));
     text = text.replace(marker, `(${marker} || resolved === path.resolve("F:/testavn/Windows-Isolated-1978-20261116-01/installed-editor"))`);
   }
+  if (eventFollowup && name === "qa-default-editor-session.cjs") {
+    const marker = `resolved === path.resolve("${base.replaceAll("\\", "/")}/installed-editor")`;
+    assert(text.includes(marker));
+    text = text.replace(marker, `(${marker} || resolved === path.resolve("F:/testavn/Windows-Isolated-1979-20261116-01/installed-editor"))`);
+  }
   fs.writeFileSync(f, text);
   copies.push({ source: desc(path.join(root, "scripts/lib", name)), staged: desc(f) });
 }
@@ -153,13 +186,22 @@ function pkg(name, from) {
   for (const dep of Object.keys(meta.dependencies || {})) pkg(dep, src);
 }
 for (const name of ["playwright", "jszip"]) pkg(name, path.join(root, "editor"));
-const fixture = graphFollowup ? inheritedFixture : graphIntegrity
+const fixture = eventRemaining
+  ? read("F:/testavn/Windows-Isolated-1979-20261116-02/resource-01/recovery-files/event-order.json")
+  : graphFollowup ? inheritedFixture : graphIntegrity
   ? read("F:/testavn/Editor-Delete-Integrity-20261116-01/browser-complete-01/fixture.vnproj")
   : remaining ? read("F:/testavn/Windows-Isolated-1976-20261116-04/resource-01/recovery-files/setting.json") :
   read(path.join(root, "scripts/fixtures/editor-isolated-small.vnproj"));
-fixture.project_id = graphIntegrity ? "qa-editor-graph-integrity-1978"
+if (eventIntegrity && !eventRemaining) {
+  const scene = fixture.nodes.find(n => n.data.scene), entry = fixture.nodes.find(n => n.data.nodeKind === "start");
+  assert(scene && entry); scene.id = "scene"; scene.data.scene.scene_id = "events1979";
+  scene.data.scene.commands = [100, 200, 300].map(duration_ms => ({ type: "wait", duration_ms }));
+  fixture.nodes = [entry, scene];
+  fixture.edges = [{ id: "entry-scene", source: entry.id, target: scene.id, sourceHandle: "default" }];
+}
+fixture.project_id = eventIntegrity ? "qa-editor-event-integrity-1979" : graphIntegrity ? "qa-editor-graph-integrity-1978"
   : homeOrdering ? "qa-editor-home-save-ordering-1977" : "qa-editor-autosave-upgrade-1976";
-if (!remaining) { fixture.title = graphIntegrity ? "安装版删除与完整线路1978"
+if (!remaining) { fixture.title = eventIntegrity ? "安装版事件保存与时间线1979" : graphIntegrity ? "安装版删除与完整线路1978"
   : homeOrdering ? "安装版首页保存顺序1977" : "安装版保存恢复1976"; fixture.author = "隔离验收"; }
 fs.writeFileSync(path.join(base, "fixture.vnproj"), JSON.stringify(fixture, null, 2), { flag: "wx" });
 if (graphFollowup) {
@@ -220,7 +262,8 @@ const closes = require(path.join(scripts, "lib/editor-upgrade-wm-close.cjs")).se
 fs.writeFileSync(path.join(base, "staging.json"), JSON.stringify({
   status: "STAGED_NOT_NATIVE_ACCEPTANCE", at: new Date().toISOString(), copies, packages: [...packages], guards, closes,
   fixture: desc(path.join(base, "fixture.vnproj")), installations: 0, models: 0,
-  scope: graphIntegrity ? "ACTUAL_1978_INSTALL_GRAPH_DELETE_ROUTE_UNDO_REDO_DEFAULT_PROFILE_RESTART_AND_RETIRE_NOT_UPGRADE"
+  scope: eventIntegrity ? "ACTUAL_1979_INSTALL_EVENT_EDIT_UNDO_NATIVE_TIMELINE_DEFAULT_PROFILE_RESTART_AND_RETIRE_NOT_UPGRADE"
+    : graphIntegrity ? "ACTUAL_1978_INSTALL_GRAPH_DELETE_ROUTE_UNDO_REDO_DEFAULT_PROFILE_RESTART_AND_RETIRE_NOT_UPGRADE"
     : homeOrdering ? "ACTUAL_1977_INSTALL_HOME_SAVE_ORDERING_DEFAULT_PROFILE_RESTART_AND_RETIRE_NOT_UPGRADE" :
     followup ? "REUSE_ACTUAL_1976_INSTALL_FRESH_DEFAULT_PROFILE_METADATA_NATIVE_FAILURE_RETRY_RESTORE_RESTART_RETIRE_NO_REINSTALL" :
     "TARGETED_1975_TO_1976_DEFAULT_PROFILE_UPGRADE_METADATA_NATIVE_FAILURE_RETRY_TIMELINE_RESTORE_RESTART_RETIRE",

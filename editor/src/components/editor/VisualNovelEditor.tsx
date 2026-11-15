@@ -1,12 +1,12 @@
 import { Background, BaseEdge, ConnectionLineType, Controls, ReactFlow, ReactFlowProvider, useNodesInitialized, useReactFlow, type DefaultEdgeOptions, type EdgeProps, type Viewport } from "@xyflow/react";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { backendClient } from "../../api/backendClient";
-import type { SharedEditorState } from "../../api/types";
 import { useEditorStore } from "../../store/editorStore";
 import { useProjectStore } from "../../store/projectStore";
-import type { AssetRef } from "../../types/assets";
 import type { EditorEdge, EditorNode } from "../../types/nodes";
-import { countEmbeddedAssetPayloads } from "../../utils/embeddedAssetPayloads";
+import { persistEditorProject } from "../../utils/editorProjectPersistence";
+import { useEditorProjectAutosave } from "./useEditorProjectAutosave";
+import { GraphHistoryShortcuts } from "./GraphHistoryShortcuts";
 import { ErrorToast } from "../common/ErrorToast";
 import { AnimationNode } from "../nodes/AnimationNode";
 import { ChoiceNode } from "../nodes/ChoiceNode";
@@ -17,7 +17,6 @@ import { LoopNode } from "../nodes/LoopNode";
 import { SceneNode } from "../nodes/SceneNode";
 import { StartNode } from "../nodes/StartNode";
 import { EditorToolbar } from "./EditorToolbar";
-import { CanvasArrangeButton } from "./CanvasArrangeButton";
 import { InspectorPanel } from "./InspectorPanel";
 import { NodePalette } from "./NodePalette";
 import { PreviewPanel } from "./PreviewPanel";
@@ -154,12 +153,6 @@ function loadPreviewSplitRatio(): number {
   return parsed;
 }
 
-function shouldPreserveNativeUndo(target: EventTarget | null): boolean {
-  if (!(target instanceof Element)) return false;
-  const editable = target.closest("input, textarea, select, [contenteditable], [role='textbox']");
-  return Boolean(editable);
-}
-
 function countVisibleEdgesBy<T extends "source" | "target">(edges: Array<Record<T, string> & { hidden?: boolean }>, key: T) {
   const counts = new Map<string, number>();
   edges.forEach((edge) => {
@@ -168,41 +161,6 @@ function countVisibleEdgesBy<T extends "source" | "target">(edges: Array<Record<
     counts.set(nodeId, (counts.get(nodeId) ?? 0) + 1);
   });
   return counts;
-}
-
-function hasEmbeddedAssetPayloads(assets: AssetRef[]): boolean {
-  return assets.some((asset) => {
-    const { data_url: dataUrl, blob_url: blobUrl } = asset.metadata;
-    return dataUrl?.startsWith("data:") || blobUrl?.startsWith("data:");
-  });
-}
-
-function shouldApplyPersistedAssetManifest(current: AssetRef[], incoming: AssetRef[]): boolean {
-  if (hasEmbeddedAssetPayloads(current) || current.length !== incoming.length) return true;
-  const currentById = new Map(current.map((asset) => [asset.asset_id, asset]));
-  return incoming.some((asset) => {
-    const currentAsset = currentById.get(asset.asset_id);
-    return Boolean(asset.metadata.url && currentAsset?.metadata.url !== asset.metadata.url);
-  });
-}
-
-function applyPersistedProjectMetadata(state: SharedEditorState): void {
-  const incomingAssets = state.project_metadata.assetManifest;
-  const current = useProjectStore.getState();
-  if (state.project_metadata.projectId && state.project_metadata.projectId !== current.projectId) return;
-  const shouldApplyAssets = Array.isArray(incomingAssets) && shouldApplyPersistedAssetManifest(current.assetManifest, incomingAssets as AssetRef[]);
-  const shouldApplySettings = Boolean(state.project_metadata.settings) && countEmbeddedAssetPayloads(current.settings).count > 0;
-  if (shouldApplyAssets || shouldApplySettings) {
-    current.loadProjectMetadata({
-      project_id: state.project_metadata.projectId ?? current.projectId,
-      title: state.project_metadata.title ?? current.title,
-      author: state.project_metadata.author ?? current.author,
-      created_at: state.project_metadata.createdAt ?? current.createdAt,
-      updated_at: state.project_metadata.updatedAt ?? current.updatedAt,
-      asset_manifest: Array.isArray(incomingAssets) ? incomingAssets : current.assetManifest,
-      editor_settings: state.project_metadata.settings ?? (current.settings as unknown as Record<string, unknown>),
-    });
-  }
 }
 
 function edgeSourceClass(value: string | undefined): string | undefined {
@@ -805,7 +763,7 @@ export function VisualNovelEditor({
     [nodes, recentNodeEffects, selectedNodeId]
   );
   const project = useProjectStore();
-  const saveRequestIdRef = useRef(0);
+  useEditorProjectAutosave();
   const editorAppearance = project.settings.editorAppearance;
   const canvasBackgroundImage = editorAppearance.canvasBackgroundImage;
   const canvasBackgroundFit = editorAppearance.canvasBackgroundFit ?? "cover";
@@ -834,38 +792,8 @@ export function VisualNovelEditor({
   }, [canvasBackgroundFit, canvasBackgroundImage?.dataUrl, canvasBackgroundImage?.url, canvasBackgroundOpacity]);
 
   const requestSave = useCallback(async (): Promise<SaveResult> => {
-    const requestId = ++saveRequestIdRef.current;
-    const state = useEditorStore.getState();
-    const currentProject = useProjectStore.getState();
     try {
-      const saved = await backendClient.saveProjectState({
-        project_graph: {
-          nodes: state.nodes,
-          edges: state.edges,
-          viewport: state.viewport,
-          memoryMode: state.memoryMode,
-        },
-        project_metadata: {
-          projectId: currentProject.projectId,
-          title: currentProject.title,
-          author: currentProject.author,
-          createdAt: currentProject.createdAt,
-          updatedAt: new Date().toISOString(),
-          assetManifest: currentProject.assetManifest,
-          settings: { ...currentProject.settings },
-        },
-      });
-      if (requestId === saveRequestIdRef.current) {
-        applyPersistedProjectMetadata(saved);
-        const latest = useEditorStore.getState();
-        if (
-          latest.nodes === state.nodes &&
-          latest.edges === state.edges &&
-          latest.viewport === state.viewport
-        ) {
-          useEditorStore.setState({ dirty: false });
-        }
-      }
+      await persistEditorProject();
       return { ok: true, message: "已保存。" };
     } catch (error) {
       return { ok: false, message: error instanceof Error ? error.message : "保存失败。" };
@@ -1217,100 +1145,6 @@ export function VisualNovelEditor({
   }, [setFlowSurfaceSize, setViewport, viewportRevision]);
 
   useEffect(() => {
-    const current = useEditorStore.getState();
-    if (!current.dirty) return;
-    const saveTimer = window.setTimeout(() => {
-      const next = useEditorStore.getState();
-      if (!next.dirty) return;
-      let submittedGraph: Pick<typeof next, "nodes" | "edges" | "viewport"> | undefined;
-      void backendClient.saveProjectState(() => {
-        const latestProject = useProjectStore.getState();
-        if (latestProject.projectId !== project.projectId) return {};
-        const latestGraph = useEditorStore.getState();
-        submittedGraph = latestGraph;
-        return {
-          project_graph: {
-            nodes: latestGraph.nodes,
-            edges: latestGraph.edges,
-            viewport: latestGraph.viewport,
-            memoryMode: latestGraph.memoryMode,
-          },
-          project_metadata: {
-            projectId: latestProject.projectId,
-            title: latestProject.title,
-            author: latestProject.author,
-            createdAt: latestProject.createdAt,
-            updatedAt: new Date().toISOString(),
-            assetManifest: latestProject.assetManifest,
-            settings: { ...latestProject.settings },
-          },
-        };
-      }).then((state) => {
-        if (useProjectStore.getState().projectId !== project.projectId) return;
-        applyPersistedProjectMetadata(state);
-        const latest = useEditorStore.getState();
-        if (submittedGraph && latest.nodes === submittedGraph.nodes
-          && latest.edges === submittedGraph.edges && latest.viewport === submittedGraph.viewport) {
-          useEditorStore.setState({ dirty: false });
-        }
-      }).catch((error) => {
-        reportFrontendError("editor.project", error, {
-          operation: "autosave-graph",
-          projectId: project.projectId,
-        });
-      });
-    }, 800);
-    return () => window.clearTimeout(saveTimer);
-  }, [nodes, edges, viewport, memoryMode, project.assetManifest, project.author, project.createdAt, project.projectId, project.settings, project.title]);
-
-  useEffect(() => {
-    const saveTimer = window.setTimeout(() => {
-      void backendClient.saveProjectState(() => {
-        const latestProject = useProjectStore.getState();
-        if (latestProject.projectId !== project.projectId) return {};
-        return {
-          project_metadata: {
-            projectId: latestProject.projectId,
-            title: latestProject.title,
-            author: latestProject.author,
-            createdAt: latestProject.createdAt,
-            updatedAt: new Date().toISOString(),
-            assetManifest: latestProject.assetManifest,
-            settings: { ...latestProject.settings },
-          },
-        };
-      }).then((state) => {
-        applyPersistedProjectMetadata(state);
-      }).catch((error) => {
-        reportFrontendError("editor.project", error, {
-          operation: "autosave-metadata",
-          projectId: project.projectId,
-        });
-      });
-    }, 500);
-    return () => window.clearTimeout(saveTimer);
-  }, [project.assetManifest, project.author, project.createdAt, project.projectId, project.settings, project.title]);
-
-  useEffect(() => {
-    function handleGraphHistoryShortcut(event: KeyboardEvent) {
-      if (event.defaultPrevented || shouldPreserveNativeUndo(event.target)) return;
-      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
-      const key = event.key.toLowerCase();
-      const wantsUndo = key === "z" && !event.shiftKey;
-      const wantsRedo = key === "y" || (key === "z" && event.shiftKey);
-      if (!wantsUndo && !wantsRedo) return;
-
-      const handled = wantsUndo
-        ? useEditorStore.getState().undoGraphChange()
-        : useEditorStore.getState().redoGraphChange();
-      if (handled) event.preventDefault();
-    }
-
-    window.addEventListener("keydown", handleGraphHistoryShortcut);
-    return () => window.removeEventListener("keydown", handleGraphHistoryShortcut);
-  }, []);
-
-  useEffect(() => {
     const labels: Record<string, string> = {
       "Zoom In": "放大画布",
       "Zoom Out": "缩小画布",
@@ -1377,6 +1211,7 @@ export function VisualNovelEditor({
 
   return (
     <ReactFlowProvider>
+      <GraphHistoryShortcuts active={workspaceActive} />
       <EditorPrerenderReadiness />
       <AssistantProjectCreationLockGate
         projectId={project.projectId}
@@ -1479,7 +1314,6 @@ export function VisualNovelEditor({
                 />
               )}
               <Controls />
-              <CanvasArrangeButton />
             </ReactFlow>
           </section>
           <div

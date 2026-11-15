@@ -25,6 +25,7 @@ import { buildProjectBundle, writeNativeProjectBundle } from "../../utils/projec
 import { useEditorPreferencesStore } from "../../store/editorPreferencesStore";
 import { parseProjectFile } from "../../utils/projectImport";
 import { writeProjectBackup, type ProjectBackupEntry } from "../../utils/projectTimeline";
+import { restoreEditorTimelineProject } from "../../utils/editorProjectPersistence";
 import { advancedToolsEventName, type AdvancedToolsRequest } from "../advanced/advancedToolsBridge";
 import { MemoryModeSelector } from "./MemoryModeSelector";
 import { ThemeToneSelector } from "./ThemeToneSelector";
@@ -1089,42 +1090,19 @@ export function EditorToolbar({ onReturnHome, onWorkspaceActiveChange }: {
 
   async function restoreTimelineProject(nextProject: Parameters<typeof importProject>[0], entry: ProjectBackupEntry) {
     setRestoringEntry(entry);
-    let savedProject: Parameters<typeof importProject>[0] = nextProject;
     try {
-      savedProject = await backendClient.saveProject(nextProject);
+      await restoreEditorTimelineProject(nextProject);
+      setNotice(`已恢复 ${new Date(entry.timestamp_ms).toLocaleString()} 的工程快照。`, "success");
+      closePanel("timeline");
     } catch (error) {
       reportFrontendError("editor.timeline", error, {
         operation: "save-restored-project",
         projectId: nextProject.project_id,
       });
-      setNotice(error instanceof Error ? error.message : "Timeline restore failed.", "error");
+      throw error;
+    } finally {
       setRestoringEntry(undefined);
-      return;
     }
-    window.requestAnimationFrame(() => {
-      try {
-        importProject(savedProject);
-        project.loadProjectMetadata(savedProject);
-        useNovelImportStore.getState().hydratePersistence(savedProject.editor_settings?.novelPersistence as NovelPersistenceState | undefined);
-        setNotice(`已恢复 ${new Date(entry.timestamp_ms).toLocaleString()} 的工程快照。`, "success");
-        closePanel("timeline");
-        window.setTimeout(() => setRestoringEntry(undefined), prefersReducedMotion() ? 320 : 1300);
-      } catch (error) {
-        reportFrontendError("editor.timeline", error, {
-          operation: "apply-restored-project",
-          projectId: savedProject.project_id,
-        });
-        setNotice({
-          tone: "error",
-          source: "时间线恢复",
-          message: error instanceof Error ? error.message : "恢复工程快照失败。",
-          detail: error instanceof Error ? error.stack : undefined,
-          error,
-          action: "请检查备份文件是否完整，或选择其他时间线记录。",
-        });
-        setRestoringEntry(undefined);
-      }
-    });
   }
 
   useEffect(() => {

@@ -131,20 +131,19 @@ export function resolveSpriteSlotLayout({
   const uiScale = Number.isFinite(stage.uiScale) && stage.uiScale > 0 ? stage.uiScale : 1;
   const slotHeight = Math.min(height * 0.92, 940 * uiScale);
   const bottom = clamp(52 * uiScale, 32, 88);
+  // Image contain uses this width as a scale bound. Count changes only placement.
+  const slotWidth = clamp(width * 0.36, 220 * uiScale, 560 * uiScale);
 
   if (spriteCount > 1) {
-    const slotWidthPercent = clamp(86 / spriteCount, 18, 34);
     const centerPercent = 7 + (86 / spriteCount) * (spriteIndex + 0.5);
-    const slotWidth = width * slotWidthPercent / 100;
     return {
-      left: width * centerPercent / 100 - slotWidth / 2,
+      left: clamp(width * centerPercent / 100 - slotWidth / 2, 0, Math.max(0, width - slotWidth)),
       bottom,
       width: slotWidth,
       height: slotHeight,
     };
   }
 
-  const slotWidth = clamp(width * 0.36, 220 * uiScale, 560 * uiScale);
   const sideInset = width * 0.07;
   const left = position === "left"
     ? sideInset

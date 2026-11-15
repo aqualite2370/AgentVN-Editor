@@ -1,6 +1,7 @@
 import { Clapperboard, GitBranch, Play, Plus, Repeat2, SlidersHorizontal, Square, type LucideIcon } from "lucide-react";
 import { useEditorStore } from "../../store/editorStore";
 import type { EditorNodeKind } from "../../types/nodes";
+import { CanvasArrangeButton } from "./CanvasArrangeButton";
 
 const items: Array<{ kind: EditorNodeKind; label: string; icon: LucideIcon }> = [
   { kind: "choice", label: "选项分支节点", icon: GitBranch },
@@ -29,6 +30,7 @@ export function NodePalette() {
           </button>
         );
       })}
+      <CanvasArrangeButton />
     </aside>
   );
 }

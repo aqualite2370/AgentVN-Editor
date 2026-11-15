@@ -42,9 +42,9 @@ const pair = [0, 1].map((spriteIndex) => resolveSpriteSlotLayout({
   spriteIndex,
   position: spriteIndex === 0 ? "left" : "right",
 }));
-close(pair[0].width, 435.2);
-close(pair[0].left, 147.2);
-close(pair[1].left, 697.6);
+close(pair[0].width, centered.width);
+close(pair[0].left, 134.4);
+close(pair[1].left, 684.8);
 assert.ok(pair[0].left + pair[0].width < pair[1].left);
 
 const rightFirstSprites = {
@@ -104,7 +104,7 @@ const five = Array.from({ length: 5 }, (_, spriteIndex) => resolveSpriteSlotLayo
   spriteIndex,
   position: "center",
 }));
-assert.ok(five.every((slot) => Math.abs(slot.width - 230.4) <= 1e-9));
+assert.ok(five.every((slot) => Math.abs(slot.width - centered.width) <= 1e-9));
 assert.ok(five.every((slot, index) => index === 0 || slot.left > five[index - 1].left));
 assert.ok(five[0].left >= 0);
 assert.ok(five.at(-1).left + five.at(-1).width <= stage.width);

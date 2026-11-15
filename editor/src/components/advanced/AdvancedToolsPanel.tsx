@@ -24,7 +24,7 @@ const advancedTabLoaders: Record<AdvancedToolsTab, AdvancedTabLoader> = {
   animation: recoverableComponentLoader(() => import("./AnimationEditorPanel"), (module) => module.AnimationEditorPanel),
   preview: recoverableComponentLoader(() => import("./PreviewWindowControls"), (module) => module.PreviewWindowControls),
   providers: recoverableComponentLoader(() => import("./ProviderSettingsPanel"), (module) => module.ProviderSettingsPanel),
-  history: recoverableComponentLoader(() => import("./GenerationHistoryPanel"), (module) => module.GenerationHistoryPanel),
+  history: recoverableComponentLoader(() => import("../timeline/ProjectTimelinePanel"), (module) => module.ProjectTimelinePanel),
 };
 
 const advancedTabPreloads = new Map<AdvancedToolsTab, ReturnType<AdvancedTabLoader>>();
@@ -51,7 +51,7 @@ const NovelImportWizard = memo(lazy(() => preloadAdvancedTab("novel")));
 const AnimationEditorPanel = memo(lazy(() => preloadAdvancedTab("animation")));
 const AssetGenerationPanel = memo(lazy(() => preloadAdvancedTab("assets")));
 const AssetLibraryPanel = memo(lazy(() => preloadAdvancedTab("library")));
-const GenerationHistoryPanel = memo(lazy(() => preloadAdvancedTab("history")));
+const ProjectTimelinePanel = memo(lazy(() => preloadAdvancedTab("history")));
 const PreviewWindowControls = memo(lazy(() => preloadAdvancedTab("preview")));
 const ProjectSettingsPanel = memo(lazy(() => preloadAdvancedTab("settings")));
 const ProviderSettingsPanel = memo(lazy(() => preloadAdvancedTab("providers")));
@@ -68,7 +68,7 @@ const tabLabels: Record<AdvancedToolsTab, string> = {
   animation: "动画编辑",
   preview: "预览窗口",
   providers: "模型/连接",
-  history: "生成历史",
+  history: "时间线",
 };
 
 const visibleAdvancedTabs: AdvancedToolsTab[] = [
@@ -663,7 +663,7 @@ export function AdvancedToolsPanel({ request, onLayoutModeChange }: { request?: 
     if (activeTab === "animation") return <AnimationEditorPanel />;
     if (activeTab === "preview") return <PreviewWindowControls />;
     if (activeTab === "providers") return <ProviderSettingsPanel />;
-    return <GenerationHistoryPanel history={history} />;
+    return <ProjectTimelinePanel />;
   }
 
   const viewportStyle = viewportHeight && !isLayoutMode ? {

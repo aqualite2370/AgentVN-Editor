@@ -404,6 +404,7 @@ export function SpriteLayer({
   presentationMode?: "animate" | "settle";
 }) {
   const layerRef = useRef<HTMLDivElement | null>(null);
+  const previousSlotStyles = useRef(new Map<string, CSSProperties>());
   const [stageSize, setStageSize] = useState<SpriteStageSize>({ width: 0, height: 0, uiScale: 1 });
   const visibleSprites = useMemo(() => orderedVisibleSprites(sprites, spriteOrder), [sprites, spriteOrder]);
   const selectedCharacterId = visibleSprites.length > 0 ? visibleSprites[visibleSprites.length - 1].character_id : undefined;
@@ -500,36 +501,28 @@ export function SpriteLayer({
   const orderedPresentKeys = presentSprites.map((item) => item.key);
   const presentSlotIndices = resolveSpriteSlotIndices(presentSprites.map((item) => item.sprite));
   const activeSlotCount = Math.max(1, orderedPresentKeys.length);
-  const activeSlotWidth = Math.max(18, Math.min(34, 86 / activeSlotCount));
+  const slotStyles = new Map<string, CSSProperties>();
+  for (const item of renderedSprites) {
+    const slotIndex = presentSlotIndices.get(item.sprite.character_id);
+    const layout = item.phase !== "exiting" && slotIndex !== undefined && stageSize.width > 0 && stageSize.height > 0
+      ? resolveSpriteSlotLayout({ stage: stageSize, spriteCount: activeSlotCount, spriteIndex: slotIndex, position: item.sprite.position })
+      : undefined;
+    // Retain the last committed geometry while fading out, even after the active
+    // count/position changes or a replacement for this character has entered.
+    slotStyles.set(item.key, layout ? {
+      left: `${layout.left}px`, right: "auto", bottom: `${layout.bottom}px`,
+      width: `${layout.width}px`, height: `${layout.height}px`, transform: "none",
+    } : previousSlotStyles.current.get(item.key) ?? {});
+  }
+  useLayoutEffect(() => { previousSlotStyles.current = slotStyles; });
 
   return (
     <div
       ref={layerRef}
       className={`sprite-layer${activeSlotCount > 1 ? " has-multiple-sprites" : ""}`}
-      style={{
-        "--sprite-active-count": String(activeSlotCount),
-        "--sprite-slot-width": `${activeSlotWidth}%`,
-      } as CSSProperties}
     >
       {renderedSprites.map((item) => {
         const effect = spriteEffectFor(effects, item.sprite.character_id, selectedCharacterId);
-        const slotIndex = presentSlotIndices.get(item.sprite.character_id);
-        const slotLayout = slotIndex !== undefined && stageSize.width > 0 && stageSize.height > 0
-          ? resolveSpriteSlotLayout({
-              stage: stageSize,
-              spriteCount: activeSlotCount,
-              spriteIndex: slotIndex,
-              position: item.sprite.position,
-            })
-          : undefined;
-        const placementStyle = slotLayout ? {
-          left: `${slotLayout.left}px`,
-          right: "auto",
-          bottom: `${slotLayout.bottom}px`,
-          width: `${slotLayout.width}px`,
-          height: `${slotLayout.height}px`,
-          transform: "none",
-        } : {};
         return (
           <SpriteSlot
             key={item.key}
@@ -544,7 +537,7 @@ export function SpriteLayer({
             stageSize={stageSize}
             presentationMode={presentationMode}
             slotStyle={{
-              ...placementStyle,
+              ...slotStyles.get(item.key),
               zIndex: spriteLayerZIndex(item.sprite.layer, item.phase === "exiting"),
             }}
           />

@@ -586,20 +586,12 @@
 .sprite-slot.center { left: 50%; transform: translateX(-50%); }
 .sprite-slot.right { right: 7%; }
 
-.sprite-layer.has-multiple-sprites .sprite-slot {
-  width: clamp(calc(180px * var(--runtime-ui-scale, 1)), 30%, calc(460px * var(--runtime-ui-scale, 1)));
-}
-
 .sprite-layer.has-multiple-sprites .sprite-slot.left {
   left: 3%;
 }
 
 .sprite-layer.has-multiple-sprites .sprite-slot.right {
   right: 3%;
-}
-
-.sprite-layer.has-multiple-sprites .sprite-slot.center {
-  width: clamp(calc(180px * var(--runtime-ui-scale, 1)), 28%, calc(430px * var(--runtime-ui-scale, 1)));
 }
 
 .sprite-slot.is-exiting {

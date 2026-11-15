@@ -1347,6 +1347,7 @@ export const useEditorStore = create<EditorStoreState & EditorStoreActions>()(
         const present = captureGraphSnapshot(state);
         set((current) => ({
           ...restoreGraphSnapshot(next, current),
+          lastError: { message: "已重做上一次撤销。", tone: "info", source: "画布重做" },
           graphHistory: {
             past: [...current.graphHistory.past, present].slice(-EDITOR_GRAPH_HISTORY_LIMIT),
             future: current.graphHistory.future.slice(1),

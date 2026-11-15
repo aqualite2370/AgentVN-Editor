@@ -696,9 +696,9 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
     };
     const owner = saveOwner;
     // External previews unlock within this run, without modifying player data.
-    const write = installId === "preview_gamecli"
+    const write = state.runtimeMode === "preview" && installId === "preview_gamecli"
       ? Promise.resolve()
-      : writeGalleryAnchor(installId, command.anchor_id, persisted);
+      : saveWrites.track(() => writeGalleryAnchor(installId, command.anchor_id, persisted));
     void write
       .then(() => {
         if (owner !== saveOwner || get().currentGame?.install_id !== installId) return;
@@ -722,6 +722,9 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
       })
       .catch((error) => {
         reportFrontendError("player.gallery-anchor", error, { anchorId: command.anchor_id });
+        if (owner !== saveOwner || get().currentGame?.install_id !== installId) return;
+        set({ saveNotice: { status: "error", kind: "manual",
+          message: `画廊解锁保存失败：${error instanceof Error ? error.message : String(error)}`, at: Date.now() } });
       });
   };
   engine.canSkipText = (textKey) => canSkipTextKey(get(), textKey);
@@ -795,7 +798,8 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
       resetAutoSaveTracking();
       const [saves, galleryUnlocks, storage] = await Promise.all([
         listDesktopSaves(game.install_id),
-        game.install_id === "preview_gamecli" ? Promise.resolve([]) : listGalleryUnlocks(game.install_id),
+        get().runtimeMode === "preview" && game.install_id === "preview_gamecli"
+          ? Promise.resolve([]) : listGalleryUnlocks(game.install_id),
         get().runtimeMode === "fixed"
           ? getSaveStorageInfo(game.install_id).then(info => ({ info, error: undefined as string | undefined }))
             .catch(error => {
@@ -867,7 +871,8 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
       resetAutoSaveTracking();
       const [saves, galleryUnlocks] = await Promise.all([
         listDesktopSaves(game.install_id),
-        game.install_id === "preview_gamecli" ? Promise.resolve([]) : listGalleryUnlocks(game.install_id),
+        get().runtimeMode === "preview" && game.install_id === "preview_gamecli"
+          ? Promise.resolve([]) : listGalleryUnlocks(game.install_id),
       ]);
       if (owner !== saveOwner) return;
       const unlocked = new Set(galleryUnlocks);

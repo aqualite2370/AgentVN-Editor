@@ -329,9 +329,9 @@ export async function loadGameFromArrayBuffer(
   return packageToGame(cartridge, recordForPackage(cartridge, options.sourceFileName, options.installId));
 }
 
-export async function loadGameFromUnpackedPreview(previewRoot: string): Promise<LibraryGame> {
+export async function loadGameFromUnpackedPreview(previewRoot: string, installId = "preview_gamecli"): Promise<LibraryGame> {
   const payload = await invoke<UnpackedPreviewPayload>("load_unpacked_preview", { previewRoot });
-  return unpackedPreviewToGame(payload, previewRoot);
+  return unpackedPreviewToGame(payload, previewRoot, installId);
 }
 
 async function fetchEmbeddedJson<T>(relativePath: string, required: true): Promise<T>;

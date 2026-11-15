@@ -526,7 +526,8 @@ export function App() {
         setBootStatus(config.mode === "preview" ? "装载编辑器临时预览卡带..." : "装载固定内嵌卡带...");
         const game = config.previewRoot
           ? await import("../cartridge/desktopLibrary").then((module) =>
-              module.loadGameFromUnpackedPreview(config.previewRoot!)
+              module.loadGameFromUnpackedPreview(config.previewRoot!,
+                config.mode === "preview" ? "preview_gamecli" : "fixed_embedded_game")
             )
           : config.cartridgePath
             ? await import("../cartridge/desktopLibrary").then((module) =>

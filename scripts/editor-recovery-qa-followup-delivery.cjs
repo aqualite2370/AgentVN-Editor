@@ -6,16 +6,23 @@ const crypto = require("node:crypto"), assert = require("node:assert/strict");
 const { scan } = require("./git-content-inventory.cjs");
 const { hashFileSha256: sha } = require("./lib/file-sha256-bounded.cjs");
 const authorFollowup = process.argv.includes("--author-export");
-assert(process.argv.slice(2).every(arg => arg === "--author-export"));
-const root = path.resolve(__dirname, ".."), base = authorFollowup
+const recentUpgrade = process.argv.includes("--recent-upgrade");
+assert(process.argv.length <= 3 && process.argv.slice(2).every(arg => ["--author-export", "--recent-upgrade"].includes(arg)));
+const root = path.resolve(__dirname, ".."), base = recentUpgrade
+  ? "F:/testavn/Windows-Isolated-1975-20261116-02" : authorFollowup
   ? "F:/testavn/Sprite-Author-Export-1975-20261116-03"
   : "F:/testavn/Android-Sprite-Preview-1975-20261116-03";
 const output = path.join(base, "source-delivery.json");
 assert(!fs.existsSync(output), "Keep the earlier delivery receipt");
-const parent = authorFollowup ? "e085ff648b83fedcb0169973c20dbbf8d23c019e"
+const parent = recentUpgrade ? "777d244dea4a9f4f3a7acbce614ceda615dc9d2e" : authorFollowup ? "e085ff648b83fedcb0169973c20dbbf8d23c019e"
   : "c7691849acc6ec901f13e968f59d4cf8a1bce66e";
 const branch = "codex/editor-recovery-1975-qa-20261116";
-const files = authorFollowup ? [
+const files = recentUpgrade ? [
+  "scripts/lib/editor-upgrade-scope.cjs", "scripts/editor-upgrade-1972-stage.cjs",
+  "scripts/editor-upgrade-1972-audit.cjs",
+  "scripts/editor-upgrade-1975-scope-test.cjs", "scripts/editor-upgrade-1975-cleanup.ps1",
+  "scripts/editor-upgrade-1975-closeout.cjs", "scripts/editor-recovery-qa-followup-delivery.cjs",
+] : authorFollowup ? [
   "scripts/sprite-author-export-playwright.cjs", "scripts/sprite-author-cartridge-player.cjs",
   "scripts/sprite-author-cartridge-android-stage.cjs", "scripts/sprite-author-export-cleanup.ps1",
   "scripts/sprite-author-export-audit.cjs", "scripts/editor-recovery-qa-followup-delivery.cjs",
@@ -37,12 +44,13 @@ const state = () => ({ head: git(["rev-parse", "HEAD"]).trim(),
   indexSha256: sha(path.resolve(root, git(["rev-parse", "--git-path", "index"]).trim())) });
 const r = { status: "RUNNING", at: new Date().toISOString(), parent, branch, files: [], before: state(),
   productBuilds: 0, deviceStarts: 0, models: 0,
-  scope: authorFollowup ? "QA_ONLY_SOURCE_AUTHOR_AND_FIXED_CARTRIDGE_WITH_ANDROID_PERMISSION_FAILURE_RETAINED"
+  scope: recentUpgrade ? "QA_ONLY_REAL_1974_TO_1975_EDITOR_UPGRADE_WITH_EXACT_RETIREMENT_NO_PRODUCT_REBUILD"
+    : authorFollowup ? "QA_ONLY_SOURCE_AUTHOR_AND_FIXED_CARTRIDGE_WITH_ANDROID_PERMISSION_FAILURE_RETAINED"
     : "QA_ONLY_SPRITE_PREVIEW_AND_OFFLINE_WARNING_IDENTITY_NO_PRODUCT_OR_USER_DATA" };
 const save = () => fs.writeFileSync(output, JSON.stringify(r, null, 2));
 (async () => {
-  const audit = read(path.join(base, authorFollowup ? "completion-audit.json" : "audit.json"));
-  assert.equal(audit.status, authorFollowup
+  const audit = read(path.join(base, recentUpgrade ? "completion-review-01.json" : authorFollowup ? "completion-audit.json" : "audit.json"));
+  assert.equal(audit.status, recentUpgrade ? "PASS_CURRENT_1974_TO_1975_EDITOR_UPGRADE_AND_EXACT_CLEANUP" : authorFollowup
     ? "PARTIAL_PASS_UI_AUTHOR_AND_WINDOWS_ANDROID_FORMAL_QUERY_FAILED_CLEANUP_PASS"
     : "PASS_TARGETED_ANDROID_PREVIEW_GEOMETRY_AND_CLEANUP_WITH_RETAINED_LOG_AND_PHYSICAL_PHONE_LIMITS");
   if (authorFollowup) {
@@ -68,7 +76,9 @@ const save = () => fs.writeFileSync(output, JSON.stringify(r, null, 2));
   assert.deepEqual(git(["diff-tree", "--no-commit-id", "--name-only", "-r", parent, tree]).trim().split("\n").sort(),
     [...files].sort());
   r.commit = git(["-c", "commit.gpgsign=false", "commit-tree", tree, "-p", parent], {
-    input: authorFollowup
+    input: recentUpgrade
+      ? "Verify real 1.9.74 to 1.9.75 Editor same-directory upgrade\n\nReuse frozen installers with a fresh standard QA account and default database. Retain author edits, preferences, native saves and restart; verify natural closes and exact account/profile/temp retirement. Keep historic Android and physical-device boundaries separate. Publish QA sources only; preserve the real checkout and index.\n"
+      : authorFollowup
       ? "Verify UI-authored sprite cartridge exports and formal Player consumption\n\nKeep source-browser authoring, byte-identical installed Player consumption and unchanged Android APK query diagnostics separate. Retain Android file-permission failure before gameplay and exact cleanup; do not call it an embedded APK pass. Publish QA sources only, without user data or binaries.\n"
       : "Verify unchanged Android APK sprite geometry through controlled preview\n\nKeep original failed sessions and source-capture evidence. Distinguish explicit sprite fade-out from the generic exit class, retain exact geometry inheritance, and permit one bounded empty pidof re-observation only for the same boot and host. Preserve source and installed evidence boundaries; publish no user data or binaries.\n",
   }).trim();

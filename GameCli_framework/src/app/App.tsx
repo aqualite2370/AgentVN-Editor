@@ -40,7 +40,6 @@ import { installRuntimeDiagnostics, recordRuntimeAudio, recordRuntimeError, reco
 
 const loadStoryPlayer = () => import("../components/player/StoryPlayer").then((module) => ({ default: module.StoryPlayer }));
 const loadAboutScreen = () => import("../components/shell/AboutScreen").then((module) => ({ default: module.AboutScreen }));
-const loadHelpScreen = () => import("../components/shell/HelpScreen").then((module) => ({ default: module.HelpScreen }));
 const loadGalleryScreen = () => import("../components/shell/GalleryScreen").then((module) => ({ default: module.GalleryScreen }));
 const loadGameLibrary = () => import("../components/shell/GameLibrary").then((module) => ({ default: module.GameLibrary }));
 const loadHistoryScreen = () => import("../components/shell/HistoryScreen").then((module) => ({ default: module.HistoryScreen }));
@@ -50,7 +49,6 @@ const loadSettingsScreen = () => import("../components/shell/SettingsScreen").th
 
 const StoryPlayer = lazy(loadStoryPlayer);
 const AboutScreen = lazy(loadAboutScreen);
-const HelpScreen = lazy(loadHelpScreen);
 const GalleryScreen = lazy(loadGalleryScreen);
 const GameLibrary = lazy(loadGameLibrary);
 const HistoryScreen = lazy(loadHistoryScreen);
@@ -127,6 +125,7 @@ function livePreviewGame(
     anchor_id: item.anchor_id ?? item.item_id,
     scene_id: item.scene_id,
     command_index: item.command_index,
+    image_fit: item.image_fit,
     unlocked: false,
   }));
   return {
@@ -221,7 +220,6 @@ async function preloadRuntimeScreen(screen: RuntimeScreen): Promise<void> {
     : screen === "gallery" ? await loadGalleryScreen()
     : screen === "history" ? await loadHistoryScreen()
     : screen === "about" ? await loadAboutScreen()
-    : screen === "help" ? await loadHelpScreen()
     : await loadMainMenu();
   readyScreens.set(screen, loaded.default);
 }
@@ -231,9 +229,9 @@ function renderRuntimeScreen(screen: RuntimeScreen, withinMenu = false): ReactNo
     : screen === "library" ? GameLibrary : screen === "settings" ? SettingsScreen
     : screen === "save_load" ? SaveLoadScreen : screen === "gallery" ? GalleryScreen
     : screen === "history" ? HistoryScreen : screen === "about" ? AboutScreen
-    : screen === "help" ? HelpScreen : MainMenu);
+    : MainMenu);
   const content = <Page />;
-  if (withinMenu || screen === "help") return content;
+  if (withinMenu) return content;
   const scope = screen === "playing" ? "player" : screen === "library" ? "game_menu"
     : screen === "settings" ? "preferences" : screen === "title_menu" || screen === "main_menu" ? "title" : screen;
   return <UISkinScreen screen={scope}>{content}</UISkinScreen>;
@@ -249,6 +247,7 @@ export function App() {
   const [bootStage, setBootStage] = useState<"line" | "opening">("line");
   const [bootReady, setBootReady] = useState(false);
   const [openingCycleComplete, setOpeningCycleComplete] = useState(false);
+  const [bootSession, setBootSession] = useState(0);
   const [startupAudioActive, setStartupAudioActive] = useState(false);
   const [launchFeedbackVisible, setLaunchFeedbackVisible] = useState(false);
   const bootContentRef = useRef<HTMLDivElement>(null);
@@ -280,6 +279,7 @@ export function App() {
     }
   }, [bootBlocking]);
   const resetBootSession = useCallback(() => {
+    setBootSession(value => value + 1);
     setBootOverlayVisible(true);
     setBootError(undefined);
     setBooting(true);
@@ -816,7 +816,8 @@ export function App() {
   }, []);
   const handleBootAnimationError = useCallback((message: string) => {
     reportFrontendError("player.boot-animation", message, { phase: bootStage });
-    setBootError(message);
+    // Optional authored media has its own retry/skip UI. Cartridge and script
+    // failures still use bootError and must never be bypassed.
   }, [bootStage]);
   const handleOpeningAudioError = useCallback((message: string) => {
     const activeScreen = useRuntimeStore.getState().screen;
@@ -940,7 +941,7 @@ export function App() {
       )}
       {bootOverlayVisible && !bootError && bootStage === "opening" && bootAnimation
         && hasCustomBootAnimation(bootAnimation, bootAssetUrls) && (
-        <OpeningScreen animation={bootAnimation} assetUrls={bootAssetUrls}
+        <OpeningScreen key={bootSession} animation={bootAnimation} assetUrls={bootAssetUrls}
           complete={bootReady && openingCycleComplete}
           onCycleComplete={handleOpeningCycleComplete} onSkip={handleOpeningCycleComplete} onComplete={hideBootOverlay}
           onError={handleBootAnimationError} />

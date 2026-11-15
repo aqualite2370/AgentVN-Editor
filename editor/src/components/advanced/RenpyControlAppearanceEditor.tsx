@@ -7,6 +7,7 @@ import { assetIdFromUILayoutReference, resolveUILayoutImagePreview, toUILayoutAs
 import { RichSelect } from "../common/RichSelect";
 import { controlPresentationOverrides } from "../../../../shared/cartridge/controlPresentation";
 import { RenpySettingHelp } from "./RenpySettingHelp";
+import { QuickBarSurfaceSettings } from "./QuickBarSurfaceSettings";
 
 /** The ordinary editor changes one authored component, never a shared button role. */
 export function RenpyControlAppearanceEditor({ component, assets, advancedEnabled = false, onStyle, onStateStyle, onImport }: {
@@ -48,6 +49,7 @@ export function RenpyControlAppearanceEditor({ component, assets, advancedEnable
   }
   return <section className="renpy-control-appearance" aria-label="当前控件背景" data-testid="renpy-control-appearance">
     <h4>当前控件 · 外观</h4>
+    <QuickBarSurfaceSettings component={component} onChange={onStyle} />
     <RenpySettingHelp label="当前控件外观帮助" testId="renpy-appearance-help">
       <p>设置作用于当前控件。清除图片或恢复继承后使用页面、共享样式或主题的值。</p>
       <p>按钮可分别设置普通、悬停、选中和禁用外观；批量修改请展开“按钮角色与状态”。</p>

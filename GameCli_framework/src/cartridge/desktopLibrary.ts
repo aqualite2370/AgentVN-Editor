@@ -1,10 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { readFile } from "@tauri-apps/plugin-fs";
 import { nanoid } from "nanoid";
 import type { CartridgePackage as SharedCartridgePackage, CartridgeValidationResult } from "../../../shared/cartridge/types";
 import { reportFrontendError } from "../../../shared/logging/frontendErrorLogger";
-import { importRuntimeCartridgeFromArrayBuffer } from "./importCartridge";
+import { importRuntimeCartridgeFromArrayBuffer, validateRuntimeCartridge } from "./importCartridge";
+import { normalizeUISkinLayoutForRuntime } from "../../../shared/cartridge/uiSkin";
 import { isTauriRuntime } from "../utils/platform";
 import type { InstalledCartridgeIndex, LibraryGame, StartupIndex } from "../types/cartridge";
 
@@ -40,13 +40,6 @@ function toIndex(record: TauriLibraryRecord): InstalledCartridgeIndex {
 function fileNameFromPath(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] ?? "game.vncart";
-}
-
-function bytesToArrayBuffer(bytes: Uint8Array | number[]): ArrayBuffer {
-  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  const copy = new Uint8Array(view.byteLength);
-  copy.set(view);
-  return copy.buffer;
 }
 
 function encodeArrayBuffer(buffer: ArrayBuffer): string {
@@ -153,11 +146,11 @@ type UnpackedPreviewPayload = {
   contentId?: string;
 };
 
-function unpackedPreviewToGame(payload: UnpackedPreviewPayload, previewRoot: string): LibraryGame {
+function unpackedPreviewToGame(payload: UnpackedPreviewPayload, previewRoot: string, installId = "preview_gamecli"): LibraryGame {
   const now = new Date().toISOString();
   const galleryItems = payload.gallery?.items ?? [];
   return {
-    install_id: "preview_gamecli",
+    install_id: installId,
     game_id: payload.manifest.game_id,
     title: payload.manifest.title,
     author: payload.manifest.author,
@@ -174,6 +167,7 @@ function unpackedPreviewToGame(payload: UnpackedPreviewPayload, previewRoot: str
       anchor_id: item.anchor_id ?? item.item_id,
       scene_id: item.scene_id,
       command_index: item.command_index,
+      image_fit: item.image_fit,
       unlock_condition: item.unlock_condition as LibraryGame["gallery"][number]["unlock_condition"],
       unlocked: false,
     })),
@@ -209,6 +203,7 @@ function packageToGame(cartridge: SharedCartridgePackage, record: InstalledCartr
       anchor_id: item.anchor_id ?? item.item_id,
       scene_id: item.scene_id,
       command_index: item.command_index,
+      image_fit: item.image_fit,
       unlock_condition: item.unlock_condition as LibraryGame["gallery"][number]["unlock_condition"],
       unlocked: false,
     })),
@@ -287,11 +282,7 @@ export async function importCartridgeFromPath(
   sourcePath: string,
   existingRecords: InstalledCartridgeIndex[],
 ): Promise<{ index: InstalledCartridgeIndex; game: LibraryGame; duplicate: boolean; validation: CartridgeValidationResult }> {
-  const bytes = await readFile(sourcePath);
-  const { cartridge, validation } = await importRuntimeCartridgeFromArrayBuffer(
-    bytesToArrayBuffer(bytes),
-    fileNameFromPath(sourcePath),
-  );
+  const { cartridge, validation } = await loadNativeCartridgePackage(sourcePath);
   const existing = existingRecords.find(
     (item) => item.gameId === cartridge.manifest.game_id && item.version === cartridge.manifest.version,
   );
@@ -326,11 +317,7 @@ export async function loadInstalledGame(index: InstalledCartridgeIndex): Promise
     const { cartridge } = await importRuntimeCartridgeFromArrayBuffer(buffer, record.sourceFileName);
     return packageToGame(cartridge, record);
   }
-  const buffer = await invoke<ArrayBuffer>("load_installed_cartridge", { installId: index.installId });
-  const { cartridge } = await importRuntimeCartridgeFromArrayBuffer(
-    buffer,
-    index.sourceFileName,
-  );
+  const { cartridge } = await loadNativeCartridgePackage(index.cartridgePath);
   return packageToGame(cartridge, index);
 }
 
@@ -361,7 +348,7 @@ async function fetchEmbeddedJson<T>(relativePath: string, required: boolean): Pr
 export async function loadGameFromEmbeddedDirectory(): Promise<LibraryGame> {
   if (isTauriRuntime()) {
     const payload = await invoke<UnpackedPreviewPayload>("load_embedded_game");
-    return unpackedPreviewToGame(payload, "embedded-resource");
+    return unpackedPreviewToGame(payload, "embedded-resource", "fixed_embedded_game");
   }
   const manifest = await fetchEmbeddedJson<SharedCartridgePackage["manifest"]>("manifest.json", true);
   const script = await fetchEmbeddedJson<SharedCartridgePackage["script"]>("script.json", true);
@@ -391,18 +378,32 @@ export async function loadGameFromEmbeddedDirectory(): Promise<LibraryGame> {
     sourceFileName: "embedded-cartridge/",
     startupIndex,
     contentId: startupIndex?.contentId,
-  }, "embedded-cartridge/");
+  }, "embedded-cartridge/", "fixed_embedded_game");
 }
 
 export async function loadGameFromPath(sourcePath: string, installId: string): Promise<LibraryGame> {
-  // Native raw IPC returns an ArrayBuffer. Serializing a large archive as a
-  // JSON number[] expands it several times before ZIP validation even starts.
-  const buffer = await invoke<ArrayBuffer>("read_cartridge_from_path", { sourcePath });
-  const { cartridge } = await importRuntimeCartridgeFromArrayBuffer(
-    buffer,
-    fileNameFromPath(sourcePath),
-  );
+  const { cartridge } = await loadNativeCartridgePackage(sourcePath);
   return packageToGame(cartridge, recordForPackage(cartridge, fileNameFromPath(sourcePath), installId, sourcePath));
+}
+
+async function loadNativeCartridgePackage(sourcePath: string) {
+  // Rust streams and verifies the archive to owned files. Do not construct a
+  // Blob for every asset: WebView's Blob quota is smaller than valid packages.
+  const payload = await invoke<UnpackedPreviewPayload>("load_native_cartridge", { sourcePath });
+  if (!payload.checksum) throw new Error("卡带缺少 checksum.json。");
+  const cartridge: SharedCartridgePackage = {
+    manifest: payload.manifest,
+    script: payload.script,
+    gallery: payload.gallery ?? { gallery_version: "1.0.0", items: [] },
+    checksum: payload.checksum,
+    uiSkin: payload.uiSkin ? normalizeUISkinLayoutForRuntime(payload.uiSkin).layout : undefined,
+    assetBlobUrls: payload.assetUrls ?? {},
+    uiAssetBlobUrls: payload.uiAssetUrls,
+    sourceFileName: payload.sourceFileName,
+  };
+  const validation = validateRuntimeCartridge(cartridge);
+  if (!validation.ok) throw new Error(validation.errors.map(error => error.message).join("; "));
+  return { cartridge, validation };
 }
 
 export async function removeInstalledCartridge(installId: string, deleteSaves = false): Promise<InstalledCartridgeIndex[]> {

@@ -221,6 +221,7 @@ function AgentVNPlaybackControls({ expanded, onToggleExpanded }: PlaybackControl
       data-quick-menu-anchor={quickMenuPresentation.placement}
       data-quick-menu-direction={quickMenuMetrics.direction}
       data-quick-menu-variant={quickMenuVariant}
+      data-quick-menu-transparent={layout.component?.style?.quickMenuTransparent ? "true" : undefined}
       data-quick-menu-breakpoint={quickMenuMetrics.breakpoint}
       data-quick-menu-fixed="true"
       data-quick-menu-authored-x={layout.rect?.x}

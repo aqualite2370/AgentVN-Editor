@@ -6,7 +6,10 @@ import { useConfirmationLayoutStyle, useRenpyButtonRoleStyle, useRuntimeUILayout
 import { presentRuntimeModal } from "../../utils/runtimeModalPresentation";
 import { PresentedControl } from "../../uiSkin/PresentedControl";
 
-export function Modal({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }) {
+export function Modal({ title, children, onClose, presentation = "confirmation" }: {
+  title: string; children: ReactNode; onClose: () => void;
+  presentation?: "confirmation" | "image-viewer";
+}) {
   const panelRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
   const focusInitialRef = useRef<() => void>(() => {});
@@ -135,6 +138,19 @@ export function Modal({ title, children, onClose }: { title: string; children: R
       focusInitialRef.current();
     }
   });
+
+  // The image viewer shares the modal's input/focus lifecycle, but must not
+  // inherit the author's confirmation-box geometry or replace its contents.
+  if (presentation === "image-viewer") return (
+    <div className="modal-backdrop gallery-viewer-backdrop" role="presentation">
+      <section ref={panelRef} className="modal-panel gallery-image-viewer"
+        role="dialog" aria-modal="true" aria-label={title} tabIndex={-1}
+        data-runtime-modal="true" data-runtime-screen={runtimeScreen}
+        data-layout-type={layout.layout_type ?? "agentvn"}>
+        {children}
+      </section>
+    </div>
+  );
 
   return (
     <div className="modal-backdrop" role="presentation">

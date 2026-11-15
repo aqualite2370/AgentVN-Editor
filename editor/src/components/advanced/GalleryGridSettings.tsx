@@ -1,9 +1,12 @@
-import type { UILayoutComponent, UILayoutComponentStyle } from "../../../../shared/cartridge/uiSkin";
+import type { UILayoutComponent, UILayoutComponentStyle, UISkinLayout } from "../../../../shared/cartridge/uiSkin";
 import { NumberInput } from "../common/NumberInput";
+import { GalleryPresentationSettings } from "./GalleryPresentationSettings";
 
-export function GalleryGridSettings({ component, onChange }: {
+export function GalleryGridSettings({ component, onChange, draft, onLayoutChange }: {
   component: UILayoutComponent;
   onChange: (patch: Partial<UILayoutComponentStyle>) => void;
+  draft?: UISkinLayout;
+  onLayoutChange?: (next: UISkinLayout) => void;
 }) {
   if (component.component_type !== "gallery_grid") return null;
   return <section className="renpy-property" aria-label="画廊排列">
@@ -21,5 +24,6 @@ export function GalleryGridSettings({ component, onChange }: {
             aria-label={`${label}恢复继承`} onClick={() => onChange({ [key]: undefined })}>恢复继承</button>
         </label>)}
     </div>
+    {draft && onLayoutChange && <GalleryPresentationSettings draft={draft} disabled={component.locked} onChange={onLayoutChange} />}
   </section>;
 }

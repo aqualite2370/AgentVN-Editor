@@ -60,6 +60,7 @@ function renderNode(
   key: string,
   isRoot = false,
 ): ReactNode {
+  if (node.action === "open_help") return null;
   if (node.tag === "img") {
     const source = node.assetId ? toRuntimeAssetUrl(assetUrls[node.assetId]) : undefined;
     return <img
@@ -125,7 +126,7 @@ export function RuntimeCustomComponentLayer({ screen }: { screen: UILayoutScreen
           case "open_history": state.openHistory(); break;
           case "open_gallery": state.openGallery(); break;
           case "open_about": state.openAbout(); break;
-          case "open_help": state.openHelp(); break;
+          case "open_help": break;
           case "close_menu": state.closeMenu(); break;
           case "rollback": state.rollback(); break;
           case "toggle_auto": state.toggleAuto(); break;

@@ -3170,6 +3170,43 @@
   transition-property: none !important;
 }
 
+.opening-media-recovery {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: min(560px, calc(100% - 48px));
+  height: fit-content;
+  max-height: calc(100% - 48px);
+  overflow: auto;
+  padding: 24px;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel, #e9eef3);
+  color: var(--ink, #18202b);
+}
+
+.opening-media-recovery pre {
+  max-height: 24vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.opening-media-recovery .card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.opening-media-recovery > [role="status"] {
+  display: block;
+  min-height: 1.5em;
+  margin-top: 8px;
+}
+
 .runtime-opening-screen .custom-loading-animation.is-fullscreen {
   position: absolute;
   inset: 0;

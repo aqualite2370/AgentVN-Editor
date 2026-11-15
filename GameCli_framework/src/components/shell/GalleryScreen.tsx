@@ -1,5 +1,6 @@
 import { Lock } from "lucide-react";
 import { useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { createPortal } from "react-dom";
 import { useRuntimeStore } from "../../store/runtimeStore";
 import { assetResolver } from "../../engine/assetResolver";
 import { useUILayoutStyle, useRuntimeUILayout, useUILayoutFrameSize, useRenpyButtonRoleStyle } from "../../uiSkin/uiSkinRuntime";
@@ -11,8 +12,18 @@ import { ScreenBackButton } from "./ScreenBackButton";
 import { RenpyMenuFrame } from "./RenpyMenuFrame";
 import { Button } from "../common/Button";
 import { SavePageTransition, type SavePageTransitionHandle } from "./SavePageTransition";
+import { GalleryImageViewer } from "./GalleryImageViewer";
+import type { LibraryGame } from "../../types/cartridge";
+import type { GalleryImageOrigin } from "./galleryImagePresentation";
+import { DEFAULT_GALLERY_PRESENTATION } from "../../../../shared/cartridge/galleryPresentation";
 
-function GalleryItemView({ item, imageUrl, component }: { item: GalleryItem; imageUrl?: string; component?: UILayoutComponent }) {
+// Only a live cartridge session keeps this view state. Never save image
+// browsing to player preferences, save slots, or a portable project.
+const galleryPages = new WeakMap<LibraryGame["script"], Map<string, number>>();
+
+function GalleryItemView({ item, imageUrl, component, onView }: {
+  item: GalleryItem; imageUrl?: string; component?: UILayoutComponent; onView: (origin?: GalleryImageOrigin) => void;
+}) {
   const layout = useRuntimeUILayout();
   const frame = useUILayoutFrameSize();
   const assetUrls = useRuntimeStore(state => state.currentGame?.assetUrls);
@@ -33,12 +44,16 @@ function GalleryItemView({ item, imageUrl, component }: { item: GalleryItem; ima
         scale={Math.min(frame.width / 1280, frame.height / 720)}>
       <Button
         className="gallery-replay"
-        disabled={!item.unlocked || !item.anchor_id}
-        onClick={() => item.anchor_id && void useRuntimeStore.getState().openGalleryAnchor(item.anchor_id)}
-        aria-label={item.unlocked ? `读取画廊-${item.title}` : "未解锁画廊"}
+        disabled={!item.unlocked}
+        onClick={event => {
+          const rect = event.currentTarget.querySelector("img")?.getBoundingClientRect();
+          onView(rect ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height } : undefined);
+        }}
+        aria-label={item.unlocked ? `查看大图-${item.title}` : "未解锁画廊"}
       >
         {item.unlocked && item.asset_id
-          ? <img key={attempt} src={imageUrl} alt="" onError={() => setImageFailed(true)} />
+          ? <img key={attempt} src={imageUrl} alt="" onError={() => setImageFailed(true)}
+              style={{ objectFit: item.image_fit === "contain" ? "contain" : "cover" }} />
           : <div>?</div>}
         <span>{item.unlocked ? item.title : "未解锁"}</span>
         {item.unlocked && item.description && <small className="gallery-item-description">{item.description}</small>}
@@ -63,6 +78,10 @@ function GalleryItemView({ item, imageUrl, component }: { item: GalleryItem; ima
 
 export function GalleryScreen() {
   const game = useRuntimeStore((state) => state.currentGame);
+  const screen = useRuntimeStore(state => state.screen);
+  const marker = useRef<HTMLSpanElement>(null);
+  const ownerId = game ? `${game.install_id}\0${game.game_id}` : "";
+  const [image, setImage] = useState<{ script: LibraryGame["script"]; ownerId: string; itemId: string; origin?: GalleryImageOrigin }>();
   const gridLayout = useUILayoutStyle("gallery", "gallery_grid");
   const itemLayout = useUILayoutStyle("gallery", "gallery_item");
   const paginationLayout = useUILayoutStyle("gallery", "gallery_pagination");
@@ -70,10 +89,13 @@ export function GalleryScreen() {
   const frame = useUILayoutFrameSize();
   const categoryRole = useRenpyButtonRoleStyle("category_pagination", "gallery", "var(--renpy-menu-scale)");
   const scale = Math.min(frame.width / 1280, frame.height / 720);
+  const presentation = layout.galleryPresentation ?? DEFAULT_GALLERY_PRESENTATION;
   const pageTransition = useRef<SavePageTransitionHandle>(null);
   const navigation = useRef<HTMLElement>(null);
   const restoreFocus = useRef(false);
-  const [selection, setSelection] = useState({ installId: game?.install_id, page: 0 });
+  const [selection, setSelection] = useState(() => ({
+    script: game?.script, ownerId, page: game ? galleryPages.get(game.script)?.get(ownerId) ?? 0 : 0,
+  }));
   const entryError = useRuntimeStore((state) => state.entryError);
   const items: GalleryItem[] = game?.gallery.length
     ? game.gallery
@@ -82,14 +104,23 @@ export function GalleryScreen() {
   const rows = Math.max(1, Math.min(8, Math.round(gridLayout.component?.style?.rows ?? 2)));
   const pageSize = columns * rows;
   const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
-  const page = selection.installId === game?.install_id ? Math.min(selection.page, pageCount - 1) : 0;
+  const page = selection.script === game?.script && selection.ownerId === ownerId
+    ? Math.min(selection.page, pageCount - 1) : 0;
   const visibleItems = items.slice(page * pageSize, (page + 1) * pageSize);
   function changePage(next: number) {
     if (next < 0 || next >= pageCount || next === page) return;
     restoreFocus.current = Boolean(navigation.current?.contains(document.activeElement));
     pageTransition.current?.prepare(next > page ? 1 : -1);
-    setSelection({ installId: game?.install_id, page: next });
+    if (game) {
+      const pages = galleryPages.get(game.script) ?? new Map<string, number>();
+      pages.set(ownerId, next);
+      galleryPages.set(game.script, pages);
+    }
+    setSelection({ script: game?.script, ownerId, page: next });
   }
+  useLayoutEffect(() => {
+    if (screen !== "gallery") setImage(undefined);
+  }, [screen]);
   useLayoutEffect(() => {
     if (!restoreFocus.current) return;
     restoreFocus.current = false;
@@ -110,13 +141,18 @@ export function GalleryScreen() {
       onClick={() => changePage(page + (previous ? -1 : 1))}>{previous ? "上一页" : "下一页"}</Button>
   </PresentedControl>;
 
-  return (
+  const host = marker.current?.closest(".runtime-layout-frame");
+  return (<>
+    <span hidden ref={marker} />
     <RenpyMenuFrame activeScreen="gallery" className="screen-panel gallery-screen" aria-label="画廊" data-testid="gallery-screen" data-runtime-screen="gallery">
       <header>
         <ScreenBackButton testId="back-to-main-menu" label="返回" onClick={() => useRuntimeStore.getState().closeMenu()} />
       </header>
       {entryError && <p role="alert" className="inline-error">{entryError}</p>}
-      <UILayoutOpacitySurface className="gallery-panel ui-layouted" style={panelStyle} presentationComponent={gridLayout.component}>
+      <UILayoutOpacitySurface className="gallery-panel ui-layouted"
+        style={{ ...panelStyle, padding: Math.max(12 * scale, Number.parseFloat(String(panelStyle.padding)) || 0),
+          "--gallery-image-aspect": `${presentation.width} / ${presentation.height}` } as CSSProperties}
+        presentationComponent={gridLayout.component}>
         <SavePageTransition ref={pageTransition} pageKey={`gallery:${page}`}>
         <div className="gallery-grid" style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
           gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`, gap: gridLayout.style.gap,
@@ -127,6 +163,7 @@ export function GalleryScreen() {
             item={item}
             imageUrl={assetResolver.resolveAsset(item.asset_id)}
             component={itemLayout.component}
+            onView={origin => { if (game) setImage({ script: game.script, ownerId, itemId: item.item_id, origin }); }}
           />
         ))}
         </div>
@@ -138,5 +175,11 @@ export function GalleryScreen() {
         </nav>
       </UILayoutOpacitySurface>
     </RenpyMenuFrame>
+    {host && screen === "gallery" && game && image?.script === game.script && image.ownerId === ownerId
+      && createPortal(<GalleryImageViewer items={items.filter(item => item.unlocked)}
+        origin={image.origin}
+        itemId={image.itemId} onSelect={itemId => setImage({ script: game.script, ownerId, itemId })}
+        onClose={() => setImage(undefined)} />, host)}
+    </>
   );
 }

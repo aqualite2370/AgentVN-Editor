@@ -13,7 +13,6 @@ const actions: Array<{ screen: RenpyMenuScreen; label: string; testId: string }>
   { screen: "history", label: "历史", testId: "renpy-menu-history" },
   { screen: "settings", label: "设置", testId: "renpy-menu-settings" },
   { screen: "about", label: "关于", testId: "renpy-menu-about" },
-  { screen: "help", label: "帮助", testId: "renpy-menu-help" },
   { screen: "gallery", label: "画廊", testId: "renpy-menu-gallery" },
 ];
 
@@ -32,7 +31,6 @@ export function RenpyMenuNavigation({ activeScreen, presentedScreen = activeScre
   const openSettings = useRuntimeStore((state) => state.openSettings);
   const openGallery = useRuntimeStore((state) => state.openGallery);
   const openAbout = useRuntimeStore((state) => state.openAbout);
-  const openHelp = useRuntimeStore((state) => state.openHelp);
   const openExitConfirmation = useRuntimeStore((state) => state.openExitConfirmation);
   const closeMenu = useRuntimeStore((state) => state.closeMenu);
   const page = presentedScreen === "settings" ? "preferences" : presentedScreen;
@@ -56,7 +54,7 @@ export function RenpyMenuNavigation({ activeScreen, presentedScreen = activeScre
     settings: () => { if (activeScreen !== "settings") openSettings(); },
     gallery: () => { if (activeScreen !== "gallery") openGallery(); },
     about: () => { if (activeScreen !== "about") openAbout(); },
-    help: () => { if (activeScreen !== "help") openHelp(); },
+    help: () => {},
   };
 
   return (

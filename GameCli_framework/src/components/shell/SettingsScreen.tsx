@@ -221,7 +221,7 @@ export function SettingsScreen() {
                       aria-pressed={settings.gameAspectRatio === ratio}
                       data-testid={`settings-aspect-${ratio}`}
                       onClick={() => updateSettings({ gameAspectRatio: ratio })}>
-                      {ratio === "default" ? `工程默认（${resolveGameViewport(currentGame?.uiSkin?.gameViewport).aspectRatio}）` : ratio}
+                    {ratio === "default" ? `默认（${resolveGameViewport(currentGame?.uiSkin?.gameViewport).aspectRatio}）` : ratio}
                     </Button>
                   ))}
                 </div>

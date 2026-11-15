@@ -30,8 +30,16 @@ export const GAME_VIEWPORT_RUNTIME_VERSION = "0.27.0";
 export const NATIVE_ANIMATION_ASSET_RUNTIME_VERSION = "0.28.0";
 export const OPENING_PRESENTATION_RUNTIME_VERSION = "0.29.0";
 export const GALLERY_PRESENTATION_RUNTIME_VERSION = "0.30.0";
+export const CLIENT_PRESENTATION_RUNTIME_VERSION = "0.31.0";
 
 export function minimumRuntimeVersionForLayout(scriptVersion: string, layout?: UISkinLayout): string {
+  if ((layout?.galleryPresentation || layout?.dialogPortrait && (
+    layout.dialogPortrait.placement !== undefined || layout.dialogPortrait.height !== undefined
+    || layout.dialogPortrait.width !== undefined || layout.dialogPortrait.entrance !== undefined
+    || layout.dialogPortrait.fit !== undefined)
+    || layout?.screens.some(screen => screen.components.some(c => c.style?.quickMenuTransparent !== undefined)))
+    && compareSemver(scriptVersion, CLIENT_PRESENTATION_RUNTIME_VERSION) < 0)
+    scriptVersion = CLIENT_PRESENTATION_RUNTIME_VERSION;
   if (layout?.screens.some(screen => screen.screen_id === "gallery"
     && screen.components.some(component => component.component_type === "gallery_item"
       || component.component_type === "gallery_pagination" || component.style?.rows !== undefined))
@@ -192,6 +200,9 @@ export function scriptUsesGalleryAnchor(script: Pick<RuntimeScript, "scenes">): 
 }
 
 export function minimumRuntimeVersionForScript(script: PresentationScript & { opening_audio?: RuntimeScript["opening_audio"]; rollback?: RuntimeScript["rollback"]; loading_animation?: RuntimeScript["loading_animation"] }): string {
+  if (script.scenes.some(scene => scene.commands.some(command =>
+    command.type === "gallery_anchor" && command.image_fit !== undefined)))
+    return CLIENT_PRESENTATION_RUNTIME_VERSION;
   if (script.loading_animation?.kind !== "default"
     && usesCustomOpeningPresentation(script.loading_animation?.presentation))
     return OPENING_PRESENTATION_RUNTIME_VERSION;

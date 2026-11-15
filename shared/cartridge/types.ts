@@ -142,7 +142,7 @@ export type GameCommand =
   | { type: "sfx"; sfx_id: string; volume?: number | null }
   | CameraCommand
   | { type: "wait"; duration_ms: number }
-  | { type: "gallery_anchor"; anchor_id: string; title: string; asset_id: string; description?: string | null }
+  | { type: "gallery_anchor"; anchor_id: string; title: string; asset_id: string; description?: string | null; image_fit?: import("./galleryPresentation").GalleryImageFit }
   | (
       | { type: "rollback"; action: "checkpoint"; hard?: boolean }
       | { type: "rollback"; action: "block" | "fix" | "suspend" | "resume" }
@@ -219,6 +219,7 @@ export interface GalleryItem {
   item_id: string;
   title: string;
   description?: string;
+  image_fit?: import("./galleryPresentation").GalleryImageFit;
   asset_id: string;
   anchor_id?: string;
   scene_id?: string;

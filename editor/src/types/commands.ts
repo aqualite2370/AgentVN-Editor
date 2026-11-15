@@ -175,6 +175,7 @@ export interface GalleryAnchorCommand {
   title: string;
   asset_id: string;
   description?: string | null;
+  image_fit?: import("../../../shared/cartridge/galleryPresentation").GalleryImageFit;
 }
 
 export type RollbackControlCommand =

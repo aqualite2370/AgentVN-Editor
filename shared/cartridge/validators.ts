@@ -223,6 +223,9 @@ export function validateRuntimeScript(script: RuntimeScript, manifest?: GameMani
   }
   for (const scene of scenes) {
     for (const command of Array.isArray(scene.commands) ? scene.commands : []) {
+      if (command.type === "gallery_anchor" && command.image_fit !== undefined
+        && !["contain", "cover", "fullscreen"].includes(command.image_fit))
+        issues.push(issue("gallery_image_fit", "画廊图片显示方式无效。", "error", `scene.${scene.scene_id}.gallery_anchor.image_fit`));
       if ((command.type === "dialog" || command.type === "narration")
         && command.bubble_position !== undefined && !isBubblePositionConfig(command.bubble_position)) {
         issues.push(issue("dialog_bubble_position", "气泡定位须为安全的角色偏移或0–100%的固定画面坐标。",
@@ -379,6 +382,8 @@ export function validateGallery(gallery: GalleryManifest): CartridgeValidationRe
   if (!Array.isArray(gallery.items)) issues.push(issue("gallery_items", "画廊条目格式错误（items）：原因：gallery.json 中 items 必须是数组。影响：GameCLI 无法读取画廊。解决方案：请重新导出卡带，或把 items 修正为数组。", "error", "gallery.items"));
   const ids = new Set<string>();
   for (const [index, item] of (gallery.items ?? []).entries()) {
+    if (item.image_fit !== undefined && !["contain", "cover", "fullscreen"].includes(item.image_fit))
+      issues.push(issue("gallery_image_fit", "画廊图片显示方式无效。", "error", `gallery.items.${index}.image_fit`));
     if (!item.item_id?.trim()) issues.push(issue("gallery_item_id", "画廊条目缺少唯一 ID。", "error", `gallery.items.${index}.item_id`));
     if (ids.has(item.item_id)) issues.push(issue("gallery_duplicate_id", `画廊锚点 ID 重复：${item.item_id}`, "error", `gallery.items.${index}.item_id`));
     ids.add(item.item_id);

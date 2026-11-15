@@ -333,6 +333,18 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
   // Temporary presentation state, deliberately outside save snapshots/settings.
   let hiddenPlayback: { playthroughId: number; auto: boolean; toggle: boolean; hold: boolean } | undefined;
 
+  function invalidateLaunchForGameLoad(): void {
+    // A new cartridge (including A -> B -> A) owns a new playback session.
+    // Late preparation must not start a scene or retain an unresolved caller.
+    launchTasks.clear();
+    set({
+      launchTransition: "idle", launchTransitionId: 0, launchIntent: undefined,
+      launchPreparation: undefined, entryError: undefined,
+    });
+    for (const resolve of launchCompletionResolvers.values()) resolve();
+    launchCompletionResolvers.clear();
+  }
+
   function requestScreenNavigation(
     toScreen: RuntimeScreen,
     returnScreen: RuntimeScreen | undefined,
@@ -382,7 +394,13 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
     if (!game) return "当前还没有载入卡带。";
     const structuralIssues = validateSaveData(save);
     if (structuralIssues.length > 0) return structuralIssues[0].message;
-    if (save.game_id && save.game_id !== game.game_id && save.game_id !== game.install_id) {
+    // Early standalone Android exports recorded their install ID as game_id.
+    // This alias is valid only inside a fixed embedded game, never a library
+    // cartridge or editor preview. Native Windows additionally checks game_id.
+    const legacyEmbeddedSave = state.runtimeMode === "fixed"
+      && game.install_id === "fixed_embedded_game"
+      && save.install_id === "preview_gamecli" && save.game_id === "preview_gamecli";
+    if (save.game_id && save.game_id !== game.game_id && save.game_id !== game.install_id && !legacyEmbeddedSave) {
       return "这个存档不属于当前卡带。";
     }
     const scene = engine.getScene(save.scene_id);
@@ -467,6 +485,8 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
       candidate.anchor_id === anchorId || candidate.item_id === anchorId
     ));
     if (item?.scene_id) {
+      if (!game?.script.scenes.some(scene => scene.scene_id === item.scene_id))
+        throw new Error(`画廊关联的剧情场景不存在，请检查画廊锚点设置。`);
       const ready = await progressiveAssetLoader.prepareScene(
         item.scene_id,
         10_000,
@@ -481,6 +501,8 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
     const record = await readGalleryAnchor(installId, anchorId);
     if (!record) throw new Error("找不到这个画廊锚点的回看记录。");
     if (isGalleryUnlockRecord(record)) {
+      if (!game?.script.scenes.some(scene => scene.scene_id === record.scene_id))
+        throw new Error("画廊记录关联的剧情场景已不存在，请检查画廊锚点设置。");
       const ready = await progressiveAssetLoader.prepareScene(
         record.scene_id,
         10_000,
@@ -746,6 +768,7 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
     setPresentationMode: (presentationMode) => set({ presentationMode }),
     async loadGame(game) {
       const owner = ++saveOwner;
+      invalidateLaunchForGameLoad();
       const script = await resolveNativeAnimationAssets(game.script, game.manifest.assets, asset => {
         const url = game.assetUrls[asset.asset_id] || game.assetUrls[asset.path];
         if (!url) throw new Error(`动画素材 ${asset.asset_id} 缺少可读取的文件。`);
@@ -817,6 +840,7 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
     },
     async loadLivePreview(game, start) {
       const owner = ++saveOwner;
+      invalidateLaunchForGameLoad();
       const script = await resolveNativeAnimationAssets(game.script, game.manifest.assets, asset => {
         const url = game.assetUrls[asset.asset_id] || game.assetUrls[asset.path];
         if (!url) throw new Error(`动画素材 ${asset.asset_id} 缺少可读取的文件。`);
@@ -1122,7 +1146,7 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
       const item = state.currentGame?.gallery.find((candidate) => (
         candidate.anchor_id === anchorId || candidate.item_id === anchorId
       ));
-      if (!item?.unlocked || !item.anchor_id || state.galleryReplayActive) return;
+      if (!item?.unlocked || !item.anchor_id) return;
       await beginLaunch({ kind: "gallery_anchor", anchorId }, (id) => prepareGalleryLaunch(id, anchorId));
     },
     exitGalleryReplay: () => finishGalleryReplay(),
@@ -1233,10 +1257,10 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
           // Capture only after preparation succeeds, before replay replaces the
           // engine. Gallery may have been reached through any shared menu.
           const previous = get();
-          const snapshot = hasPlayableState(previous.engineState)
+          const snapshot = !previous.galleryReplayActive && hasPlayableState(previous.engineState)
             ? createSnapshot({ kind: "manual", slot: 0 })
             : undefined;
-          set({
+          if (!previous.galleryReplayActive) set({
             galleryReturnSnapshot: snapshot ? structuredClone(snapshot) : undefined,
             galleryReturnSession: snapshot ? engine.capturePlaybackSession() : undefined,
             galleryReplayReturnScreen: previous.screen === "gallery"
@@ -1484,12 +1508,13 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
       requestScreenNavigation("about", panelReturnScreen(state));
     },
     openHelp: () => {
-      const state = get();
-      requestScreenNavigation("help", panelReturnScreen(state));
+      // Retained as a compatibility no-op for old authored actions. Help is
+      // an editor concern and is no longer a player destination.
     },
     openExitConfirmation: () => set({ exitConfirmationOpen: true }),
     closeExitConfirmation: () => set({ exitConfirmationOpen: false }),
     openPreviewScreen: (screen) => {
+      if (screen === "help") return;
       const state = get();
       if (screen === "playing") {
         if (!state.currentGame) return;

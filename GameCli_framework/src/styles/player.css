@@ -1340,10 +1340,10 @@
   position: absolute;
   left: var(--dialog-portrait-left, 0px);
   top: var(--dialog-portrait-top, 0px);
-  width: var(--dialog-portrait-size, 0px);
-  height: var(--dialog-portrait-size, 0px);
+  width: var(--dialog-portrait-width, var(--dialog-portrait-size, 0px));
+  height: var(--dialog-portrait-height, var(--dialog-portrait-size, 0px));
   object-fit: contain;
-  object-position: center;
+  object-position: center top;
   /* Keep the dedicated portrait hit-testable beside an authored nameplate. */
   z-index: var(--dialog-portrait-z, 3);
 }

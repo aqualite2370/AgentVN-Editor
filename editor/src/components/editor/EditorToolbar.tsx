@@ -250,7 +250,6 @@ export function EditorToolbar({ onReturnHome, onWorkspaceActiveChange }: {
   const memoryMode = useEditorStore((state) => state.memoryMode);
   const nodes = useEditorStore((state) => state.nodes);
   const updateMemoryMode = useEditorStore((state) => state.updateMemoryMode);
-  const autoArrangeNodes = useEditorStore((state) => state.autoArrangeNodes);
   const exportProject = useEditorStore((state) => state.exportProject);
   const importProject = useEditorStore((state) => state.importProject);
   const importProjectAsRoute = useEditorStore((state) => state.importProjectAsRoute);
@@ -1088,26 +1087,6 @@ export function EditorToolbar({ onReturnHome, onWorkspaceActiveChange }: {
     return await writeProjectBackup(buildCurrentProjectSnapshot(), trigger);
   }
 
-  function autoArrangeCanvas() {
-    const result = autoArrangeNodes({ scope: "all" });
-    if (result.arrangedNodeIds.length === 0) {
-      setNotice("没有可整理的节点。", "info");
-      return;
-    }
-    const focusNodeId = nodes.find((node) => node.data.nodeKind === "start")?.id ?? result.arrangedNodeIds[0];
-    window.requestAnimationFrame(() => {
-      void reactFlow.fitView({
-        nodes: [{ id: focusNodeId }],
-        padding: 0.42,
-        duration: 420,
-      });
-    });
-    setNotice(
-      `已整理画布：移动 ${result.movedCount} 个节点。`,
-      result.movedCount > 0 ? "success" : "info",
-    );
-  }
-
   async function restoreTimelineProject(nextProject: Parameters<typeof importProject>[0], entry: ProjectBackupEntry) {
     setRestoringEntry(entry);
     let savedProject: Parameters<typeof importProject>[0] = nextProject;
@@ -1573,14 +1552,6 @@ export function EditorToolbar({ onReturnHome, onWorkspaceActiveChange }: {
             打包与发布
           </button>
 
-          <button
-            type="button"
-            className="toolbar-arrange-button"
-            data-help-key="toolbar.autoArrange"
-            onClick={autoArrangeCanvas}
-          >
-            整理画布
-          </button>
           <button
             type="button"
             className="toolbar-secondary-action"

@@ -33,6 +33,7 @@ interface ValidationRuntimeCommand {
   anchor_id?: string;
   title?: string;
   asset_id?: string;
+  image_fit?: string;
   character_id?: string;
   target?: string;
   target_scene_id?: string;
@@ -259,6 +260,8 @@ export function validateScript(script: ValidationRuntimeScript): ValidationIssue
     }
     for (const command of scene.commands) {
       if (command.type === "gallery_anchor") {
+        if (command.image_fit !== undefined && !["contain", "cover", "fullscreen"].includes(command.image_fit))
+          issues.push({ code: "gallery_image_fit", message: `${currentSceneLabel} 的画廊图片显示方式无效。` });
         if (!command.anchor_id?.trim()) issues.push({ code: "gallery_anchor_id_missing", message: `${currentSceneLabel} 的画廊锚点缺少 anchor_id。` });
         if (!command.title?.trim()) issues.push({ code: "gallery_anchor_title_missing", message: `${currentSceneLabel} 的画廊锚点名称不能为空。` });
         if (!command.asset_id?.trim()) issues.push({ code: "gallery_anchor_asset_missing", message: `${currentSceneLabel} 的画廊锚点必须指定展示素材。` });

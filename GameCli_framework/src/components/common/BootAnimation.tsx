@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type AnimationEvent, type CSSProperties } from "react";
 import { RoseTwoLoader } from "./RoseTwoLoader";
 import type { LoadingAnimationConfig } from "../../types/script";
-import { toRuntimeAssetUrl } from "../../utils/runtimeAssetUrl";
+import { acquirePlayableMediaUrl, toRuntimeAssetUrl } from "../../utils/runtimeAssetUrl";
 
 const bootLoaderSettleMs = 320;
 
@@ -76,8 +76,13 @@ export function BootAnimation({ animation, assetUrls = {}, complete = false, onC
   const [frameIndex, setFrameIndex] = useState(0);
   const [mediaAspectRatio, setMediaAspectRatio] = useState<number>();
   const videoRef = useRef<HTMLVideoElement>(null);
+  const stoppedRef = useRef(complete);
+  stoppedRef.current = complete;
+  const stopPreparationRef = useRef<() => void>();
   const errorRef = useRef(onError);
   errorRef.current = onError;
+  const cycleRef = useRef(onCycleComplete);
+  cycleRef.current = onCycleComplete;
   const customCompleteRef = useRef<number>();
   const customCycleRef = useRef(false);
   const imageIds = animation?.kind === "image_sequence" ? animation.image_asset_ids.filter(Boolean) : [];
@@ -90,19 +95,57 @@ export function BootAnimation({ animation, assetUrls = {}, complete = false, onC
     const video = videoRef.current;
     if (!video || !videoUrl) return;
     let disposed = false;
+    let failed = false;
+    let release: (() => void) | undefined;
+    const controller = new AbortController();
+    function fail(phase: string, error?: unknown) {
+      if (disposed || failed || stoppedRef.current) return;
+      failed = true;
+      window.clearTimeout(timeout);
+      video!.pause();
+      controller.abort();
+      const reason = error instanceof Error ? `${error.name}: ${error.message}` : "";
+      const mediaError = video!.error;
+      // Do not embed URLs or cartridge contents in the player-facing diagnostic.
+      errorRef.current?.(`开屏视频暂时无法播放，可重试或跳过片头。\n${phase}; MediaError code=${mediaError?.code ?? 0}; readyState=${video!.readyState}; networkState=${video!.networkState}${reason ? `; ${reason.slice(0, 300)}` : ""}`);
+    }
+    function playing() { window.clearTimeout(timeout); }
+    function mediaError() { fail("decode"); }
+    const timeout = window.setTimeout(() => fail("prepare-timeout"), 60000);
+    video.addEventListener("error", mediaError);
+    video.addEventListener("playing", playing);
+    const stop = () => {
+      disposed = true;
+      controller.abort();
+      window.clearTimeout(timeout);
+      video.pause();
+    };
+    stopPreparationRef.current = stop;
     // React StrictMode replays effects. Reattach the source and resume after
     // its cleanup rather than leaving the replayed element paused/source-less.
-    if (video.getAttribute("src") !== videoUrl) video.src = videoUrl;
-    void video.play().catch(() => {
-      if (!disposed) errorRef.current?.("开屏视频无法解码或播放，请检查视频素材格式后重新导出。");
-    });
+    void acquirePlayableMediaUrl(videoUrl, controller.signal).then(source => {
+      if (disposed || failed || stoppedRef.current) { source.release(); return; }
+      release = source.release;
+      video.src = source.url;
+      void video.play().catch(error => fail("play", error));
+    }, error => fail("resource", error));
     return () => {
-      disposed = true;
+      stop();
+      if (stopPreparationRef.current === stop) stopPreparationRef.current = undefined;
+      video.removeEventListener("error", mediaError);
+      video.removeEventListener("playing", playing);
       video.pause();
       video.removeAttribute("src");
       video.load();
+      release?.();
     };
   }, [videoUrl]);
+
+  useEffect(() => {
+    // Explicit skip may happen before preparation finishes. Abort preparation
+    // without clearing the displayed frame; the fullscreen owner still fades it.
+    if (complete) stopPreparationRef.current?.();
+  }, [complete]);
 
   useEffect(() => {
     setFrameIndex(0);
@@ -149,7 +192,6 @@ export function BootAnimation({ animation, assetUrls = {}, complete = false, onC
       <div className={mediaClassName} style={customAnimationStyle} aria-hidden="true">
         <video
           ref={videoRef}
-          src={videoUrl}
           autoPlay
           muted
           loop={false}
@@ -161,10 +203,7 @@ export function BootAnimation({ animation, assetUrls = {}, complete = false, onC
           onEnded={() => {
             if (customCycleRef.current) return;
             customCycleRef.current = true;
-            onCycleComplete?.();
-          }}
-          onError={() => {
-            onError?.("开屏视频无法解码或播放，请检查视频素材格式后重新导出。");
+            cycleRef.current?.();
           }}
         />
       </div>

@@ -45,7 +45,6 @@ export function MainMenu() {
   const openSettings = useRuntimeStore((state) => state.openSettings);
   const openGallery = useRuntimeStore((state) => state.openGallery);
   const openAbout = useRuntimeStore((state) => state.openAbout);
-  const openHelp = useRuntimeStore((state) => state.openHelp);
   const openExitConfirmation = useRuntimeStore((state) => state.openExitConfirmation);
   const heroLayout = useUILayoutStyle("title", "main_menu_hero");
   const titleMasks = useUILayoutMasks("title");
@@ -217,7 +216,6 @@ export function MainMenu() {
       Boolean(currentGame?.gallery.length) && galleryButtonLayout.component?.visible !== false);
     add("open-settings", settingsButtonLabel, openSettings, settingsButtonLayout.component?.visible !== false);
     add("open-about", aboutButtonLabel, openAbout, aboutButtonLayout.component?.visible !== false);
-    add("open-help", "帮助", openHelp);
     add("open-exit-confirmation", "退出", openExitConfirmation);
     for (const { component } of customButtonLayouts) {
       add(component.component_id, component.label || "自定义按钮",

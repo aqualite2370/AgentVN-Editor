@@ -1166,7 +1166,10 @@ export function DialogBox({ onStoryInteraction }: DialogBoxProps) {
       {portraitSource && (
         <img
           key={portraitSource}
+          ref={portrait.imageRef}
           className="dialog-portrait"
+          data-portrait-placement={portrait.stagePlacement ? "stage-left" : "nameplate"}
+          style={{ objectFit: runtimeUILayout.dialogPortrait?.fit ?? "contain" }}
           data-dialog-portrait={activeDialog.portrait}
           data-portrait-ready={portrait.ready ? "true" : "false"}
           src={portraitSource}

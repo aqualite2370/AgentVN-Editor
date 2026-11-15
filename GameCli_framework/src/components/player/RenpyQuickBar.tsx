@@ -37,12 +37,17 @@ export function RenpyQuickBar() {
       assetUrls={runtime.currentGame?.assetUrls} scale={geometry.scale} applyBaseStyle={false}>
     <nav className="playback-controls renpy-quick-bar" data-testid="renpy-quick-bar"
       aria-label="进阶快捷栏" data-no-advance="true" data-save-preview-exclude="true"
+      data-quick-menu-transparent={menu.component?.style?.quickMenuTransparent ? "true" : undefined}
       data-uniform-scale={geometry.scale}
       style={{
         backgroundColor: menu.style.backgroundColor, backgroundImage: menu.style.backgroundImage,
         backgroundSize: menu.style.backgroundSize, backgroundPosition: menu.style.backgroundPosition,
         backgroundRepeat: menu.style.backgroundRepeat, borderColor: menu.style.borderColor,
         borderWidth: menu.style.borderWidth, borderRadius: menu.style.borderRadius,
+        ...(menu.component?.style?.quickMenuTransparent ? {
+          backgroundColor: "transparent", backgroundImage: "none", borderColor: "transparent",
+          borderWidth: 0, boxShadow: "none", backdropFilter: "none",
+        } : {}),
         left: geometry.x, top: geometry.y, width: geometry.width, height: geometry.height,
         zIndex: Math.max(30, Number(dialog.style.zIndex) || 30) + 1,
         "--renpy-quick-font": `${geometry.fontSize}px`, "--renpy-quick-gap": `${geometry.gap}px`,

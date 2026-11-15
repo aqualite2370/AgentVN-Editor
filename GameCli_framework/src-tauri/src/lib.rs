@@ -9,6 +9,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tauri::{http, AppHandle, Manager};
 mod save_location;
 mod portable_save_migration;
+mod native_cartridge;
 #[cfg(any(target_os = "android", test))]
 mod android_activity_state;
 #[cfg(target_os = "android")]
@@ -290,6 +291,15 @@ struct EmbeddedResourceState(Mutex<Option<EmbeddedResourceContext>>);
 // Set only after successfully loading an actual embedded game, not by UI mode/CLI defaults.
 struct StandaloneSaveState(Mutex<Option<String>>);
 
+#[derive(Default)]
+struct NativeCartridgeSessions {
+    generation: u64,
+    // Keep the displayed game alive while the next payload is handed to JS.
+    // Retention is bounded; all owned resources are retired on process exit.
+    directories: Vec<native_cartridge::VerifiedCartridge>,
+}
+struct NativeCartridgeState(Mutex<NativeCartridgeSessions>);
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UnpackedPreviewGame {
@@ -368,7 +378,7 @@ fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn standalone_save_game_id(app: &AppHandle, install_id: &str) -> Result<Option<String>, String> {
-    if cfg!(target_os = "windows") && install_id == "preview_gamecli" {
+    if cfg!(target_os = "windows") && matches!(install_id, "preview_gamecli" | "fixed_embedded_game") {
         app.state::<StandaloneSaveState>().0.lock()
             .map(|state| state.clone()).map_err(|_| "Cannot lock standalone save identity.".to_string())
     } else {
@@ -477,6 +487,40 @@ async fn read_cartridge_from_path(source_path: String) -> Result<tauri::ipc::Res
     fs::read(&source)
         .map(tauri::ipc::Response::new)
         .map_err(|error| format!("Cannot read cartridge file: {error}"))
+}
+
+#[tauri::command]
+async fn load_native_cartridge(
+    state: tauri::State<'_, NativeCartridgeState>,
+    source_path: String,
+) -> Result<UnpackedPreviewGame, String> {
+    let generation = {
+        let mut sessions = state.0.lock().map_err(|_| "Cartridge state lock is poisoned.")?;
+        sessions.generation += 1;
+        sessions.generation
+    };
+    let source_name = Path::new(&source_path).file_name().map(|name| name.to_string_lossy().into_owned());
+    let (resources, payload) = tauri::async_runtime::spawn_blocking(move || {
+        let resources = native_cartridge::open(Path::new(&source_path))?;
+        let root = resources.directory.path().canonicalize().map_err(|e| e.to_string())?;
+        let manifest = read_preview_json(&root, "manifest.json", true)?.unwrap();
+        let script = read_preview_json(&root, "script.json", true)?.unwrap();
+        let checksum = read_preview_json(&root, "checksum.json", true)?.unwrap();
+        let gallery = read_preview_json(&root, "gallery.json", false)?
+            .unwrap_or_else(|| serde_json::json!({"gallery_version":"1.0.0","items":[]}));
+        let ui_path = manifest.get("ui_skin").and_then(|v| v.get("path")).and_then(Value::as_str).unwrap_or("ui/layout.json");
+        let ui_skin = read_preview_json(&root, ui_path, false)?;
+        let asset_urls = build_asset_urls(&root, &manifest)?;
+        let ui_asset_urls = build_ui_asset_urls(&root, ui_skin.as_ref())?;
+        let payload = UnpackedPreviewGame { manifest, script, gallery, checksum, ui_skin,
+            asset_urls, ui_asset_urls, source_file_name: source_name, startup_index: None, content_id: None };
+        Ok::<_, String>((resources, payload))
+    }).await.map_err(|e| format!("Cannot prepare native cartridge: {e}"))??;
+    let mut sessions = state.0.lock().map_err(|_| "Cartridge state lock is poisoned.")?;
+    if sessions.generation != generation { return Err("Cartridge load was superseded.".into()); }
+    sessions.directories.push(resources);
+    if sessions.directories.len() > 2 { sessions.directories.remove(0); }
+    Ok(payload)
 }
 
 #[cfg(test)]
@@ -1879,6 +1923,7 @@ pub fn run() {
         .manage(PreviewRootState(Mutex::new(None)))
         .manage(EmbeddedResourceState(Mutex::new(None)))
         .manage(StandaloneSaveState(Mutex::new(None)))
+        .manage(NativeCartridgeState(Mutex::new(NativeCartridgeSessions::default())))
         .register_uri_scheme_protocol("agentvn-preview", |ctx, request| {
             handle_preview_protocol(ctx.app_handle().state::<PreviewRootState>(), request)
         })
@@ -1915,6 +1960,7 @@ pub fn run() {
             list_installed_cartridges,
             load_installed_cartridge,
             read_cartridge_from_path,
+            load_native_cartridge,
             load_unpacked_preview,
             load_embedded_game,
             get_save_storage_info,
@@ -1932,6 +1978,11 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building AgentVN Player")
         .run(|_app, _event| {
+            if matches!(_event, tauri::RunEvent::Exit) {
+                if let Ok(mut sessions) = _app.state::<NativeCartridgeState>().0.lock() {
+                    sessions.directories.clear();
+                }
+            }
             // The last Activity's destruction otherwise enters Tao's C exit(),
             // racing Android HWUI static destructors. Android owns cached
             // process lifetime; desktop keeps Tauri's default.

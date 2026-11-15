@@ -367,7 +367,7 @@ export function RenpyTitleEditor({ draft, previewDraft = draft, title, fontCover
     <aside className="runtime-layout-sidebar renpy-editor-fields">
       <h4>Ren’Py · 页面与共享样式</h4>
       <nav className="renpy-editor-page-list" aria-label="布局页面">
-        {(Object.keys(pageLabels) as RenpyNavigationPage[]).map((id) => <button key={id} type="button"
+        {(Object.keys(pageLabels) as RenpyNavigationPage[]).filter(id => id !== "help").map((id) => <button key={id} type="button"
           aria-current={page === id ? "page" : undefined}
           onClick={() => { setResetPending(false); onPage(id); }}>{pageLabels[id]}</button>)}
       </nav>
@@ -546,7 +546,8 @@ export function RenpyTitleEditor({ draft, previewDraft = draft, title, fontCover
               </label>
               <small className="renpy-field-hint">留空使用默认文案，按钮操作保持不变。</small>
             </section>}
-          {selectedRegion && <GalleryGridSettings component={selectedRegion} onChange={patchRegionStyle} />}
+          {selectedRegion && <GalleryGridSettings component={selectedRegion} onChange={patchRegionStyle}
+            draft={draft} onLayoutChange={onChange} />}
           {selectedRegion?.rect && !["gallery_item", "gallery_pagination"].includes(selectedRegion.component_type) && <details className="renpy-region-geometry">
             <summary>位置与尺寸</summary><div className="renpy-region-fields">
             {([

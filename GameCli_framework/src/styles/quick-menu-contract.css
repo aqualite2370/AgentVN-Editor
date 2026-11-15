@@ -114,6 +114,14 @@
   pointer-events: auto;
 }
 
+.playback-controls[data-quick-menu-transparent="true"] .quick-menu-surface.is-expanded {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
 .playback-controls .quick-menu-surface.is-collapsed {
   border: 0;
   background: transparent;

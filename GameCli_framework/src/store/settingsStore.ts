@@ -32,6 +32,11 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   loadForGame: (installId, gameId) => {
     const key = runtimeSettingsKey(installId);
     const stored = localStorageAdapter.get<Partial<RuntimeSettings> | undefined>(key, undefined)
+      // The old embedded player used its preview ID for preferences. Import
+      // only on first use; keep both the old record and newer explicit edits.
+      ?? (installId === "fixed_embedded_game"
+        ? localStorageAdapter.get<Partial<RuntimeSettings> | undefined>(runtimeSettingsKey("preview_gamecli"), undefined)
+        : undefined)
       ?? localStorageAdapter.get<Partial<RuntimeSettings> | undefined>(LEGACY_RUNTIME_SETTINGS_KEY, undefined);
     // Fixed players and complete-cartridge previews reuse these install IDs.
     // Never infer their game's ratio from the last cartridge loaded there.

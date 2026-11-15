@@ -42,6 +42,7 @@ import { compileControlPresentation, layoutPresentationTargets } from "../../../
 import { ControlPresentationEditor } from "./ControlPresentationEditor";
 import { RenpyControlAppearanceEditor } from "./RenpyControlAppearanceEditor";
 import { GalleryGridSettings } from "./GalleryGridSettings";
+import { QuickBarSurfaceSettings } from "./QuickBarSurfaceSettings";
 import { useControlPresentationPreview } from "../../utils/controlPresentationPreview";
 import { RenpyButtonRoleEditor } from "./RenpyButtonRoleEditor";
 import { RenpyRuntimePreview } from "./RenpyRuntimePreview";
@@ -1041,6 +1042,7 @@ function RuntimeLayoutExpectedPreview({
             return renderComponent(component, (
               <div
                 className="preview-quick-menu-preview preview-quick-menu-preview-c"
+                data-quick-menu-transparent={quickMenu?.style?.quickMenuTransparent ? "true" : undefined}
                 data-preview-quick-button-count={quickButtons.length}
                 data-preview-quick-menu-variant="C"
                 data-preview-quick-menu-state={quickMenuExpanded ? "expanded" : "collapsed"}
@@ -2502,7 +2504,7 @@ export function RuntimeLayoutDesigner({ sessionRef }: { sessionRef?: MutableRefO
             options={[...DIALOGUE_LAYOUT_MODES]}
             onChange={value => selectDialogueMode(value as DialogueLayoutMode)} />}
           <div className="runtime-layout-screen-list">
-            {screenOrder.filter(id => layoutType === "renpy" || id !== "game_menu")
+            {screenOrder.filter(id => id !== "help" && (layoutType === "renpy" || id !== "game_menu"))
               .map((id) => <button type="button" key={id} className={id === screenId ? "is-active" : ""} data-glass-selected={id === screenId} data-help-key="layout.screen" onClick={() => selectScreen(id)}>{screenLabels[id]}</button>)}
           </div>
           <button type="button" onClick={() => setConfirmationPages(current => ({ ...current, [layoutType]: true }))}>
@@ -2660,7 +2662,9 @@ export function RuntimeLayoutDesigner({ sessionRef }: { sessionRef?: MutableRefO
             page="player" onChange={(next) => commitUpdater(() => next)} /></details>}
           {selected ? <>
             <header><strong>{componentLabel(selected)}</strong><small>{selectedIsStyleOnly ? "重复控件样式" : "布局组件"}</small></header>
-            <GalleryGridSettings component={selected} onChange={setSelectedStyle} />
+            <GalleryGridSettings component={selected} onChange={setSelectedStyle}
+              draft={draft} onLayoutChange={next => commitUpdater(() => next)} />
+            {layoutType !== "renpy" && <QuickBarSurfaceSettings component={selected} onChange={setSelectedStyle} />}
             {["gallery_item", "gallery_pagination"].includes(selected.component_type) && layoutType !== "renpy"
               && <RenpyControlAppearanceEditor component={selected} assets={assetManifest}
                 advancedEnabled={draft.advancedPresentationEnabled} onStyle={setSelectedStyle}

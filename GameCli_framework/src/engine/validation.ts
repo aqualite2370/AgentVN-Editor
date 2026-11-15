@@ -42,6 +42,9 @@ export function validateCommandFields(script: RuntimeScript): ValidationIssue[] 
   for (const scene of scenesOf(script)) {
     for (const [index, command] of scene.commands.entries()) {
       const path = `${scene.scene_id}.commands.${index}`;
+      if (command.type === "gallery_anchor" && command.image_fit !== undefined
+        && !["contain", "cover", "fullscreen"].includes(command.image_fit))
+        issues.push({ code: "gallery_image_fit", message: `${path} 的画廊图片显示方式无效。` });
       if (command.type === "dialog" || command.type === "narration") {
         issues.push(...validateDialogPresentation(command, path));
         if (command.clear_nvl_page_before !== undefined && typeof command.clear_nvl_page_before !== "boolean") {

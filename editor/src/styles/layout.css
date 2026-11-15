@@ -2713,6 +2713,8 @@ body.is-toolbar-popover-open .floating-command-workbench{z-index:0!important;poi
 .toolbar-settings-tools{flex:0 1 142px}
 .toolbar-timeline-tools{flex:0 0 auto;width:max-content;min-width:162px}
 .toolbar-arrange-button{flex:0 0 118px;align-self:center;min-width:118px}
+.canvas-arrange-panel.react-flow__panel{margin:12px 12px 12px 52px}
+.canvas-arrange-panel button{display:flex;align-items:center;gap:7px;min-height:34px;padding:7px 12px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink-strong)}
 .toolbar-container-label{color:var(--muted);font-size:10px;font-weight:800;letter-spacing:0;line-height:1}
 .toolbar-container-actions{min-width:0;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .toolbar-container-actions button{flex:1 1 112px;justify-content:center;min-width:0}
@@ -3238,6 +3240,10 @@ body.is-toolbar-popover-open .floating-command-workbench{z-index:0!important;poi
    The active .advanced-tab-scroll owns the actual body scrolling. */
 .advanced-tab-viewport{overflow:clip}
 .advanced-tab-scroll{padding-block-end:clamp(24px,8svh,96px);scroll-padding-block-end:clamp(24px,8svh,96px)}
+/* Animation uses the wide shell but has a document-length form, unlike the
+   internally scrolling layout/theme workbenches. Only its active body owns
+   scrolling; warm/leaving layers remain inert and clipped. */
+.advanced-tools-panel.layout-mode .advanced-tab-content.is-active[data-tab="animation"]>.advanced-tab-scroll{display:block;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable;padding-block-end:clamp(24px,8svh,96px);scroll-padding-block-end:clamp(24px,8svh,96px)}
 .advanced-tools-panel>nav.glass-selection-group,.advanced-tools-panel.layout-mode>nav.glass-selection-group{min-width:0;max-width:100%;box-sizing:border-box;padding:8px 4px 10px;border:0;border-radius:0;background:transparent;box-shadow:none}
 .advanced-tools-panel>nav.glass-selection-group button{flex:0 0 auto;max-width:none;white-space:nowrap;overflow:visible}
 .glass-selection-group[data-glass-scroll-axis=x]>.glass-selection-viewport{padding-block:8px;margin-block:0}

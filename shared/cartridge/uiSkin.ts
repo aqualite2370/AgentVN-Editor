@@ -8,6 +8,7 @@ import { renpyGUIErrors, type RenpyGUI } from "./renpyGui";
 import type { DialogueModeLayouts } from "./dialogueModeLayout";
 import type { ConfirmationLayout } from "./confirmationLayout";
 import { dialogPortraitLayoutErrors, type DialogPortraitLayout } from "./dialogPortraitLayout";
+import { galleryPresentationErrors, type GalleryPresentation } from "./galleryPresentation";
 import { compileControlPresentation, type ControlPresentationSource } from "./controlPresentation";
 import { ensureRenpyQuickControls } from "./renpyQuickBar";
 import { ensureRenpyTitleControls, renpyTitleTextErrors, type RenpyTitleText } from "./renpyTitleControls";
@@ -120,6 +121,8 @@ export interface UILayoutComponentStyle {
   rows?: number;
   quickMenuDirection?: UILayoutQuickMenuDirection;
   quickMenuVariant?: QuickMenuVariant;
+  /** Hide only the bar material; button content and material are independent. */
+  quickMenuTransparent?: boolean;
 }
 
 /** Existing background-material defaults, not the CSS opacity of the entire
@@ -310,6 +313,7 @@ export interface UISkinLayout {
   confirmationLayout?: ConfirmationLayout;
   /** Optional nameplate-relative portrait geometry; old layouts stay automatic. */
   dialogPortrait?: DialogPortraitLayout;
+  galleryPresentation?: GalleryPresentation;
   ui_layout_version: string;
   name: string;
   target_runtime: string;
@@ -1288,8 +1292,11 @@ function validateStyle(style: unknown, path: string, issues: ValidationIssue[], 
     "rows",
     "quickMenuDirection",
     "quickMenuVariant",
+    "quickMenuTransparent",
   ]);
   for (const [key, value] of Object.entries(style)) {
+    if (key === "quickMenuTransparent" && typeof value !== "boolean")
+      issues.push(issue("ui_quick_menu_transparent", "快捷栏透明背景必须是开关值。", "error", `${path}.${key}`));
     if (!allowed.has(key)) {
       issues.push(issue("ui_style_field", `界面样式字段不支持（${key}）：GameCLI 不认识 ${path}.${key}。原因：布局文件包含了未开放的样式字段。影响：该样式不会被安全加载。解决方案：请删除该字段，或在布局设计器里使用支持的样式项。`, "error", `${path}.${key}`));
       continue;
@@ -1445,6 +1452,9 @@ export function validateUISkinLayout(layout: unknown): CartridgeValidationResult
   const issues: ValidationIssue[] = [];
   if (!isPlainRecord(layout)) return splitIssues([issue("ui_layout", "客户端布局格式错误（ui）：布局根节点必须是对象。原因：ui/layout.json 结构损坏。影响：GameCLI 无法读取玩家界面布局。解决方案：请在布局设计器中恢复默认布局或重新保存。", "error", "ui")]);
   validateForbiddenPayload(layout, "ui", issues);
+  for (const field of galleryPresentationErrors(layout.galleryPresentation))
+    issues.push(issue("ui_gallery_presentation", "画廊尺寸必须是64–8192的整数参考像素。", "error",
+      `ui.galleryPresentation${field ? `.${field}` : ""}`));
   for (const field of gameViewportErrors(layout.gameViewport))
     issues.push(issue("ui_viewport", "画面比例无效，请选择16:9、16:10或4:3。", "error", `ui.gameViewport.${field}`));
   if (layout.renpyTitleText !== undefined) {

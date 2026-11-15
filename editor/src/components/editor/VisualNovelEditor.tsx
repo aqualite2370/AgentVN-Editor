@@ -17,6 +17,7 @@ import { LoopNode } from "../nodes/LoopNode";
 import { SceneNode } from "../nodes/SceneNode";
 import { StartNode } from "../nodes/StartNode";
 import { EditorToolbar } from "./EditorToolbar";
+import { CanvasArrangeButton } from "./CanvasArrangeButton";
 import { InspectorPanel } from "./InspectorPanel";
 import { NodePalette } from "./NodePalette";
 import { PreviewPanel } from "./PreviewPanel";
@@ -1478,6 +1479,7 @@ export function VisualNovelEditor({
                 />
               )}
               <Controls />
+              <CanvasArrangeButton />
             </ReactFlow>
           </section>
           <div

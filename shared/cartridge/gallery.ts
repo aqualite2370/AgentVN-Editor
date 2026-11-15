@@ -11,6 +11,7 @@ export function buildGalleryManifestFromScript(script: Pick<RuntimeScript, "scen
             title: command.title.trim(),
             description: command.description?.trim() || undefined,
             asset_id: command.asset_id.trim(),
+            ...(command.image_fit !== undefined ? { image_fit: command.image_fit } : {}),
             scene_id: scene.scene_id,
             command_index,
           }]

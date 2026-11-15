@@ -242,14 +242,15 @@ function collectAssetRefs(script) {
     for (const command of scene.commands ?? []) {
       if (command.type === "background") refs.add(command.background_id);
       if (command.type === "show_image") refs.add(command.image_id);
-      if (command.type === "sprite") refs.add(command.sprite_id);
+      // Exit uses the currently displayed sprite, not an obsolete authoring ID.
+      if (command.type === "sprite" && command.visible !== false) refs.add(command.sprite_id);
       if (command.type === "dialog") {
         if (command.portrait) refs.add(command.portrait);
         if (command.voice) refs.add(command.voice);
         if (command.font_asset_id) refs.add(command.font_asset_id);
       }
       if (command.type === "narration" && command.font_asset_id) refs.add(command.font_asset_id);
-      if (command.type === "bgm" && command.bgm_id) refs.add(command.bgm_id);
+      if (command.type === "bgm" && command.action !== "stop" && command.bgm_id) refs.add(command.bgm_id);
       if (command.type === "sfx") refs.add(command.sfx_id);
       // animation_id names a runtime effect preset or command-local keyframes, not a packaged asset file.
     }

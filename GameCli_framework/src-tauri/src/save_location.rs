@@ -14,6 +14,10 @@ pub fn resolve(
     install_id: &str,
 ) -> Result<SaveLocation, String> {
     validate_segment(install_id)?;
+    // Gallery persistence introduced a distinct embedded runtime identity.
+    // Saves retain their original namespace on both desktop and Android;
+    // do not move/overwrite files merely because the frontend ID changed.
+    let install_id = if install_id == "fixed_embedded_game" { "preview_gamecli" } else { install_id };
     let old = app_data.join("saves").join(install_id);
     if let Some(game_id) = windows_fixed_game {
         validate_segment(game_id)?;

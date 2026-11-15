@@ -20,7 +20,7 @@ export function presentRuntimeModal(panel: HTMLElement, title: string): () => vo
     fill: "both",
   };
   const baseTransform = getComputedStyle(panel).transform;
-  const compactTransform = reduced ? baseTransform
+  const compactTransform = reduced || panel.classList.contains("gallery-image-viewer") ? baseTransform
     : `${baseTransform === "none" ? "" : baseTransform} scale(0.96)`;
   const pending = exits.get(parent)?.get(title);
   let initialOpacity = "0", initialTransform = compactTransform;

@@ -421,3 +421,17 @@
     transition: opacity 80ms linear;
   }
 }
+.preview-quick-menu-preview[data-quick-menu-transparent="true"] {
+  --preview-quick-menu-surface-glass-background: transparent;
+  --preview-quick-menu-surface-border: transparent;
+  --preview-quick-menu-surface-blur: 0px;
+  box-shadow: none !important;
+}
+.runtime-layout-expected-preview[data-preview-quick-menu-state="expanded"]
+  .preview-quick-menu-preview[data-quick-menu-transparent="true"] .preview-quick-menu-surface {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}

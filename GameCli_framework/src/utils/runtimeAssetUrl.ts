@@ -34,6 +34,38 @@ export function toRuntimeAssetUrl(source?: string | null): string | undefined {
 
 const mediaBlobUrls = new Map<string, Promise<string>>();
 
+const isNativeMediaUrl = (url: string) => /^https?:\/\/agentvn-resource\.localhost\//i.test(url);
+
+async function fetchMediaBlob(url: string, signal?: AbortSignal): Promise<Blob> {
+  const response = await fetch(url, { signal });
+  if (!response.ok) throw new Error(`Media resource request failed: ${response.status}`);
+  const blob = await response.blob();
+  if (!blob.size) throw new Error("Media resource response was empty.");
+  return blob;
+}
+
+/**
+ * Short-lived opening videos must not stay in the audio cache for the entire
+ * game. The owner aborts preparation on unmount and releases its decoded URL.
+ */
+export async function acquirePlayableMediaUrl(source: string, signal: AbortSignal): Promise<{
+  url: string;
+  release: () => void;
+}> {
+  const url = toRuntimeAssetUrl(source)!;
+  if (!isNativeMediaUrl(url)) return { url, release: () => {} };
+  const blob = await fetchMediaBlob(url, signal);
+  // A completed fetch may race with unmount, before its continuation runs.
+  if (signal.aborted) throw new DOMException("Media preparation cancelled", "AbortError");
+  const blobUrl = URL.createObjectURL(blob);
+  let released = false;
+  return { url: blobUrl, release: () => {
+    if (released) return;
+    released = true;
+    URL.revokeObjectURL(blobUrl);
+  } };
+}
+
 /**
  * Android WebView cannot reliably sniff media served from the custom
  * `agentvn-resource` protocol because its HEAD response is normalized to a
@@ -43,18 +75,13 @@ const mediaBlobUrls = new Map<string, Promise<string>>();
  */
 export function resolvePlayableMediaUrl(source?: string | null): Promise<string | undefined> {
   const url = toRuntimeAssetUrl(source);
-  if (!url || !/^https?:\/\/agentvn-resource\.localhost\//i.test(url)) {
+  if (!url || !isNativeMediaUrl(url)) {
     return Promise.resolve(url);
   }
   const cached = mediaBlobUrls.get(url);
   if (cached) return cached.then((value) => value);
-  const pending = fetch(url)
-    .then((response) => {
-      if (!response.ok) throw new Error(`Media resource request failed: ${response.status}`);
-      return response.blob();
-    })
+  const pending = fetchMediaBlob(url)
     .then((blob) => {
-      if (!blob.size) throw new Error("Media resource response was empty.");
       const blobUrl = URL.createObjectURL(blob);
       return blobUrl;
     })

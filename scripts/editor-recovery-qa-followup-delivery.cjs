@@ -8,20 +8,24 @@ const { hashFileSha256: sha } = require("./lib/file-sha256-bounded.cjs");
 const authorFollowup = process.argv.includes("--author-export");
 const recentUpgrade = process.argv.includes("--recent-upgrade");
 const embeddedAndroid = process.argv.includes("--embedded-android");
+const embeddedLogs = process.argv.includes("--embedded-logs");
 assert(process.argv.length <= 3 && process.argv.slice(2).every(arg =>
-  ["--author-export", "--recent-upgrade", "--embedded-android"].includes(arg)));
-const root = path.resolve(__dirname, ".."), base = embeddedAndroid
+  ["--author-export", "--recent-upgrade", "--embedded-android", "--embedded-logs"].includes(arg)));
+const root = path.resolve(__dirname, ".."), base = embeddedAndroid || embeddedLogs
   ? "F:/testavn/Sprite-Embedded-Android-1975-20261116-01" : recentUpgrade
   ? "F:/testavn/Windows-Isolated-1975-20261116-02" : authorFollowup
   ? "F:/testavn/Sprite-Author-Export-1975-20261116-03"
   : "F:/testavn/Android-Sprite-Preview-1975-20261116-03";
-const output = path.join(base, "source-delivery.json");
+const output = path.join(base, embeddedLogs ? "log-source-delivery-02.json" : "source-delivery.json");
 assert(!fs.existsSync(output), "Keep the earlier delivery receipt");
-const parent = embeddedAndroid ? "66318cb5a50dfee9fab015cc9a05d1149b8f1393"
+const parent = embeddedLogs ? "bacb355b7bd388e0f24d0c854b92ca67ef243cff"
+  : embeddedAndroid ? "66318cb5a50dfee9fab015cc9a05d1149b8f1393"
   : recentUpgrade ? "777d244dea4a9f4f3a7acbce614ceda615dc9d2e" : authorFollowup ? "e085ff648b83fedcb0169973c20dbbf8d23c019e"
   : "c7691849acc6ec901f13e968f59d4cf8a1bce66e";
 const branch = "codex/editor-recovery-1975-qa-20261116";
-const files = embeddedAndroid ? [
+const files = embeddedLogs ? [
+  "scripts/sprite-embedded-android-log-review.cjs", "scripts/editor-recovery-qa-followup-delivery.cjs",
+] : embeddedAndroid ? [
   "scripts/sprite-embedded-android-stage.cjs", "scripts/sprite-embedded-android-package-audit.cjs",
   "scripts/sprite-embedded-android-device-stage.cjs", "scripts/sprite-embedded-android-cleanup.ps1",
   "scripts/sprite-embedded-android-audit.cjs", "scripts/editor-recovery-qa-followup-delivery.cjs",
@@ -52,19 +56,27 @@ const state = () => ({ head: git(["rev-parse", "HEAD"]).trim(),
   indexSha256: sha(path.resolve(root, git(["rev-parse", "--git-path", "index"]).trim())) });
 const r = { status: "RUNNING", at: new Date().toISOString(), parent, branch, files: [], before: state(),
   productBuilds: 0, deviceStarts: 0, models: 0,
-  scope: embeddedAndroid ? "QA_ONLY_NORMAL_EMBEDDED_SOURCE_AUTHOR_APKS_NATIVE_SPRITE_GEOMETRY_AND_EXACT_CLEANUP"
+  scope: embeddedLogs ? "QA_ONLY_OFFLINE_EXACT_THREE_EMBEDDED_SESSION_LOG_REVIEW_NO_EVENT_WAIVER"
+    : embeddedAndroid ? "QA_ONLY_NORMAL_EMBEDDED_SOURCE_AUTHOR_APKS_NATIVE_SPRITE_GEOMETRY_AND_EXACT_CLEANUP"
     : recentUpgrade ? "QA_ONLY_REAL_1974_TO_1975_EDITOR_UPGRADE_WITH_EXACT_RETIREMENT_NO_PRODUCT_REBUILD"
     : authorFollowup ? "QA_ONLY_SOURCE_AUTHOR_AND_FIXED_CARTRIDGE_WITH_ANDROID_PERMISSION_FAILURE_RETAINED"
     : "QA_ONLY_SPRITE_PREVIEW_AND_OFFLINE_WARNING_IDENTITY_NO_PRODUCT_OR_USER_DATA" };
 const save = () => fs.writeFileSync(output, JSON.stringify(r, null, 2));
 (async () => {
-  const audit = read(path.join(base, embeddedAndroid ? "completion-audit-01.json"
+  const audit = read(path.join(base, embeddedAndroid || embeddedLogs ? "completion-audit-01.json"
     : recentUpgrade ? "completion-review-01.json" : authorFollowup ? "completion-audit.json" : "audit.json"));
-  assert.equal(audit.status, embeddedAndroid
+  assert.equal(audit.status, embeddedAndroid || embeddedLogs
     ? "PASS_EMBEDDED_SOURCE_AUTHOR_TWO_THEME_ANDROID_SPRITES_AND_EXACT_CLEANUP_LOGS_UNRESOLVED"
     : recentUpgrade ? "PASS_CURRENT_1974_TO_1975_EDITOR_UPGRADE_AND_EXACT_CLEANUP" : authorFollowup
     ? "PARTIAL_PASS_UI_AUTHOR_AND_WINDOWS_ANDROID_FORMAL_QUERY_FAILED_CLEANUP_PASS"
     : "PASS_TARGETED_ANDROID_PREVIEW_GEOMETRY_AND_CLEANUP_WITH_RETAINED_LOG_AND_PHYSICAL_PHONE_LIMITS");
+  if (embeddedLogs) {
+    const review = read(path.join(base, "current-log-review-01.json"));
+    assert.equal(review.status, "FUNCTIONS_PASS_CURRENT_LOG_EVENTS_UNRESOLVED_ORIGINAL_FAILURE_RETAINED");
+    assert.equal(review.records, review.rows.length);
+    assert.equal(review.cases.length, 3);
+    assert(review.unresolved > 0 && review.original271Unresolved92Unchanged);
+  }
   if (authorFollowup) {
     assert.equal(audit.featureResults.androidFormalQuery, "FAILED_NATIVE_FILE_PERMISSION_BEFORE_GAME_READY");
     assert.equal(audit.featureResults.androidNewEmbeddedCartridge, "NOT_RUN");
@@ -74,7 +86,8 @@ const save = () => fs.writeFileSync(output, JSON.stringify(r, null, 2));
   assert.equal(lifecycle.originalCounts.unresolved, 92);
   assert.equal(git(["remote", "get-url", "origin"]).trim(), "https://github.com/aqualite2370/AgentVN-Editor.git");
   assert(git(["ls-remote", "--heads", "origin", branch]).startsWith(parent + "\t"), "Never replace concurrent remote work");
-  const alternate = { ...env, GIT_INDEX_FILE: path.join(base, "qa-followup.index") };
+  const alternate = { ...env, GIT_INDEX_FILE: path.join(base,
+    embeddedLogs ? "qa-log-followup.index" : "qa-followup.index") };
   assert(!fs.existsSync(alternate.GIT_INDEX_FILE));
   git(["read-tree", parent], { env: alternate });
   for (const relative of files) {
@@ -88,7 +101,9 @@ const save = () => fs.writeFileSync(output, JSON.stringify(r, null, 2));
   assert.deepEqual(git(["diff-tree", "--no-commit-id", "--name-only", "-r", parent, tree]).trim().split("\n").sort(),
     [...files].sort());
   r.commit = git(["-c", "commit.gpgsign=false", "commit-tree", tree, "-p", parent], {
-    input: embeddedAndroid
+    input: embeddedLogs
+      ? "Index exact embedded Android sprite test logs without event waivers\n\nRetain all records from the successful default and RenPy sessions and the original failed RenPy session. Bind only narrowly supported emitters to exact Android source and actual process/provider identity; leave cache, Entry, graphics and timing recovery unresolved. Offline QA only, no product or device restart.\n"
+      : embeddedAndroid
       ? "Verify normal embedded Android sprite cartridges from real UI exports\n\nReuse frozen installed-source build resources and unchanged source Editor UI cartridges. Verify two signed four-ABI APKs, lossless sprite pixels, native ADB progression and count-independent geometry, then retire exact owned build/tool/device trees. Preserve external-query failures and unresolved historic logs. Publish QA sources only; retain the real checkout/index and user data.\n"
       : recentUpgrade
       ? "Verify real 1.9.74 to 1.9.75 Editor same-directory upgrade\n\nReuse frozen installers with a fresh standard QA account and default database. Retain author edits, preferences, native saves and restart; verify natural closes and exact account/profile/temp retirement. Keep historic Android and physical-device boundaries separate. Publish QA sources only; preserve the real checkout and index.\n"

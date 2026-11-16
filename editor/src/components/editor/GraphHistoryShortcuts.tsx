@@ -3,9 +3,11 @@ import { Undo2 } from "lucide-react";
 import { useEditorStore } from "../../store/editorStore";
 import { editorProjectOwner, ownsEditorProject } from "../../utils/editorProjectPersistence";
 import { OperationResultDialog } from "../common/OperationResultDialog";
+import { describeGraphChange } from "../../utils/graphHistoryDescription";
 
 export function GraphHistoryShortcuts({ active }: { active: boolean }) {
   const [open, setOpen] = useState(false);
+  const [description, setDescription] = useState("");
   const pending = useRef<{
     owner: ReturnType<typeof editorProjectOwner>;
     history: ReturnType<typeof useEditorStore.getState>["graphHistory"];
@@ -23,9 +25,15 @@ export function GraphHistoryShortcuts({ active }: { active: boolean }) {
       if (!undo && !redo) return;
       event.preventDefault();
       const state = useEditorStore.getState();
-      if (redo) { state.redoGraphChange(); return; }
-      if (pending.current || !state.graphHistory.past.length) return;
+      if (redo) {
+        if (!state.redoGraphChange()) state.setNotice("没有可重做的操作。", "info");
+        return;
+      }
+      if (pending.current) return;
+      const previous = state.graphHistory.past[state.graphHistory.past.length - 1];
+      if (!previous) { state.setNotice("没有可撤销的操作。", "info"); return; }
       pending.current = { owner: editorProjectOwner(), history: state.graphHistory, confirmed: false };
+      setDescription(describeGraphChange(previous, state));
       setOpen(true);
     };
     window.addEventListener("keydown", keydown);
@@ -42,8 +50,8 @@ export function GraphHistoryShortcuts({ active }: { active: boolean }) {
     }
     useEditorStore.getState().undoGraphChange();
   };
-  return <OperationResultDialog open={open} tone="warning" label="画布撤销"
-    title="撤销上一步操作？" message="将恢复上一步的节点和连线。可按 Ctrl+Y 重做。"
+  return <OperationResultDialog open={open} tone="warning" label="撤销"
+    title="撤销上一步操作？" message={`即将撤销：${description}。可按 Ctrl+Y 重做。`}
     icon={<Undo2 size={20} />} testId="editor-undo-confirmation" confirmLabel="取消"
     closeAriaLabel="取消撤销" inertBackground reducedMotionDurationMs={120}
     contextAction={{ label: "确认撤销", dismissOnClick: true, onClick: () => {

@@ -5,6 +5,7 @@ import { hydrateNovelImportFromProject } from "../app/projectHydration";
 import type { EditorProjectFile } from "../types/nodes";
 import { writeProjectBackup } from "./projectTimeline";
 import { countEmbeddedAssetPayloads } from "./embeddedAssetPayloads";
+import { stableSerialize } from "./stableSerialize";
 
 export class EditorSaveSupersededError extends Error {
   constructor() {
@@ -47,14 +48,40 @@ function metadataMatches(snapshot: ReturnType<typeof useProjectStore.getState>):
     && current.settings === snapshot.settings && current.assetManifest === snapshot.assetManifest;
 }
 
+/** A restore belongs to the content present when the user confirmed it. */
+export function captureEditorProjectRevision() {
+  return {
+    owner: editorProjectOwner(),
+    graph: useEditorStore.getState(),
+    metadata: useProjectStore.getState(),
+  };
+}
+
+export function assertEditorProjectRevision(revision: ReturnType<typeof captureEditorProjectRevision>): void {
+  const metadata = useProjectStore.getState();
+  const samePersistedValue = (a: unknown, b: unknown) => a === b
+    || stableSerialize(JSON.parse(JSON.stringify(a))) === stableSerialize(JSON.parse(JSON.stringify(b)));
+  // Controllers may normalize an unchanged settings object. Compare its
+  // persisted content rather than treating a new object reference as an edit.
+  const metadataUnchanged = metadataMatches(revision.metadata) || (
+    metadata.projectId === revision.metadata.projectId && metadata.title === revision.metadata.title
+    && metadata.author === revision.metadata.author && metadata.createdAt === revision.metadata.createdAt
+    && samePersistedValue(metadata.settings, revision.metadata.settings)
+    && samePersistedValue(metadata.assetManifest, revision.metadata.assetManifest));
+  if (!ownsEditorProject(revision.owner) || !graphMatches(revision.graph)
+    || !metadataUnchanged) throw new EditorSaveSupersededError();
+}
+
 /** Read at the head of the shared write queue, and acknowledge only that exact revision. */
-export async function persistEditorProject() {
+export async function persistEditorProject(expectedRevision?: ReturnType<typeof captureEditorProjectRevision>) {
   const owner = editorProjectOwner();
   let submitted: ReturnType<typeof useEditorStore.getState> | undefined;
   let metadata: ReturnType<typeof useProjectStore.getState> | undefined;
   let snapshot: EditorProjectFile | undefined;
+  let acknowledgedRevision: ReturnType<typeof captureEditorProjectRevision> | undefined;
   const state = await backendClient.saveProjectState(() => {
     if (!ownsEditorProject(owner)) throw new EditorSaveSupersededError();
+    if (expectedRevision) assertEditorProjectRevision(expectedRevision);
     submitted = useEditorStore.getState();
     metadata = useProjectStore.getState();
     snapshot = captureEditorProject();
@@ -68,6 +95,7 @@ export async function persistEditorProject() {
     };
   }, { onPersisted: persisted => {
     if (!ownsEditorProject(owner) || !submitted || !metadata) return;
+    if (expectedRevision) assertEditorProjectRevision(expectedRevision);
     const current = useProjectStore.getState();
     const incoming = persisted.project_metadata;
     if (incoming.projectId !== owner.projectId) throw new Error("保存响应的工程归属不匹配。");
@@ -99,24 +127,32 @@ export async function persistEditorProject() {
       || ((acceptAssets || acceptSettings) && current.title === metadata.title && current.author === metadata.author
         && (acceptAssets || current.assetManifest === metadata.assetManifest)
         && (acceptSettings || current.settings === metadata.settings)))) useEditorStore.setState({ dirty: false });
+    // Keep the exact acknowledged revision, including our own materialized URLs.
+    // A later author edit must not become the baseline of a pending restore.
+    acknowledgedRevision = captureEditorProjectRevision();
   } });
-  if (!ownsEditorProject(owner) || !submitted || !snapshot) throw new EditorSaveSupersededError();
-  return { state, snapshot, wasDirty: submitted.dirty, owner };
+  if (!ownsEditorProject(owner) || !submitted || !snapshot || !acknowledgedRevision) throw new EditorSaveSupersededError();
+  if (expectedRevision) assertEditorProjectRevision(acknowledgedRevision);
+  return { state, snapshot, wasDirty: submitted.dirty, owner, revision: acknowledgedRevision };
 }
 
 /** Backup is a prerequisite; apply inside the write queue before any queued autosave snapshots. */
 export async function restoreEditorTimelineProject(project: EditorProjectFile): Promise<void> {
-  const owner = editorProjectOwner();
+  const confirmed = captureEditorProjectRevision();
+  const owner = confirmed.owner;
   if (project.project_id !== owner.projectId) throw new Error("该时间线记录不属于当前工程。");
-  await persistEditorProject();
-  if (!ownsEditorProject(owner)) throw new EditorSaveSupersededError();
-  const baseline = useEditorStore.getState();
-  const metadata = useProjectStore.getState();
+  let saved: Awaited<ReturnType<typeof persistEditorProject>>;
+  try {
+    saved = await persistEditorProject(confirmed);
+    assertEditorProjectRevision(saved.revision);
+  } catch (error) {
+    // The first save may already have written its older snapshot. Preserve the
+    // newer local content through the same queue, without applying the restore.
+    if (ownsEditorProject(owner) && error instanceof EditorSaveSupersededError) await persistEditorProject();
+    throw error;
+  }
   await writeProjectBackup(captureEditorProject(), "before_restore");
-  const assertBaseline = () => {
-    if (!ownsEditorProject(owner) || !graphMatches(baseline)
-      || !metadataMatches(metadata)) throw new EditorSaveSupersededError();
-  };
+  const assertBaseline = () => assertEditorProjectRevision(saved.revision);
   assertBaseline();
   try {
     await backendClient.saveProjectState(() => {

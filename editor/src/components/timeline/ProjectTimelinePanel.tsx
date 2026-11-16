@@ -1,7 +1,10 @@
 import { AlertTriangle, Clock3, RotateCcw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { OperationResultDialog } from "../common/OperationResultDialog";
-import { editorProjectOwner, ownsEditorProject, restoreEditorTimelineProject } from "../../utils/editorProjectPersistence";
+import {
+  assertEditorProjectRevision, captureEditorProjectRevision, EditorSaveSupersededError,
+  editorProjectOwner, ownsEditorProject, restoreEditorTimelineProject,
+} from "../../utils/editorProjectPersistence";
 import { RoseTwoLoader } from "../common/RoseTwoLoader";
 import { useEditorStore } from "../../store/editorStore";
 import { useProjectStore } from "../../store/projectStore";
@@ -98,6 +101,7 @@ export function ProjectTimelinePanel({ onRestore = restoreEditorTimelineProject 
   async function restore(entry: ProjectBackupEntry) {
     if (restoringRef.current) return;
     const owner = editorProjectOwner();
+    const confirmed = captureEditorProjectRevision();
     const request = sequence.current;
     const current = () => request === sequence.current && ownsEditorProject(owner);
     const operation = Symbol("timeline-restore");
@@ -107,6 +111,7 @@ export function ProjectTimelinePanel({ onRestore = restoreEditorTimelineProject 
       if (entry.project_id !== owner.projectId) throw new Error("该记录不属于当前工程。");
       const raw = await readProjectBackup(entry.file_name);
       if (!current()) return;
+      assertEditorProjectRevision(confirmed);
       const parsed = parseProjectJson(JSON.parse(raw));
       if (!parsed.project) {
         throw new Error(parsed.error ?? "时间线备份不可用。");
@@ -131,7 +136,9 @@ export function ProjectTimelinePanel({ onRestore = restoreEditorTimelineProject 
         message: restoreError instanceof Error ? restoreError.message : "恢复时间线备份失败。",
         detail: restoreError instanceof Error ? restoreError.stack : undefined,
         error: restoreError,
-        action: "请检查 backup-timeline 文件夹权限，以及目标备份文件是否仍然存在。",
+        action: restoreError instanceof EditorSaveSupersededError
+          ? "当前内容已变化，请重新选择时间线记录后再恢复。"
+          : "请检查 backup-timeline 文件夹权限，以及目标备份文件是否仍然存在。",
       });
     } finally {
       // An old project's read may finish while the new project is restoring.

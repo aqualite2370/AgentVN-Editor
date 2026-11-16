@@ -7,6 +7,8 @@ const { fixture, startEditorAcceptance } = require("./lib/editor-ui-acceptance.c
 const { hashFileSha256: sha } = require("./lib/file-sha256-bounded.cjs");
 const { until } = require("./lib/current-native-editor-session.cjs");
 const out = path.resolve(process.argv[2] || "");
+const timelineFollowup = process.argv[3] === "--timeline-followup";
+assert.equal(process.argv.length, timelineFollowup ? 4 : 3);
 assert(process.argv[2] && out.toLowerCase().startsWith("f:\\testavn\\") && !fs.existsSync(out),
   "Use a new evidence directory below F:\\testavn");
 fs.mkdirSync(out, { recursive: true });
@@ -62,6 +64,11 @@ async function flushDrops() {
 async function reset(reduced = false) {
   await page.mouse.up();
   await flushDrops();
+  const restoreDialog = page.getByTestId("timeline-restore-confirmation");
+  if (await restoreDialog.isVisible()) {
+    await restoreDialog.getByRole("button", { name: "取消", exact: true }).click();
+    await restoreDialog.waitFor({ state: "hidden" });
+  }
   if (await page.locator("[data-workspace-surface='options'][aria-current='page']").count()) {
     await page.locator("[data-workspace-surface='edit']").click();
   }
@@ -129,6 +136,7 @@ async function check(name, fn) {
       if (task) task.cancelled = true; else cancel(id);
     };
   });
+  if (!timelineFollowup) {
   await check("Drop commits the entire event order before decorative animation finishes", async row => {
     await drag();
     row.beforeAnimationCompletion = await state();
@@ -223,6 +231,7 @@ async function check(name, fn) {
     await drag(); assert.deepEqual(durations(await state()), [200, 300, 100]); assert.equal((await state()).past, 1);
     await flushDrops(); assert.deepEqual(durations(await state()), [200, 300, 100]);
   });
+  }
   // Recovery-file transport is controlled, but the real timeline UI, validator,
   // project store and backend write queue remain in use.
   await reset();
@@ -233,7 +242,7 @@ async function check(name, fn) {
       title: value.title, created_at: value.created_at, updated_at: value.updated_at,
       timestamp_ms: Date.now(), node_count: value.nodes.length, edge_count: value.edges.length, trigger: "auto_save" } });
   }
-  const readGates = new Map(), reads = [], readReturns = [], backupWrites = [];
+  const readGates = new Map(), reads = [], readReturns = [], backupWrites = [], timelineErrors = [];
   for (const item of entries.values()) {
     let release;
     const promise = new Promise(resolve => { release = resolve; });
@@ -251,7 +260,7 @@ async function check(name, fn) {
       const value = JSON.parse(args.projectJson); backupWrites.push({ projectId: value.project_id, trigger: args.trigger });
       return { ...entries.get(value.project_id).entry, file_name: `before-${Date.now()}.vnproj` };
     }
-    if (command === "append_frontend_error") return "";
+    if (command === "append_frontend_error") { timelineErrors.push(args); return ""; }
     throw Error(`Unexpected controlled IPC: ${command}`);
   });
   await page.evaluate(() => { window.__TAURI_INTERNALS__ = { invoke: (command, args) => window.qaEventTimelineInvoke(command, args) }; });
@@ -285,6 +294,9 @@ async function check(name, fn) {
       .evaluate(button => { button.click(); button.click(); });
     await until(() => reads.includes(`${secondProject.project_id}.vnproj`), "B starts its own read while A remains pending", 6000);
     assert.equal(reads.length, 2);
+    await page.evaluate(async () => {
+      window.__qaTimelineRevision = (await import("/src/utils/editorProjectPersistence.ts")).captureEditorProjectRevision();
+    });
     readGates.get(`${project.project_id}.vnproj`).release();
     await until(() => readReturns.includes(`${project.project_id}.vnproj`), "A read returned", 6000);
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
@@ -309,6 +321,21 @@ async function check(name, fn) {
   } finally {
     timelineRow.reads = reads; timelineRow.readReturns = readReturns; timelineRow.backupWrites = backupWrites;
     timelineRow.final = await state();
+    timelineRow.diagnostics = await page.evaluate(async () => {
+      const p = (await import("/src/store/projectStore.ts")).useProjectStore.getState();
+      const s = (await import("/src/store/editorStore.ts")).useEditorStore.getState(), previous = window.__qaTimelineRevision;
+      return { text: document.querySelector(".project-timeline-panel")?.textContent,
+        dialog: document.querySelector("[data-testid='timeline-restore-confirmation']")?.textContent,
+        sameGraph: previous && { nodes: s.nodes === previous.graph.nodes, edges: s.edges === previous.graph.edges,
+          viewport: s.viewport === previous.graph.viewport, generation: s.projectLoadGeneration === previous.owner.generation },
+        sameMetadata: previous && { settings: p.settings === previous.metadata.settings,
+          assets: p.assetManifest === previous.metadata.assetManifest, title: p.title === previous.metadata.title },
+        changedSettings: previous && [...new Set([...Object.keys(p.settings), ...Object.keys(previous.metadata.settings)])]
+          .filter(key => JSON.stringify(p.settings[key]) !== JSON.stringify(previous.metadata.settings[key]))
+          .map(key => ({ key, before: JSON.stringify(previous.metadata.settings[key])?.slice(0, 600),
+            after: JSON.stringify(p.settings[key])?.slice(0, 600) })) };
+    });
+    timelineRow.diagnosticErrors = timelineErrors;
     for (const gate of readGates.values()) gate.release();
     await page.evaluate(() => { delete window.__TAURI_INTERNALS__; }).catch(() => {});
     save();
@@ -343,7 +370,7 @@ async function check(name, fn) {
     row.capture = { path: capture, sha256: sha(capture), viewport };
     row.boundary = "BROWSER_DOCUMENT_RESTART_WITH_SAME_REAL_BACKEND_NOT_NATIVE_PROCESS_RESTART";
   });
-  assert.equal(report.cases.length, 14);
+  assert.equal(report.cases.length, timelineFollowup ? 2 : 14);
   assert.equal(report.errors.length, 0);
   for (const source of report.sources) assert.equal(sha(source.source), source.sha256, "Sources changed during a run");
   report.status = report.cases.every(row => row.status === "PASS") ? "PASS" : "FAILED";

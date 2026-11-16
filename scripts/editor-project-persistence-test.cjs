@@ -34,6 +34,7 @@ window.__TAURI_INTERNALS__={invoke:async(command,args)=>{
 const tick=()=>new Promise(setImmediate);
 async function until(fn){for(let i=0;i<100;i++){if(fn())return;await tick();}throw Error("Controlled operation not reached");}
 function deferred(){let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject};}
+const wire=value=>JSON.parse(JSON.stringify(value));
 function load(id="a"){const f=fixture(id);store.getState().importProject(f);project.getState().loadProjectMetadata(f);store.setState({dirty:true});return f;}
 function edit(text){const n=store.getState().nodes.find(n=>n.data.nodeKind==="scene");store.getState().updateNodeData(n.id,{label:text});}
 function reset(){transport=undefined;ipc=undefined;calls=[];backupCalls=[];load();}
@@ -83,6 +84,49 @@ async function test(name,fn){reset();const row={name,status:"RUNNING"};report.ca
  await test("保存失败保留dirty，显式重试保存最新内容",async()=>{
    transport=async()=>{throw Error("disk denied");};await assert.rejects(api.persistEditorProject(),/disk denied/);assert(store.getState().dirty);
    edit("retry");transport=undefined;await api.persistEditorProject();assert(!store.getState().dirty);
+ });
+ for(const kind of ["graph","title","settings","assets"])await test(`恢复首次保存等待期间${kind}变化不得被覆盖`,async()=>{
+   edit("confirmed baseline");const wait=deferred();
+   transport=async payload=>{if(calls.length===1)await wait.promise;remote=structuredClone(payload);return {data:payload};};
+   const task=api.restoreEditorTimelineProject(fixture("a"));const outcome=task.then(()=>null,error=>error);
+   await until(()=>calls.length===1);
+   if(kind==="graph")edit("new during first save");
+   if(kind==="title")project.getState().setMetadata({title:"author changed after confirmation"});
+   if(kind==="settings")project.getState().setDefaultSpriteScale(1.35);
+   if(kind==="assets")project.getState().setAssetManifest([{asset_id:"new",kind:"background",name:"新背景",metadata:{url:"/new.png"}}]);
+   const graph=store.getState().nodes,metadata=project.getState(),generation=store.getState().projectLoadGeneration;
+   wait.resolve();const error=await outcome;assert(error instanceof api.EditorSaveSupersededError,"Newer edits must abort restoration");
+   assert.equal(store.getState().nodes,graph);assert.equal(project.getState().title,metadata.title);
+   assert.equal(project.getState().settings,metadata.settings);assert.equal(project.getState().assetManifest,metadata.assetManifest);
+   assert.equal(store.getState().projectLoadGeneration,generation);assert.equal(backupCalls.length,0);
+   assert.deepEqual(remote.project_graph.nodes,wire(graph));assert.equal(remote.project_metadata.title,metadata.title);
+   assert.deepEqual(remote.project_metadata.settings,wire(metadata.settings));assert.deepEqual(remote.project_metadata.assetManifest,wire(metadata.assetManifest));
+ });
+ await test("恢复在共享队列中等待时出现新编辑，中止而不接受更晚基线",async()=>{
+   const wait=deferred();transport=async payload=>{if(calls.length===1)await wait.promise;remote=structuredClone(payload);return {data:payload};};
+   const first=api.persistEditorProject();await until(()=>calls.length===1);
+   const task=api.restoreEditorTimelineProject(fixture("a"));const outcome=task.then(()=>null,error=>error);
+   edit("new while queued");const graph=store.getState().nodes;wait.resolve();await first;
+   assert(await outcome instanceof api.EditorSaveSupersededError);assert.equal(store.getState().nodes,graph);
+   assert.deepEqual(remote.project_graph.nodes,wire(graph));assert.equal(backupCalls.length,0);
+ });
+ await test("恢复首次保存仅物化内嵌素材时允许继续，备份保留真实资源引用",async()=>{
+   project.getState().setAssetManifest([{asset_id:"inline",kind:"background",name:"内嵌背景",
+     metadata:{url:"",data_url:"data:image/png;base64,aGVsbG8="}}]);
+   transport=async payload=>{
+     const response=structuredClone(payload);
+     if(calls.length===1)response.project_metadata.assetManifest[0].metadata={url:"/api/assets/materialized.png"};
+     remote=response;return {data:response};
+   };
+   await api.restoreEditorTimelineProject(fixture("a"));
+   assert.equal(backupCalls.length,1);assert.equal(backupCalls[0].snapshot.asset_manifest[0].metadata.url,"/api/assets/materialized.png");
+   assert.equal(store.getState().nodes.length,fixture("a").nodes.length);
+ });
+ await test("相同JSON设置重新物化不误阻止恢复",async()=>{
+   const wait=deferred();transport=async payload=>{if(calls.length===1)await wait.promise;remote=structuredClone(payload);return {data:payload};};
+   const task=api.restoreEditorTimelineProject(fixture("a"));await until(()=>calls.length===1);
+   project.setState({settings:wire(project.getState().settings)});wait.resolve();await task;
+   assert.equal(backupCalls.length,1);assert.equal(calls.length,2);
  });
  await test("恢复先保存和before_restore备份，再队列提交与本地载入",async()=>{
    edit("before restore");const generation=store.getState().projectLoadGeneration;

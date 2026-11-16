@@ -6,6 +6,20 @@ const root = path.resolve(__dirname, ".."), base = "F:/testavn/Renpy-Quick-Place
 const previous = path.join(base, "device-02"), out = path.join(base, "device-03");
 const read = f => JSON.parse(fs.readFileSync(f, "utf8").replace(/^\uFEFF/, ""));
 const desc = f => ({ path: path.resolve(f), sha256: sha(f) });
+function explicitRepository(source) {
+  return once(source, "$sourceRoot=Split-Path (Split-Path $prepared.inputs[0].path -Parent) -Parent", "$sourceRoot=$prepared.repositoryRoot");
+}
+if (process.argv[2] === "--self-test") {
+  assert.equal(process.argv.length, 3);
+  const original = fs.readFileSync(path.join(previous, "harness/scripts/sprite-count-android-preview-launch.ps1"), "utf8");
+  const result = explicitRepository(original);
+  assert(result.includes("$sourceRoot=$prepared.repositoryRoot"));
+  assert(!result.includes("$sourceRoot=Split-Path"));
+  assert.notEqual(path.dirname(path.dirname(path.join(previous, "report.json"))), root);
+  assert(fs.existsSync(path.join(root, "scripts/renpy-quick-placement-android-remaining-stage.cjs")));
+  console.log(JSON.stringify({ status: "PASS_EXPLICIT_REPOSITORY_UNRELATED_TO_REPORT_INPUT_ORDER", productStarts: 0 }));
+  process.exit(0);
+}
 assert.equal(process.argv.length, 2); assert(!fs.existsSync(out), "Preserve frozen evidence");
 const before = read(path.join(previous, "report.json"));
 assert.equal(before.status, "FAILED"); assert(before.error.includes("android-custom-quick-bar-flow.cjs:92"));
@@ -40,6 +54,7 @@ r.inheritedRemainingDisplayCases = { ...desc(secondFile), originalTotalStatus: s
 const save =`);
   } else if (relative.endsWith(".ps1")) {
     source = once(source, "$run='" + previous.replaceAll("/", "\\") + "'", "$run='" + out.replaceAll("/", "\\") + "'");
+    source = explicitRepository(source);
   }
   const target = path.join(scripts, relative); fs.writeFileSync(target, source, { flag: "wx" }); copies.push(desc(target));
 }
@@ -48,6 +63,6 @@ fs.copyFileSync(path.join(root, "scripts/lib/android-custom-quick-bar-remaining.
 for (const f of copies.filter(f => f.path.endsWith(".cjs"))) cp.execFileSync(process.execPath, ["--check", f.path], { windowsHide: true });
 cp.execFileSync(process.execPath, [extra], { windowsHide: true, stdio: "inherit" });
 fs.writeFileSync(path.join(out, "preparation.json"), JSON.stringify({ status: "SEALED1981_NATIVE_REMAINING_ROTATION_NVL_RESTART_NOT_STARTED",
-  attempt: "03", at: new Date().toISOString(), inputs, copies, git: sealed.git, editorBuilds: 0, models: 0,
+  attempt: "03", at: new Date().toISOString(), inputs, copies, git: sealed.git, repositoryRoot: root, editorBuilds: 0, models: 0,
   repeatedDisplayCases: 0, physicalPhoneClaim: false }, null, 2), { flag: "wx" });
 console.log(JSON.stringify({ status: "SEALED_DEVICE_NOT_STARTED", scripts, files: copies.length }));

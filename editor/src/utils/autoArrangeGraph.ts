@@ -204,8 +204,10 @@ function placeTree(
 function compactRowsHorizontally(
   positions: Record<string, { x: number; y: number }>,
   nodesById: Map<string, EditorNode>,
+  rowStartX: number,
 ): void {
-  const rowStartX = Math.min(...Object.values(positions).map((position) => position.x));
+  // Keep the caller's anchor: tree centering is an internal offset, not a new
+  // origin to feed back into the next arrange operation.
   const rows = new Map<number, Array<{ id: string; x: number }>>();
   for (const [id, position] of Object.entries(positions)) {
     const row = rows.get(position.y) ?? [];
@@ -274,7 +276,7 @@ export function computeAutoArrangeLayout(
     rowHeight = Math.max(rowHeight, treeHeight);
   }
 
-  compactRowsHorizontally(positions, nodesById);
+  compactRowsHorizontally(positions, nodesById, rowStartX);
 
   const arrangedNodeIds = Object.keys(positions);
   const movedCount = arrangedNodeIds.filter((id) => {

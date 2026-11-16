@@ -138,7 +138,7 @@ assert.deepEqual(
   "choice branch order should remain stable from left to right",
 );
 
-const source = fs.readFileSync(path.join(root, "editor/src/components/editor/EditorToolbar.tsx"), "utf8");
+const source = fs.readFileSync(path.join(root, "editor/src/components/editor/CanvasArrangeButton.tsx"), "utf8");
 assert.match(source, /node\.data\.nodeKind === "start"/, "auto arrange viewport should prefer the start node");
 assert.match(source, /result\.arrangedNodeIds\[0\]/, "auto arrange viewport should fall back to first arranged node");
 assert.doesNotMatch(

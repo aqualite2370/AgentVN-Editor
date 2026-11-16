@@ -50,7 +50,8 @@ import { DialogueModeLayoutEditor } from "./DialogueModeLayoutEditor";
 import { ConfirmationLayoutEditor } from "./ConfirmationLayoutEditor";
 import { DialogPortraitLayoutEditor } from "./DialogPortraitLayoutEditor";
 import { DIALOGUE_LAYOUT_MODES, type DialogueLayoutMode } from "../../../../shared/cartridge/dialogueModeLayout";
-import { RENPY_NAVIGATION_PAGES, type RenpyNavigationPage } from "../../../../shared/cartridge/renpyGui";
+import { RENPY_NAVIGATION_PAGES, resolveRenpyButtonRole, type RenpyNavigationPage } from "../../../../shared/cartridge/renpyGui";
+import { defaultRenpyQuickBarRect } from "../../../../shared/cartridge/renpyQuickBar";
 import type { AssetRef } from "../../types/assets";
 import type { SceneBeat } from "../../types/scene";
 import type { PackageAppearanceSettings } from "../../types/project";
@@ -1366,6 +1367,8 @@ export function RuntimeLayoutDesigner({ sessionRef }: { sessionRef?: MutableRefO
   const selectedIsStyleOnly = Boolean(selected && isStyleOnlyComponent(selected));
   const selectedRect = selected && !selectedIsStyleOnly ? getRect(selected) : undefined;
   const selectedIsFixedQuickMenu = selected?.component_type === "quick_menu";
+  const selectedQuickMenuGeometryFixed = selectedIsFixedQuickMenu
+    && !(layoutType === "renpy" && selected?.style?.quickMenuPlacement === "custom");
   const activeIds = selectedIds.length > 0 ? selectedIds : selected ? [selected.component_id] : [];
   const isDirty = layoutSessionRef.current.dirty;
   const renpyStructuredPage = layoutType === "renpy" && (RENPY_NAVIGATION_PAGES as readonly string[]).includes(screenId);
@@ -1816,7 +1819,7 @@ export function RuntimeLayoutDesigner({ sessionRef }: { sessionRef?: MutableRefO
   }
 
   function setSelectedRect(rect: UILayoutRect) {
-    if (!selected || selectedGeometryLocked) return;
+    if (!selected || selectedGeometryLocked || selectedQuickMenuGeometryFixed) return;
     if (selectedIsCustomButtonContainer) {
       commitUpdater((current) => updateScreenComponents(
         current,
@@ -1846,6 +1849,20 @@ export function RuntimeLayoutDesigner({ sessionRef }: { sessionRef?: MutableRefO
       ...(isBuiltinTitleButton(component) ? { titleButtonStyleSource: "layout" as const } : {}),
       style: cleanStyle({ ...component.style, ...style }),
     } : editUILayoutComponentStyle(component, style));
+  }
+
+  function setQuickMenuPlacement(placement: "bottom" | "custom") {
+    if (!selectedIsFixedQuickMenu || selectedLocked || layoutType !== "renpy") return;
+    const configuredRole = draft.renpy?.shared?.buttonRoles?.quick_bar || draft.renpy?.player?.buttonRoles?.quick_bar;
+    const initialRect = defaultRenpyQuickBarRect(viewportDesign, configuredRole
+      ? resolveRenpyButtonRole(draft.renpy, "quick_bar", "player").geometry : undefined);
+    updateSelectedComponent(component => ({
+      ...component,
+      // Undefined marks a legacy rect, not a previous custom-position choice.
+      ...(component.style?.quickMenuPlacement === undefined
+        ? { rect: initialRect } : {}),
+      style: cleanStyle({ ...component.style, quickMenuPlacement: placement }),
+    }));
   }
 
   function restoreSelectedRenpyPlayerDefaultStyle() {
@@ -2545,7 +2562,7 @@ export function RuntimeLayoutDesigner({ sessionRef }: { sessionRef?: MutableRefO
         <div className="runtime-layout-center">
           {screenId === "player" && (
             <div className="runtime-quick-menu-preview-controls" data-testid="runtime-quick-menu-preview-controls">
-              <span>快捷菜单预览（固定位置与尺寸）</span>
+              <span>{layoutType === "renpy" ? "快捷栏预览" : "快捷菜单预览（固定位置与尺寸）"}</span>
               <button type="button"
                 data-testid="renpy-player-runtime-preview-toggle"
                 aria-pressed={renpyPlayerRuntimePreview}
@@ -2662,6 +2679,14 @@ export function RuntimeLayoutDesigner({ sessionRef }: { sessionRef?: MutableRefO
             page="player" onChange={(next) => commitUpdater(() => next)} /></details>}
           {selected ? <>
             <header><strong>{componentLabel(selected)}</strong><small>{selectedIsStyleOnly ? "重复控件样式" : "布局组件"}</small></header>
+            {selectedIsFixedQuickMenu && layoutType === "renpy" && <details className="runtime-layout-fieldset" open
+              data-testid="renpy-quick-placement">
+              <summary>快捷栏位置</summary>
+              <RichSelect ariaLabel="快捷栏位置" value={selected.style?.quickMenuPlacement ?? "bottom"}
+                disabled={selectedLocked} options={[
+                  { value: "bottom", label: "底部居中" }, { value: "custom", label: "自定义位置" },
+                ]} onChange={setQuickMenuPlacement} />
+            </details>}
             <GalleryGridSettings component={selected} onChange={setSelectedStyle}
               draft={draft} onLayoutChange={next => commitUpdater(() => next)} />
             {layoutType !== "renpy" && <QuickBarSurfaceSettings component={selected} onChange={setSelectedStyle} />}
@@ -2685,11 +2710,11 @@ export function RuntimeLayoutDesigner({ sessionRef }: { sessionRef?: MutableRefO
               }} />}
             {layoutType === "renpy" && draft.advancedPresentationEnabled && <ControlPresentationEditor
               component={selected} onChange={presentation => updateSelectedComponent(component => ({ ...component, presentation }))} />}
-            {selectedRect && <details className="runtime-layout-fieldset" open={layoutType !== "renpy"}>
+            {selectedRect && <details className="runtime-layout-fieldset" open={layoutType !== "renpy" || selectedIsFixedQuickMenu}>
               <summary>位置与尺寸</summary>
               {(["x", "y", "width", "height"] as const).map((field) => {
                 const autoSizedField = selectedIsCustomButtonContainer && (field === "width" || field === "height");
-                return <label key={field}>{field}<div className="runtime-layout-input-pair"><RangeControl disabled={selectedGeometryLocked || autoSizedField || selectedIsFixedQuickMenu} ariaLabel={`${field} slider`} value={selectedRect[field]} min={field === "width" || field === "height" ? 2 : 0} max={100} step={1} helpKey="layout.rect" onChange={(value) => updateSelectedComponentRectField(field, value)} /><NumberInput disabled={selectedGeometryLocked || autoSizedField || selectedIsFixedQuickMenu} type="number" value={selectedRect[field]} min={field === "width" || field === "height" ? 2 : 0} max={100} data-help-key="layout.rect" onChange={(event) => updateSelectedComponentRectField(field, Number(event.target.value))} /></div></label>;
+                return <label key={field}>{field}<div className="runtime-layout-input-pair"><RangeControl disabled={selectedGeometryLocked || autoSizedField || selectedQuickMenuGeometryFixed} ariaLabel={`${field} slider`} value={selectedRect[field]} min={field === "width" || field === "height" ? 2 : 0} max={100} step={1} helpKey="layout.rect" onChange={(value) => updateSelectedComponentRectField(field, value)} /><NumberInput aria-label={`控件${field}`} disabled={selectedGeometryLocked || autoSizedField || selectedQuickMenuGeometryFixed} type="number" value={selectedRect[field]} min={field === "width" || field === "height" ? 2 : 0} max={100} data-help-key="layout.rect" onChange={(event) => updateSelectedComponentRectField(field, Number(event.target.value))} /></div></label>;
               })}
               {selectedIsCustomButtonContainer && (
                 <div className="runtime-layout-auto-size-note" role="note">
@@ -2697,7 +2722,7 @@ export function RuntimeLayoutDesigner({ sessionRef }: { sessionRef?: MutableRefO
                   <span>拖动容器或编辑 x / y 可整体移动按钮；宽度和高度会根据内部按钮自动计算。</span>
                 </div>
               )}
-              <label>锚点<RichSelect disabled={selectedGeometryLocked || selectedIsCustomButtonContainer || selectedIsFixedQuickMenu} ariaLabel="布局锚点" value={selectedRect.anchor ?? ""} options={anchorLabels} helpKey="layout.anchor" onChange={(anchor) => setSelectedRect(applyCanvasAnchorPreset(selectedRect, anchor ? anchor as UILayoutAnchor : undefined))} /></label>
+              <label>锚点<RichSelect disabled={selectedGeometryLocked || selectedIsCustomButtonContainer || selectedQuickMenuGeometryFixed} ariaLabel="布局锚点" value={selectedRect.anchor ?? ""} options={anchorLabels} helpKey="layout.anchor" onChange={(anchor) => setSelectedRect(applyCanvasAnchorPreset(selectedRect, anchor ? anchor as UILayoutAnchor : undefined))} /></label>
               <div className="runtime-layout-pixel-readout" data-help-key="layout.pixelPreview"><strong>当前画布像素</strong><span>{selectedPixelRect ? `x ${selectedPixelRect.x}px / y ${selectedPixelRect.y}px / ${selectedPixelRect.width} x ${selectedPixelRect.height}px` : "等待画布测量"}</span></div>
             </details>}
             {selectedIsStyleOnly && selected.component_type === "quick_button" && (
@@ -2706,10 +2731,11 @@ export function RuntimeLayoutDesigner({ sessionRef }: { sessionRef?: MutableRefO
                 <span>这里可以调整按钮颜色、圆角、透明度和图案，按钮位置会随快捷菜单一起变化。</span>
               </div>
             )}
-            {selectedIsFixedQuickMenu && (
+            {selectedQuickMenuGeometryFixed && (
               <div className="runtime-layout-auto-size-note" role="note" data-testid="quick-menu-fixed-note">
-                <strong>快捷菜单为系统固定组件</strong>
-                <span>位置、尺寸、锚点和展开方向由游戏客户端统一管理；此处仅可编辑材质。</span>
+                <strong>{layoutType === "renpy" ? "底部居中" : "快捷菜单为系统固定组件"}</strong>
+                <span>{layoutType === "renpy" ? "自动避开安全区。选择自定义位置后可调整坐标、尺寸与锚点。"
+                  : "位置、尺寸、锚点和展开方向由游戏客户端统一管理；此处仅可编辑材质。"}</span>
               </div>
             )}
             {!selected.required && !selectedIsCustomButton && !selectedIsCustomButtonContainer

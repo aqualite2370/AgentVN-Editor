@@ -15,7 +15,8 @@ export function RenpyQuickBar() {
   const roleStyle = useRenpyButtonRoleStyle("quick_bar", "player", "var(--renpy-quick-scale)");
   const geometry = resolveRenpyQuickBar(frame, safe, roleStyle.enabled
     ? roleStyle.geometry
-    : { width: 62, height: 32 });
+    : { width: 62, height: 32 },
+    menu.component?.style?.quickMenuPlacement === "custom" ? menu.component.rect : undefined);
   const buttonStyle = useRenpyButtonStateStyle(undefined, undefined, geometry.scale);
   const runtime = useRuntimeStore();
   const disabled = runtime.launchTransition !== "idle";
@@ -38,6 +39,7 @@ export function RenpyQuickBar() {
     <nav className="playback-controls renpy-quick-bar" data-testid="renpy-quick-bar"
       aria-label="进阶快捷栏" data-no-advance="true" data-save-preview-exclude="true"
       data-quick-menu-transparent={menu.component?.style?.quickMenuTransparent ? "true" : undefined}
+      data-quick-menu-placement={menu.component?.style?.quickMenuPlacement ?? "bottom"}
       data-uniform-scale={geometry.scale}
       style={{
         backgroundColor: menu.style.backgroundColor, backgroundImage: menu.style.backgroundImage,

@@ -7,7 +7,7 @@ import type { LibraryGame } from "../../types/cartridge";
 import type { NvlLineState } from "../../types/save";
 import type { UILayoutRect } from "../../../../shared/cartridge/uiSkin";
 import { DIALOG_TEXT_MIN_AUTO_FONT_SIZE_PX } from "../../../../shared/cartridge/dialogText";
-import { resolveRenpyQuickBar } from "../../../../shared/cartridge/renpyQuickBar";
+import { resolveRenpyQuickBar, resolveRenpyQuickBarReadingBounds } from "../../../../shared/cartridge/renpyQuickBar";
 import { placeSpeechBubble, type BubblePlacementRect } from "../../../../shared/cartridge/bubblePlacement";
 import {
   fontFamilyForAsset,
@@ -379,17 +379,16 @@ export function DialogBox({ onStoryInteraction }: DialogBoxProps) {
   const frameSize = useUILayoutFrameSize();
   const safeBounds = useUILayoutSafeBounds();
   const quickBarRoleStyle = useRenpyButtonRoleStyle("quick_bar", "player", "var(--renpy-quick-scale)");
+  const quickMenu = runtimeUILayout.screens.find(screen => screen.screen_id === "player")?.components
+    .find(component => component.component_type === "quick_menu");
+  const customQuickBar = runtimeUILayout.layout_type === "renpy" && quickMenu?.style?.quickMenuPlacement === "custom";
   const quickBarGeometry = resolveRenpyQuickBar(frameSize, safeBounds, quickBarRoleStyle.enabled
     ? quickBarRoleStyle.geometry
-    : { width: 62, height: 32 });
-  const renpyDialogTextMaxHeight = Math.max(1,
-    quickBarGeometry.y - (textLayout.rect?.y ?? 80) / 100 * frameSize.height - 8 * quickBarGeometry.scale);
-  // The native bottom inset moves the quick bar upwards. The shared NVL
-  // frame must reserve that same dock, rather than keep its legacy 7% gap.
-  const nvlBottomOffset = Math.max(frameSize.height * 0.07,
-    frameSize.height - quickBarGeometry.y + 8 * quickBarGeometry.scale);
-  const nvlReadingMaxHeight = Math.max(1, Math.min(frameSize.height * 0.7,
-    frameSize.height - nvlBottomOffset - safeBounds.y / 100 * frameSize.height));
+    : { width: 62, height: 32 }, customQuickBar ? quickMenu?.rect : undefined);
+  const readingBounds = resolveRenpyQuickBarReadingBounds(frameSize, safeBounds, quickBarGeometry, textLayout.rect, customQuickBar);
+  const renpyDialogTextMaxHeight = readingBounds.dialogMaxHeight;
+  const nvlBottomOffset = readingBounds.nvlBottomOffset;
+  const nvlReadingMaxHeight = readingBounds.nvlMaxHeight;
   const activeDialog = dialog;
   const isNvlPresentation = nvlPresentationMode === "nvl" && nvlPage.length > 0;
   const isBubblePresentation = nvlPresentationMode === "bubble";

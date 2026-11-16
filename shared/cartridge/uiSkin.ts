@@ -123,6 +123,8 @@ export interface UILayoutComponentStyle {
   quickMenuVariant?: QuickMenuVariant;
   /** Hide only the bar material; button content and material are independent. */
   quickMenuTransparent?: boolean;
+  /** Ren'Py only. Missing/bottom retains the legacy safe-bottom dock. */
+  quickMenuPlacement?: "bottom" | "custom";
 }
 
 /** Existing background-material defaults, not the CSS opacity of the entire
@@ -1293,8 +1295,11 @@ function validateStyle(style: unknown, path: string, issues: ValidationIssue[], 
     "quickMenuDirection",
     "quickMenuVariant",
     "quickMenuTransparent",
+    "quickMenuPlacement",
   ]);
   for (const [key, value] of Object.entries(style)) {
+    if (key === "quickMenuPlacement" && value !== "bottom" && value !== "custom")
+      issues.push(issue("ui_quick_menu_placement", "快捷栏位置请选择底部居中或自定义位置。", "error", `${path}.${key}`));
     if (key === "quickMenuTransparent" && typeof value !== "boolean")
       issues.push(issue("ui_quick_menu_transparent", "快捷栏透明背景必须是开关值。", "error", `${path}.${key}`));
     if (!allowed.has(key)) {
@@ -1572,6 +1577,10 @@ export function validateUISkinLayout(layout: unknown): CartridgeValidationResult
       }
       if (component.style !== undefined) validateStyle(component.style, `${componentPath}.style`, issues,
         supportsUILayoutOpacityLayers(componentType));
+      if (layout.layout_type === "renpy" && screen.screen_id === "player"
+        && componentType === "quick_menu" && isPlainRecord(component.style)
+        && component.style.quickMenuPlacement === "custom" && component.rect === undefined)
+        issues.push(issue("ui_quick_menu_rect", "自定义快捷栏位置缺少位置与尺寸，请重新设置。", "error", `${componentPath}.rect`));
       if (component.stateStyles !== undefined) {
         if (!isPlainRecord(component.stateStyles))
           issues.push(issue("ui_control_states", "控件状态样式必须为对象。", "error", `${componentPath}.stateStyles`));

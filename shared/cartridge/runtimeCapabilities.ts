@@ -31,8 +31,14 @@ export const NATIVE_ANIMATION_ASSET_RUNTIME_VERSION = "0.28.0";
 export const OPENING_PRESENTATION_RUNTIME_VERSION = "0.29.0";
 export const GALLERY_PRESENTATION_RUNTIME_VERSION = "0.30.0";
 export const CLIENT_PRESENTATION_RUNTIME_VERSION = "0.31.0";
+export const RENPY_QUICK_PLACEMENT_RUNTIME_VERSION = "0.32.0";
 
 export function minimumRuntimeVersionForLayout(scriptVersion: string, layout?: UISkinLayout): string {
+  if (layout?.layout_type === "renpy" && layout.screens.some(screen => screen.screen_id === "player"
+    && screen.components.some(component => component.component_type === "quick_menu"
+      && component.style?.quickMenuPlacement === "custom"))
+    && compareSemver(scriptVersion, RENPY_QUICK_PLACEMENT_RUNTIME_VERSION) < 0)
+    scriptVersion = RENPY_QUICK_PLACEMENT_RUNTIME_VERSION;
   if ((layout?.galleryPresentation || layout?.dialogPortrait && (
     layout.dialogPortrait.placement !== undefined || layout.dialogPortrait.height !== undefined
     || layout.dialogPortrait.width !== undefined || layout.dialogPortrait.entrance !== undefined

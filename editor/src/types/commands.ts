@@ -98,6 +98,8 @@ export interface SpriteCommand {
   animation?: string | null;
   animation_display_name?: string | null;
   animation_config?: CharacterSpriteAnimationConfig | null;
+  /** Editor-only inheritance. Resolved and removed before Runtime consumption. */
+  animation_source?: "project" | "manual";
   switch_transition?: VisualTransitionConfig | null;
   scale?: number | null;
   visible: boolean;

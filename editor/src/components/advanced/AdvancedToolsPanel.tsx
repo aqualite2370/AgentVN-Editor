@@ -1,6 +1,7 @@
 import { Suspense, lazy, memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ComponentType, type CSSProperties } from "react";
 import type { GeneratedAssetRecord, GenerationHistoryEntry } from "../../providers/types";
 import { useProjectStore } from "../../store/projectStore";
+import { useEditorStore } from "../../store/editorStore";
 import type { AssetRef } from "../../types/assets";
 import { putImportedAssetsInFolder } from "../../utils/assetLibraryInteractions";
 import { generatedAssetToAssetRef } from "../../utils/projectAssets";
@@ -436,6 +437,7 @@ export function AdvancedToolsPanel({ request, onLayoutModeChange }: { request?: 
   const [notice, setNotice] = useState<AdvancedToolsRequest | undefined>();
   const runtimeLayoutSessionRef = useRef<RuntimeLayoutDesignerSession>({});
   const projectId = useProjectStore((state) => state.projectId);
+  const projectLoadGeneration = useEditorStore(state => state.projectLoadGeneration);
   const assetManifest = useProjectStore((state) => state.assetManifest);
   const assetLibrary = useProjectStore((state) => state.settings.assetLibrary);
   const setAssetManifest = useProjectStore((state) => state.setAssetManifest);
@@ -660,7 +662,7 @@ export function AdvancedToolsPanel({ request, onLayoutModeChange }: { request?: 
         />
       );
     }
-    if (activeTab === "animation") return <AnimationEditorPanel />;
+    if (activeTab === "animation") return <AnimationEditorPanel key={`${projectId}:${projectLoadGeneration}`} />;
     if (activeTab === "preview") return <PreviewWindowControls />;
     if (activeTab === "providers") return <ProviderSettingsPanel />;
     return <ProjectTimelinePanel />;

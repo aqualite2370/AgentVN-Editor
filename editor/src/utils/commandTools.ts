@@ -66,7 +66,7 @@ export function defaultCommand(type: GameCommandType): GameCommand {
     case "video":
       return { type, video_id: "", video_fit: "contain", fade_in_ms: 500, fade_out_ms: 500 };
     case "sprite":
-      return { type, character_id: "alice", sprite_id: "", position: "center", animation: "", animation_display_name: "", animation_config: defaultCharacterAnimationConfig(true), visible: true };
+      return { type, character_id: "alice", sprite_id: "", position: "center", animation: "", animation_display_name: "", animation_source: "project", animation_config: defaultCharacterAnimationConfig(true), visible: true };
     case "choice":
       return { type, choices: [{ choice_id: "choice_" + nanoid(6), choice_display_name: null, text: "", target_scene_id: "", conditions: [] }] };
     case "state_update":

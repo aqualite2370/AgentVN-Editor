@@ -17,6 +17,7 @@ import { CharacterAnimationControls } from "./CharacterAnimationControls";
 import { SpritePlacementStudioDialog } from "./SpritePlacementStudioDialog";
 import { SpriteScaleControl } from "./SpriteScaleControl";
 import { VisualTransitionControls } from "./VisualTransitionControls";
+import { inheritsSpriteAnimation } from "../../utils/spriteAnimationDefaults";
 
 function replacementContextHint(command: SpriteCommand): string {
   if (!command.character_id.trim() && !command.sprite_id.trim()) {
@@ -52,7 +53,9 @@ export function SpriteCommandEditor({
   const setNotice = useEditorStore((state) => state.setNotice);
   const projectSettings = useProjectStore((state) => state.settings);
   const setCharacterSpriteLayout = useProjectStore((state) => state.setCharacterSpriteLayout);
-  const animationConfig =
+  const inheritsAnimation = inheritsSpriteAnimation(command);
+  const inheritedAnimation = projectSettings.spriteAnimationDefaults?.[command.visible ? "enter" : "exit"];
+  const animationConfig = (inheritsAnimation ? inheritedAnimation : undefined) ??
     command.animation_config ??
     legacySpriteAnimationToConfig(command.animation, command.animation_display_name, command.visible) ??
     { ...defaultCharacterAnimationConfig(command.visible), kind: "none" as const };
@@ -144,11 +147,17 @@ export function SpriteCommandEditor({
         显示立绘
       </label>
 
+      <label className="check-row">
+        <input type="checkbox" aria-label="继承全局立绘动画" checked={inheritsAnimation}
+          onChange={event => onChange({...command, animation_source: event.target.checked ? "project" : "manual",
+            animation_config: event.target.checked ? undefined : {...animationConfig}, animation: null})} />
+        继承全局{command.visible ? "入场" : "退场"}动画
+      </label>
       <CharacterAnimationControls
         value={animationConfig}
         visible={command.visible}
         targetLabel={`${command.character_id || "角色"} 立绘`}
-        onChange={(animation_config) => onChange({ ...command, animation_config })}
+        onChange={(animation_config) => onChange({ ...command, animation_config, animation_source: "manual" })}
       />
 
       <VisualTransitionControls
@@ -174,7 +183,7 @@ export function SpriteCommandEditor({
               emptyLabel="不使用动画"
               helpKey="command.sprite.animation"
               customPlaceholder="填写自定义动画代码"
-              onChange={(animation) => onChange({ ...command, animation: animation || null })}
+              onChange={(animation) => onChange({ ...command, animation: animation || null, animation_source: "manual" })}
             />
           </label>
           <label>

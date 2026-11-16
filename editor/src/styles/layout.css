@@ -1685,6 +1685,12 @@ body.is-toolbar-popover-open .floating-command-workbench{z-index:0!important;poi
 .timeline-row-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
 .timeline-row-textarea{display:grid;gap:6px}
 .animation-editor-shell{display:grid;gap:18px}
+.animation-editor-shell>.animation-editor-header{position:sticky;top:0;z-index:8;flex-wrap:wrap;align-items:center;padding:12px;border:1px solid var(--line);border-radius:8px;background:var(--surface,var(--panel));box-shadow:none}
+.animation-editor-header>div:first-child{display:grid;gap:4px}
+.animation-editor-header small{color:var(--muted);font-size:12px}
+.animation-global-actions{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.animation-global-actions>button{min-height:38px;display:inline-flex;align-items:center;gap:8px}
+.animation-global-status{flex-basis:100%;margin:0;font-size:13px}
 .animation-editor-header,.animation-section-header{display:flex;align-items:start;justify-content:space-between;gap:12px}
 .animation-editor-header h3,.animation-section-header h3,.animation-section-header h4,.animation-template-summary h4,.animation-editor-header p,.animation-section-header p,.animation-template-summary p,.animation-template-summary small,.animation-panel-note{margin:0}
 .animation-editor-grid{display:grid;grid-template-columns:minmax(300px,360px) minmax(0,1fr);gap:18px;align-items:start}
@@ -2711,8 +2717,6 @@ body.is-toolbar-popover-open .floating-command-workbench{z-index:0!important;poi
 .toolbar-settings-tools{flex:0 1 142px}
 .toolbar-timeline-tools{flex:0 0 auto;width:max-content;min-width:162px}
 .toolbar-arrange-button{flex:0 0 118px;align-self:center;min-width:118px}
-.canvas-arrange-panel.react-flow__panel{margin:12px 12px 12px 52px}
-.canvas-arrange-panel button{display:flex;align-items:center;gap:7px;min-height:34px;padding:7px 12px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink-strong)}
 .toolbar-container-label{color:var(--muted);font-size:10px;font-weight:800;letter-spacing:0;line-height:1}
 .toolbar-container-actions{min-width:0;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .toolbar-container-actions button{flex:1 1 112px;justify-content:center;min-width:0}

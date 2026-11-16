@@ -4,6 +4,7 @@ import type { NovelPersistenceState } from "../novel-import/types";
 import type { AboutPanelCopy, BackgroundFit, DialogPresentationMode, DialogVisualStyle, SpeakerFocusConfig } from "../../../shared/cartridge/types";
 import type { UISkinLayout } from "../../../shared/cartridge/uiSkin";
 import type { RuntimeUILayoutProfiles } from "../../../shared/cartridge/uiLayoutProfiles";
+import type { SpriteAnimationDefaults } from "../utils/spriteAnimationDefaults";
 
 export interface AssetLibraryFolder {
   folder_id: string;
@@ -105,6 +106,7 @@ export interface RollbackProjectSettings {
 export interface ProjectSettings {
   defaultMemoryMode: MemoryMode;
   defaultSpriteScale: number;
+  spriteAnimationDefaults?: SpriteAnimationDefaults;
   defaultDialogPresentation?: DialogPresentationMode;
   characterDialogPresentations?: Record<string, DialogPresentationMode>;
   speakerFocus: SpeakerFocusConfig;

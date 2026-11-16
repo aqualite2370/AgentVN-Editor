@@ -290,6 +290,8 @@ export function FloatingCommandWorkbench({
   const [spriteScale, setSpriteScale] = useState<number | null>(null);
   const [spritePlacementOpen, setSpritePlacementOpen] = useState(false);
   const [spriteAnimationConfig, setSpriteAnimationConfig] = useState<CharacterSpriteAnimationConfig>(() => defaultCharacterAnimationConfig(true));
+  const [spriteInheritsAnimation, setSpriteInheritsAnimation] = useState(true);
+  const spriteAnimationDefaults = useProjectStore(state => state.settings.spriteAnimationDefaults);
   const [animationId, setAnimationId] = useState("");
   const [animationAssetPending, setAnimationAssetPending] = useState(false);
   const [animationAssetError, setAnimationAssetError] = useState<string>();
@@ -596,6 +598,7 @@ export function FloatingCommandWorkbench({
         animation: "",
         animation_display_name: spriteAnimationConfig.display_name ?? "",
         animation_config: { ...spriteAnimationConfig, phase: spriteVisible ? spriteAnimationConfig.phase : "exit" },
+        animation_source: spriteInheritsAnimation ? "project" : "manual",
         scale: spriteScale,
         visible: spriteVisible,
       };
@@ -849,13 +852,17 @@ export function FloatingCommandWorkbench({
               调整立绘
             </button>
           </section>
+          <label className="check-row"><input type="checkbox" checked={spriteInheritsAnimation}
+            aria-label="继承全局立绘动画" onChange={event => setSpriteInheritsAnimation(event.target.checked)} />
+            继承全局{spriteVisible ? "入场" : "退场"}动画
+          </label>
           <CharacterAnimationControls
-            value={spriteAnimationConfig}
+            value={(spriteInheritsAnimation ? spriteAnimationDefaults?.[spriteVisible ? "enter" : "exit"] : undefined) ?? spriteAnimationConfig}
             visible={spriteVisible}
             compact
             studioTitle="立绘动效工作室"
             targetLabel={`${spriteCharacterId || "角色"} 立绘`}
-            onChange={(next) => setSpriteAnimationConfig(next ?? { ...defaultCharacterAnimationConfig(spriteVisible), kind: "none" })}
+            onChange={(next) => { setSpriteInheritsAnimation(false); setSpriteAnimationConfig(next ?? { ...defaultCharacterAnimationConfig(spriteVisible), kind: "none" }); }}
           />
         </div>
       );

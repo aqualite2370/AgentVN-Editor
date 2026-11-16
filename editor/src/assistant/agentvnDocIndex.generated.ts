@@ -50,9 +50,9 @@ export const agentvnDocIndexMetadata = {
     },
     {
       "path": "docs/ANIMATION_SYSTEM.md",
-      "sha256": "72f77a0aa8fc83449f94790072efb5746f60799e91b418a8ea72a9f2b0d16555",
-      "characters": 6019,
-      "chunks": 8
+      "sha256": "76ade7a8a1fa936428b14e740c9738e86688e308fc82d85d3242d8c1d115637d",
+      "characters": 6451,
+      "chunks": 9
     },
     {
       "path": "docs/API_KEY_SECURITY.md",
@@ -194,8 +194,8 @@ export const agentvnDocIndexMetadata = {
     },
     {
       "path": "editor/src/components/common/hoverHelpCatalog.ts",
-      "sha256": "cee00617ff16fa5d238d2b249803bf5689ce19b403a5078a039f86a5ead62434",
-      "chunks": 598
+      "sha256": "bf1ffad9ce69057bd27fa1a2dfd27755d0fc75cf6b8c1399bf77edd97770e21c",
+      "chunks": 599
     }
   ]
 };
@@ -783,15 +783,25 @@ export const agentvnDocIndex: readonly AssistantDocChunk[] = [
   {
     "id": "doc-docs-animation-system-md-2-1",
     "source": "docs/ANIMATION_SYSTEM.md",
-    "title": "Animation System / AnimationCommand",
+    "title": "Animation System / 全局立绘入退场",
     "tags": [
       "reference",
       "docs"
     ],
-    "text": "## AnimationCommand\n\nAn `animation` command is still available for reusable performance beats.\n\n```json\n{\n  \"type\": \"animation\",\n  \"animation_id\": \"flash_cut\",\n  \"target\": \"screen\",\n  \"params\": { \"duration\": 450, \"intensity\": 0.85 },\n  \"blocking\": true\n}\n```\n\nCommon targets:\n\n- `screen`\n- `background`\n- `dialog`\n- `ui`\n- `camera`\n- `sprite:selected`\n- `sprite:all`\n- `sprite:<character_id>`\n\nThe animation editor exposes a character target picker for sprite targets so authors no longer need to hand-type `sprite:<id>` for normal character standee effects. The advanced text entry remains available for custom runtime targets.\n\n"
+    "text": "## 全局立绘入退场\n\n在“选项 → 动画编辑”选择“立绘入场”或“立绘退场”，调整模板后点击顶部固定的“保存全局入场／退场”。两阶段独立保存在工程设置 `spriteAnimationDefaults`，通过正常工程写队列持久化；保存失败保留设置并允许重试。\n\n“同步应用到现有事件”会先列出数量，确认后将同阶段立绘事件改为继承；另一阶段、强调及独立演出动画命令保持原样。原有明确自定义动画默认作为单独覆盖保留。新建立绘事件继承全局，事件中的“继承全局立绘动画”可开关，修改事件动画参数会切换为单独设置。\n\n预览与导出把继承解析为已有的 `SpriteCommand.animation_config`，不向 Runtime 泄漏编辑器字段 `animation_source`。无需新 Runtime 协议。循环、反向或自定义 CSS 不能保存为全局入退场，须明确报错。`sprite:all` 只对某次演出作用于当前立绘，不能代替此全局默认。\n\n"
   },
   {
     "id": "doc-docs-animation-system-md-3-1",
+    "source": "docs/ANIMATION_SYSTEM.md",
+    "title": "Animation System / AnimationCommand（单次演出）",
+    "tags": [
+      "reference",
+      "docs"
+    ],
+    "text": "## AnimationCommand（单次演出）\n\nAn `animation` command is still available for reusable performance beats.\n\n```json\n{\n  \"type\": \"animation\",\n  \"animation_id\": \"flash_cut\",\n  \"target\": \"screen\",\n  \"params\": { \"duration\": 450, \"intensity\": 0.85 },\n  \"blocking\": true\n}\n```\n\nCommon targets:\n\n- `screen`\n- `background`\n- `dialog`\n- `ui`\n- `camera`\n- `sprite:selected`\n- `sprite:all`\n- `sprite:<character_id>`\n\nThe animation editor exposes a character target picker for sprite targets so authors no longer need to hand-type `sprite:<id>` for normal character standee effects. The advanced text entry remains available for custom runtime targets.\n\n"
+  },
+  {
+    "id": "doc-docs-animation-system-md-4-1",
     "source": "docs/ANIMATION_SYSTEM.md",
     "title": "Animation System / 原生动画素材 JSON（Runtime 0.28）",
     "tags": [
@@ -801,7 +811,7 @@ export const agentvnDocIndex: readonly AssistantDocChunk[] = [
     "text": "## 原生动画素材 JSON（Runtime 0.28）\n\n当前源码支持把原生关键帧预设保存成 UTF-8 JSON，经过“选项→素材库→导入素材→保存到素材库”导入，再在场景的“演出动画素材”或事件工作台选择。动画是独立素材类型，不再归入“其他素材”。本节描述新源码能力；安装版与设备验收结论以对应版本报告为准。\n\n完整文件示例：\n\n```json\n{\n  \"schema_version\": \"1.0.0\",\n  \"preset_id\": \"gentle_emphasis\",\n  \"name\": \"轻微强调\",\n  \"target_type\": \"screen\",\n  \"duration_ms\": 720,\n  \"easing\": \"ease-out\",\n  \"loop\": false,\n  \"direction\": \"normal\",\n  \"keyframes\": [\n    { \"offset\": 0, \"x\": 0 },\n    { \"offset\": 0.5, \"x\": 24 },\n    { \"offset\": 1, \"x\": 0 }\n  ]\n}\n```\n\n必要字段是 `duration_ms`（80～10000 毫秒）和 `keyframes`（2～512 帧）。帧的 `offset` 按 0～1 升序排列；可播放属性为 `opacity`、`x`、`y`、`scale`、`rotate`、`blur`、`brightness`，也可设置单帧 `easing`。`x/y` 使用逻辑像素，旋转单位为度。透明度为 0～1，缩放、模糊和亮度不能为负数。可选 `preset_id/name/description/target_type` 是描述信息，实际播放目标由指令的“演出目标”决定。\n\n文件最多 1 MiB；不接受任意字段、非空 `custom_css`、JavaScript、Python、Lottie 或 Spine。缓动支持标准名称、合法 `cubic-bezier` 与 `steps`，播放方向支持 `normal/reverse/alternate/alternate-reverse`。循环动画必须取消阻塞，否则校验报错。\n\n选中素材后，指令写入 `animation_asset_id`，`params: {}` 表示沿用文件。作者可显式覆盖 `duration/keyframes/easing/loop/direction/delay/delay_ms/transform_origin`；这些覆盖按指令生效。重新选择素材会清除旧覆盖。`duration` 是指令参数名，`duration_ms` 是素材文件字段，不能混用。编辑器内置角色动画与旧的命令内嵌关键帧继续独立工作。\n\n卡带保留素材原始字节、引用和作者覆盖；运行时先读取并校验文件，再创建剧情引擎状态。缺文件、占位文件、格式或覆盖参数无效都会明确报错，不能回退默认淡入。替换文件后，未显式覆盖的属性使用新内容。旧工程只有 `animation_id` 且与真实动画素材 ID 对应、没有内嵌关键帧时，按旧素材选择识别；带内嵌关键帧的旧命令保持原语义。新引用卡带声明最低 Runtime 0.28，由现有版本检查拒绝旧 Runtime。\n\n"
   },
   {
-    "id": "doc-docs-animation-system-md-4-1",
+    "id": "doc-docs-animation-system-md-5-1",
     "source": "docs/ANIMATION_SYSTEM.md",
     "title": "Animation System / Character Sprite Animation",
     "tags": [
@@ -811,7 +821,7 @@ export const agentvnDocIndex: readonly AssistantDocChunk[] = [
     "text": "## Character Sprite Animation\n\n`SpriteCommand` can carry a structured `animation_config`:\n\n```json\n{\n  \"type\": \"sprite\",\n  \"character_id\": \"alice\",\n  \"sprite_id\": \"alice_default\",\n  \"position\": \"center\",\n  \"visible\": true,\n  \"animation\": \"fade_in\",\n  \"animation_config\": {\n    \"kind\": \"move\",\n    \"phase\": \"enter\",\n    \"duration_ms\": 520,\n    \"easing\": \"ease-out\",\n    \"direction\": \"left\",\n    \"blocking\": false,\n    \"display_name\": \"从左滑入\"\n  }\n}\n```\n\nSupported `kind` values:\n\n- `none`: no character animation.\n- `fade`: fade in, fade out, or emphasis fade pulse.\n- `move`: directional entrance, exit, or emphasis movement.\n- `tween`: explicit keyframe interpolation.\n- `preset`: named runtime preset such as `sprite_shake` or `sprite_heartbeat`.\n\nSupported `phase` values:\n\n- `enter`: used when a visible standee appears.\n- `exit`: used before a hidden standee is removed.\n- `emphasis`: used while the standee remains visible.\n\n`direction` accepts `left`, `right`, `up`, `down`, `center`, and `none`. `duration_ms` is clamped to 80-10000 ms. `blocking` defaults to `false` so old sprite commands keep their pacing unless the author explicitly waits for the animation.\n\n"
   },
   {
-    "id": "doc-docs-animation-system-md-5-1",
+    "id": "doc-docs-animation-system-md-6-1",
     "source": "docs/ANIMATION_SYSTEM.md",
     "title": "Animation System / Character Sprite Layers",
     "tags": [
@@ -821,7 +831,7 @@ export const agentvnDocIndex: readonly AssistantDocChunk[] = [
     "text": "## Character Sprite Layers\n\n`SpriteCommand.layer` controls overlap in multi-character compositions. It is an integer from `-1000` to `1000`; larger values render in front. Missing or `null` values inherit the same character's current layer, and characters without an existing layer use effective layer `0`. Equal layers keep the existing appearance order.\n\nLayer changes do not reorder horizontal placement and do not change animation targets. `layer` controls depth, `animation_config` controls entry/exit/emphasis, and `switch_transition` controls same-character sprite replacement.\n\n"
   },
   {
-    "id": "doc-docs-animation-system-md-6-1",
+    "id": "doc-docs-animation-system-md-7-1",
     "source": "docs/ANIMATION_SYSTEM.md",
     "title": "Animation System / Tween Keyframes",
     "tags": [
@@ -831,7 +841,7 @@ export const agentvnDocIndex: readonly AssistantDocChunk[] = [
     "text": "## Tween Keyframes\n\nTween keyframes use offsets from `0` to `1` and may animate:\n\n- `opacity`\n- `x`\n- `y`\n- `scale`\n- `rotate`\n- `blur`\n- `brightness`\n\nExample:\n\n```json\n{\n  \"kind\": \"tween\",\n  \"phase\": \"enter\",\n  \"duration_ms\": 680,\n  \"easing\": \"cubic-bezier(0.18, 0.9, 0.18, 1)\",\n  \"keyframes\": [\n    { \"offset\": 0, \"opacity\": 0, \"x\": -80, \"scale\": 0.98 },\n    { \"offset\": 1, \"opacity\": 1, \"x\": 0, \"scale\": 1 }\n  ]\n}\n```\n\nGameCLI compiles these values into WAAPI keyframes. Under `prefers-reduced-motion`, the runtime keeps story state correct while reducing or skipping visual motion.\n\n"
   },
   {
-    "id": "doc-docs-animation-system-md-7-1",
+    "id": "doc-docs-animation-system-md-8-1",
     "source": "docs/ANIMATION_SYSTEM.md",
     "title": "Animation System / Legacy Compatibility",
     "tags": [
@@ -841,7 +851,7 @@ export const agentvnDocIndex: readonly AssistantDocChunk[] = [
     "text": "## Legacy Compatibility\n\nThe old `SpriteCommand.animation` string remains supported. Known values are mapped to structured configs at runtime:\n\n- `fade_in` / `fade_out`\n- `slide_in_left` / `slide_in_right`\n- `slide_out_left` / `slide_out_right`\n- `shake`\n- `heartbeat`\n\nExport keeps the legacy `animation` field when it already exists. New UI writes `animation_config` so validation and runtime playback can reason about direction, phase, keyframes, and blocking behavior.\n\n"
   },
   {
-    "id": "doc-docs-animation-system-md-8-1",
+    "id": "doc-docs-animation-system-md-9-1",
     "source": "docs/ANIMATION_SYSTEM.md",
     "title": "Animation System / Validation",
     "tags": [
@@ -7171,6 +7181,16 @@ export const agentvnDocIndex: readonly AssistantDocChunk[] = [
       "animation.previewBackgroundAsset"
     ],
     "text": "帮助键：animation.previewBackgroundAsset\npurpose: 选择一张背景图来检查当前背景切换动效。\nusage: 使用准备放入场景的背景图确认淡入、模糊或推进效果。\neffect: 只更换动效工作室里的预览图，不会改写场景背景命令或导出素材引用。"
+  },
+  {
+    "id": "help-animation.saveGlobal",
+    "source": "editor/src/components/common/hoverHelpCatalog.ts",
+    "title": "控件帮助：保存全局立绘动画",
+    "tags": [
+      "control-help",
+      "animation.saveGlobal"
+    ],
+    "text": "帮助键：animation.saveGlobal\npurpose: 分别设置全工程立绘的入场或退场默认效果。\nusage: 选择模板、调整参数后保存；勾选同步应用时，确认后替换现有同阶段事件。\neffect: 写入当前工程，预览与导出使用相同配置。强调事件不变；单个立绘事件可取消继承后单独设置。"
   },
   {
     "id": "help-animation.insert",

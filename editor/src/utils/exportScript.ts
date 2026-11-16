@@ -13,6 +13,7 @@ import { validateDefaultHandleFanOut, validateScript, type ValidationIssue, type
 import { normalizeOpeningAudioTracks } from "./openingAudio";
 import { isDialogPresentationMode } from "../../../shared/cartridge/dialogPresentation";
 import { openingPresentationErrors } from "../../../shared/cartridge/openingPresentation";
+import { resolveSpriteAnimation, validateSpriteAnimationDefaults } from "./spriteAnimationDefaults";
 
 function normalizeRuntimeCommands(commands: GameCommand[]): GameCommand[] {
   return commands.map((command) => {
@@ -338,6 +339,7 @@ export function resolveEntrySceneId(nodes: EditorNode[], edges: EditorEdge[]): s
 }
 
 export function applyProjectRuntimeSettingsToScript<T extends RuntimeScript>(script: T, settings: ProjectSettings): T {
+  const spriteDefaults = validateSpriteAnimationDefaults(settings.spriteAnimationDefaults);
   const displayNames = settings.characterDisplayNames ?? {};
   const rollback = settings.rollback;
   const usesDefaultRollback = rollback.enabled
@@ -347,6 +349,8 @@ export function applyProjectRuntimeSettingsToScript<T extends RuntimeScript>(scr
     && rollback.fixed_choice_mode === "selected_marked";
   return {
     ...script,
+    scenes: script.scenes.map(scene => ({...scene, commands: scene.commands.map(command =>
+      command.type === "sprite" ? resolveSpriteAnimation(command, spriteDefaults) : command)})),
     default_sprite_scale: sanitizeSpriteScale(settings.defaultSpriteScale, DEFAULT_SPRITE_SCALE),
     default_dialog_presentation: isDialogPresentationMode(settings.defaultDialogPresentation)
       ? settings.defaultDialogPresentation : undefined,

@@ -296,6 +296,9 @@ export class StoryEngine {
   private automaticAdvanceCount = 0;
   private playthroughCounter = 0;
   private spriteReplacementCounter = 0;
+  // Exit visuals may outlive the hide command. Saves/checkpoints capture the
+  // logical hidden state, while the renderer can finish the current fade.
+  private pendingSpriteExits = new Map<string, SpriteState>();
   private previewSettling = false;
   private galleryReplaySceneId?: string;
   private engineEpoch = 0;
@@ -996,6 +999,7 @@ export class StoryEngine {
   }
 
   private resetSceneLocalSpriteState(): void {
+    this.pendingSpriteExits.clear();
     this.state.sprites = {};
     this.state.spriteOrder = [];
     this.state.animationEffects = this.state.animationEffects.filter((effect) =>
@@ -1097,6 +1101,14 @@ export class StoryEngine {
     this.state.animationHint = stableEffect.target_kind === "unknown" ? `???????${stableEffect.target}` : undefined;
     this.emit();
     this.scheduleForCurrentPlaythrough(() => {
+      if (!this.state.animationEffects.some((item) => item.effect_id === stableEffect.effect_id)) {
+        // Superseded presentations still settle their own hidden instance, but
+        // cannot advance a newer blocking command. Ownership is checked by
+        // the sprite exit callback; a new entry is therefore left untouched.
+        onFinish?.();
+        this.emit();
+        return;
+      }
       this.state.animationEffects = this.state.animationEffects.filter((item) => item.effect_id !== stableEffect.effect_id);
       this.state.animationHint = undefined;
       onFinish?.();
@@ -1259,6 +1271,11 @@ export class StoryEngine {
         break;
       case "sprite":
         const existingSprite = this.state.sprites[command.character_id];
+        this.settleSupersededSpriteExits(command.character_id);
+        this.state.animationEffects = this.state.animationEffects.filter((effect) =>
+          effect.target !== `sprite:${command.character_id}`
+          && !(effect.target_kind === "sprite" && effect.target_id === command.character_id)
+        );
         const nextSpriteId = command.sprite_id || existingSprite?.sprite_id || "";
         const nextPosition = command.position ?? existingSprite?.position;
         const nextOffsetX = sanitizeSpriteOffsetX(command.offset_x ?? existingSprite?.offset_x);
@@ -1305,6 +1322,7 @@ export class StoryEngine {
         };
         const spriteAnimation = compileCharacterAnimation(command.animation_config, command.animation, null, command.visible);
         if (command.visible) {
+          this.pendingSpriteExits.delete(command.character_id);
           this.state.sprites = {
             ...this.state.sprites,
             [command.character_id]: spriteState,
@@ -1328,15 +1346,17 @@ export class StoryEngine {
           break;
         }
         if (spriteAnimation && existingSprite) {
+          const exitingSprite: SpriteState = {
+            ...existingSprite,
+            animation: command.animation,
+            animation_config: command.animation_config,
+            replacement: undefined,
+            visible: true,
+          };
+          this.pendingSpriteExits.set(command.character_id, exitingSprite);
           this.state.sprites = {
             ...this.state.sprites,
-            [command.character_id]: {
-              ...existingSprite,
-              animation: command.animation,
-              animation_config: command.animation_config,
-              replacement: undefined,
-              visible: true,
-            },
+            [command.character_id]: exitingSprite,
           };
           this.playRuntimeAnimation({
             effect_id: newId("anim"),
@@ -1348,12 +1368,18 @@ export class StoryEngine {
             started_at: Date.now(),
             duration_ms: animationTotalDuration(spriteAnimation.params),
           }, spriteAnimation.blocking, () => {
+            // A later show/hide for this character owns a different instance.
+            // Completing an old fade must not remove the new presentation.
+            if (this.pendingSpriteExits.get(command.character_id) !== exitingSprite) return;
+            this.pendingSpriteExits.delete(command.character_id);
+            if (this.state.sprites[command.character_id] !== exitingSprite) return;
             const next = { ...this.state.sprites };
             delete next[command.character_id];
             this.state.sprites = next;
             this.state.spriteOrder = normalizeSpriteOrder(next, this.state.spriteOrder);
           });
         } else {
+          this.pendingSpriteExits.delete(command.character_id);
           const next = { ...this.state.sprites };
           delete next[command.character_id];
           this.state.sprites = next;
@@ -1416,8 +1442,19 @@ export class StoryEngine {
         };
         if (isSpriteExitRuntimeAnimation(effect)) {
           const targetSpriteIds = this.spriteIdsTargetedByAnimation(effect);
+          const exiting = new Map<string, SpriteState>();
+          for (const id of targetSpriteIds) {
+            const sprite = { ...this.state.sprites[id] };
+            this.state.sprites = { ...this.state.sprites, [id]: sprite };
+            this.pendingSpriteExits.set(id, sprite);
+            exiting.set(id, sprite);
+          }
           this.playRuntimeAnimation(effect, command.blocking, () => {
-            this.removeSprites(targetSpriteIds);
+            const owned = targetSpriteIds.filter(id =>
+              this.pendingSpriteExits.get(id) === exiting.get(id)
+              && this.state.sprites[id] === exiting.get(id));
+            for (const id of owned) this.pendingSpriteExits.delete(id);
+            this.removeSprites(owned);
           });
         } else {
           this.playRuntimeAnimation(effect, command.blocking);
@@ -1722,7 +1759,9 @@ export class StoryEngine {
   }
 
   createSaveSnapshot(slot = 0): SaveData {
-    const stableSprites = stripSpriteReplacement(this.state.sprites);
+    const stableSprites = stripSpriteReplacement(Object.fromEntries(
+      Object.entries(this.state.sprites).filter(([id, sprite]) => this.pendingSpriteExits.get(id) !== sprite),
+    ));
     return {
       save_version: 3,
       save_id: newId("save"),
@@ -2091,6 +2130,25 @@ export class StoryEngine {
     this.state.spriteOrder = normalizeSpriteOrder(next, this.state.spriteOrder);
   }
 
+  private settleSupersededSpriteExits(characterId: string): void {
+    // A group fade cannot keep targeting a new instance of one of its members.
+    // Interrupt that presentation and settle the other already-hidden members.
+    const superseded = this.state.animationEffects.filter(effect =>
+      isSpriteExitRuntimeAnimation(effect)
+      && this.spriteIdsTargetedByAnimation(effect).includes(characterId));
+    const removed: string[] = [];
+    for (const effect of superseded) {
+      for (const id of this.spriteIdsTargetedByAnimation(effect)) {
+        if (this.pendingSpriteExits.get(id) !== this.state.sprites[id]) continue;
+        this.pendingSpriteExits.delete(id);
+        removed.push(id);
+      }
+    }
+    this.removeSprites(removed);
+    const effectIds = new Set(superseded.map(effect => effect.effect_id));
+    this.state.animationEffects = this.state.animationEffects.filter(effect => !effectIds.has(effect.effect_id));
+  }
+
   private emitAndContinue(): void {
     if (!this.noteAutomaticAdvance()) return;
     if (this.previewSettling) {
@@ -2113,6 +2171,7 @@ export class StoryEngine {
   }
 
   private createFreshState(): StoryEngineState {
+    this.pendingSpriteExits.clear();
     this.engineEpoch += 1;
     this.executionCounter = 0;
     this.currentExecutionId = 0;

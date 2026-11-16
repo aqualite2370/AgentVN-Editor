@@ -20,6 +20,7 @@ import { DEFAULT_SPRITE_SCALE, sanitizeSpriteScale } from "../../../shared/cartr
 import { DEFAULT_SPEAKER_FOCUS, sanitizeSpeakerFocus } from "../../../shared/cartridge/speakerFocus";
 import { sanitizeSpriteOffsetX, sanitizeSpriteOffsetY } from "../../../shared/cartridge/spritePlacement";
 import { stableSerialize } from "../utils/stableSerialize";
+import { validateSpriteAnimationDefaults, type SpriteAnimationDefaults } from "../utils/spriteAnimationDefaults";
 import { isDialogPresentationMode, normalizeCharacterDialogPresentations } from "../../../shared/cartridge/dialogPresentation";
 import type { DialogPresentationMode } from "../../../shared/cartridge/types";
 
@@ -65,6 +66,7 @@ interface ProjectActions {
   setAssetManifest: (assets: AssetRef[]) => void;
   setNovelPersistence: (persistence?: NovelPersistenceState) => void;
   setDefaultSpriteScale: (scale: number) => void;
+  setSpriteAnimationDefaults: (defaults: SpriteAnimationDefaults) => void;
   setDefaultDialogPresentation: (mode: DialogPresentationMode) => void;
   setCharacterDialogPresentation: (characterId: string, mode?: DialogPresentationMode) => void;
   setSpeakerFocus: (speakerFocus: ProjectState["settings"]["speakerFocus"]) => void;
@@ -399,6 +401,7 @@ function sanitizeSettings(settings?: Record<string, unknown>, assets?: AssetRef[
   return {
     defaultMemoryMode: next.defaultMemoryMode,
     defaultSpriteScale: sanitizeSpriteScale(next.defaultSpriteScale, DEFAULT_SPRITE_SCALE),
+    spriteAnimationDefaults: validateSpriteAnimationDefaults(next.spriteAnimationDefaults),
     defaultDialogPresentation: isDialogPresentationMode(next.defaultDialogPresentation)
       ? next.defaultDialogPresentation : undefined,
     characterDialogPresentations: normalizeCharacterDialogPresentations(next.characterDialogPresentations),
@@ -485,6 +488,11 @@ export const useProjectStore = create<ProjectState & ProjectActions>()(
           settings: { ...state.settings, defaultSpriteScale: sanitizeSpriteScale(defaultSpriteScale, DEFAULT_SPRITE_SCALE) },
           updatedAt: new Date().toISOString(),
         })),
+
+      setSpriteAnimationDefaults: (defaults) => {
+        const spriteAnimationDefaults = validateSpriteAnimationDefaults(defaults);
+        set(state => ({ settings: {...state.settings, spriteAnimationDefaults}, updatedAt: new Date().toISOString() }));
+      },
 
       setDefaultDialogPresentation: (mode) => {
         if (!isDialogPresentationMode(mode)) return;

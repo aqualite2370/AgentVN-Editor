@@ -1,6 +1,6 @@
 import { type CSSProperties, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, Film, Play, Wand2 } from "lucide-react";
+import { ChevronDown, Film, Play, Save, Wand2 } from "lucide-react";
 import {
   animationPresetCategories,
   animationPresetTemplates,
@@ -24,6 +24,8 @@ import {
   SPRITE_FOCUS_COMPANION_BRIGHTNESS,
   SPRITE_FOCUS_KEYFRAME_OFFSETS,
   SPRITE_FOCUS_PRESET_ID,
+  keyframesForCharacterAnimation,
+  type CharacterSpriteAnimationConfig,
 } from "../../../../shared/animation/characterAnimation";
 import type { AssetRef } from "../../types/assets";
 import { AnimationTimeline } from "./AnimationTimeline";
@@ -31,6 +33,9 @@ import { AssetPicker } from "../common/AssetPicker";
 import { GlassSelectionGroup } from "../common/GlassSelectionGroup";
 import { RichSelect } from "../common/RichSelect";
 import { RangeControl } from "../common/RangeControl";
+import { OperationResultDialog } from "../common/OperationResultDialog";
+import { editorProjectOwner, ownsEditorProject, persistEditorProject } from "../../utils/editorProjectPersistence";
+import { spriteDefaultFromPreset, useGlobalSpriteAnimation, type SpriteDefaultPhase } from "../../utils/spriteAnimationDefaults";
 
 type PreviewAssetTarget = Extract<AnimationPreset["target_type"], "sprite" | "background">;
 
@@ -52,6 +57,19 @@ function createDefaultTweakValues(template: AnimationPresetTemplate): AnimationP
 
 function createDraft(templateId: string, values: AnimationPresetTweakValues): AnimationPreset {
   return buildAnimationPresetFromTemplate(templateId, values);
+}
+
+function savedDraft(template: AnimationPresetTemplate, config?: CharacterSpriteAnimationConfig): AnimationPreset {
+  const preset = createDraft(template.template_id, template.defaults);
+  return config ? {...preset, name: config.display_name || preset.name, preset_id: config.preset_id || preset.preset_id,
+    duration_ms: config.duration_ms ?? preset.duration_ms, easing: config.easing || preset.easing,
+    keyframes: keyframesForCharacterAnimation(config), loop: false, direction: "normal"} : preset;
+}
+
+function savedTemplate(phase: SpriteDefaultPhase): AnimationPresetTemplate {
+  const config = useProjectStore.getState().settings.spriteAnimationDefaults?.[phase];
+  return animationPresetTemplates.find(template => template.category_id === `sprite_${phase}` && template.preset_id === config?.preset_id)
+    ?? animationPresetTemplates.find(template => template.category_id === `sprite_${phase}`)!;
 }
 
 function renderPreviewHint(targetType: AnimationPreset["target_type"]): string {
@@ -79,6 +97,9 @@ export function AnimationEditorPanel() {
   const updateNodeData = useEditorStore((state) => state.updateNodeData);
   const node = useEditorStore((state) => state.nodes.find((item) => item.id === state.selectedNodeId));
   const assetManifest = useProjectStore((state) => state.assetManifest);
+  const projectId = useProjectStore(state => state.projectId);
+  const loadGeneration = useEditorStore(state => state.projectLoadGeneration);
+  const spriteDefaults = useProjectStore(state => state.settings.spriteAnimationDefaults);
 
   const [categoryId, setCategoryId] = useState(animationPresetCategories[0].id);
   const [detailPhase, setDetailPhase] = useState<"idle" | "leaving" | "entering">("idle");
@@ -86,12 +107,22 @@ export function AnimationEditorPanel() {
     () => animationPresetTemplates.filter((template) => template.category_id === categoryId),
     [categoryId],
   );
-  const [templateId, setTemplateId] = useState(categoryTemplates[0]?.template_id ?? animationPresetTemplates[0].template_id);
+  const [templateId, setTemplateId] = useState(() => savedTemplate("enter").template_id);
   const currentTemplate = useMemo(() => getAnimationTemplate(templateId) ?? animationPresetTemplates[0], [templateId]);
   const [tweaks, setTweaks] = useState<AnimationPresetTweakValues>(() => createDefaultTweakValues(currentTemplate));
-  const [draft, setDraft] = useState<AnimationPreset>(() => createDraft(currentTemplate.template_id, currentTemplate.defaults));
+  const [draft, setDraft] = useState<AnimationPreset>(() => savedDraft(currentTemplate, useProjectStore.getState().settings.spriteAnimationDefaults?.enter));
   const [target, setTarget] = useState(() => createDefaultTarget(currentTemplate.target_type));
   const [blocking, setBlocking] = useState(true);
+  const [applyExisting, setApplyExisting] = useState(true);
+  const [saveStatus, setSaveStatus] = useState("");
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
+  const mountedRef = useRef(true);
+  const [pendingSave, setPendingSave] = useState<{
+    owner: ReturnType<typeof editorProjectOwner>; nodes: ReturnType<typeof useEditorStore.getState>["nodes"];
+    settings: ReturnType<typeof useProjectStore.getState>["settings"];
+    phase: SpriteDefaultPhase; config: CharacterSpriteAnimationConfig; count: number;
+  }>();
   const [isAdvancedOpen, setAdvancedOpen] = useState(false);
   const [isExpertOpen, setExpertOpen] = useState(false);
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
@@ -186,26 +217,30 @@ export function AnimationEditorPanel() {
     enterTimerRef.current = null;
   }
 
-  function applyTemplate(nextTemplate: AnimationPresetTemplate, nextCategoryId = nextTemplate.category_id) {
+  function applyTemplate(nextTemplate: AnimationPresetTemplate, nextCategoryId = nextTemplate.category_id, restoreSaved = false) {
+    const phase = nextCategoryId === "sprite_enter" ? "enter" : nextCategoryId === "sprite_exit" ? "exit" : undefined;
+    const config = restoreSaved && phase ? useProjectStore.getState().settings.spriteAnimationDefaults?.[phase] : undefined;
     setCategoryId(nextCategoryId);
     setTemplateId(nextTemplate.template_id);
-    setTweaks(createDefaultTweakValues(nextTemplate));
-    setDraft(createDraft(nextTemplate.template_id, nextTemplate.defaults));
+    setTweaks({...createDefaultTweakValues(nextTemplate), ...(config?.duration_ms ? {duration_ms:config.duration_ms} : {})});
+    setDraft(savedDraft(nextTemplate, config));
+    setSaveStatus("");
+    if (config) setBlocking(Boolean(config.blocking));
     setTarget(createDefaultTarget(nextTemplate.target_type));
     if (nextTemplate.template_id === SPRITE_FOCUS_PRESET_ID) setBlocking(false);
   }
 
-  function switchTemplate(nextTemplate: AnimationPresetTemplate, nextCategoryId = nextTemplate.category_id) {
+  function switchTemplate(nextTemplate: AnimationPresetTemplate, nextCategoryId = nextTemplate.category_id, restoreSaved = false) {
     if (nextTemplate.template_id === templateId && nextCategoryId === categoryId) return;
     clearSwitchTimers();
     if (prefersReducedMotion()) {
-      applyTemplate(nextTemplate, nextCategoryId);
+      applyTemplate(nextTemplate, nextCategoryId, restoreSaved);
       setDetailPhase("idle");
       return;
     }
     setDetailPhase("leaving");
     switchTimerRef.current = window.setTimeout(() => {
-      applyTemplate(nextTemplate, nextCategoryId);
+      applyTemplate(nextTemplate, nextCategoryId, restoreSaved);
       setDetailPhase("entering");
       enterTimerRef.current = window.setTimeout(() => {
         setDetailPhase("idle");
@@ -217,8 +252,9 @@ export function AnimationEditorPanel() {
 
   function selectCategory(nextCategoryId: AnimationPresetCategoryId) {
     if (nextCategoryId === categoryId) return;
-    const next = animationPresetTemplates.find((template) => template.category_id === nextCategoryId) ?? animationPresetTemplates[0];
-    switchTemplate(next, nextCategoryId);
+    const next = nextCategoryId === "sprite_enter" ? savedTemplate("enter") : nextCategoryId === "sprite_exit" ? savedTemplate("exit")
+      : animationPresetTemplates.find((template) => template.category_id === nextCategoryId) ?? animationPresetTemplates[0];
+    switchTemplate(next, nextCategoryId, true);
   }
 
   function openTemplatePicker() {
@@ -237,6 +273,57 @@ export function AnimationEditorPanel() {
   }
 
   useEffect(() => () => clearSwitchTimers(), []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  useEffect(() => {
+    clearSwitchTimers();
+    setPendingSave(undefined); setSaveStatus(""); setDetailPhase("idle");
+    applyTemplate(savedTemplate("enter"), "sprite_enter", true);
+  }, [projectId, loadGeneration]);
+
+  const defaultPhase: SpriteDefaultPhase | undefined = categoryId === "sprite_enter" ? "enter" : categoryId === "sprite_exit" ? "exit" : undefined;
+
+  async function commitGlobal(request: NonNullable<typeof pendingSave>, replaceExisting: boolean) {
+    if (savingRef.current) return;
+    if (!ownsEditorProject(request.owner)) return;
+    if (useEditorStore.getState().nodes !== request.nodes
+      || useProjectStore.getState().settings !== request.settings) {
+      setSaveStatus("工程内容已变化，请重新确认保存。"); return;
+    }
+    savingRef.current = true; setSaving(true); setSaveStatus("正在保存…");
+    try {
+      const project = useProjectStore.getState();
+      project.setSpriteAnimationDefaults({...project.settings.spriteAnimationDefaults, [request.phase]:request.config});
+      if (replaceExisting) {
+        const result = useGlobalSpriteAnimation(request.nodes, request.phase);
+        if (result.nodes.some((item, index) => item !== request.nodes[index])) useEditorStore.getState().setNodes(result.nodes);
+      }
+      await persistEditorProject();
+      if (mountedRef.current && ownsEditorProject(request.owner)) setSaveStatus(`全局${request.phase === "enter" ? "入场" : "退场"}已保存${replaceExisting ? `，已应用到 ${request.count} 个事件` : ""}。`);
+    } catch (error) {
+      if (mountedRef.current && ownsEditorProject(request.owner)) setSaveStatus(`保存失败，设置仍保留，可重试：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      savingRef.current = false;
+      if (mountedRef.current) setSaving(false);
+    }
+  }
+
+  function saveGlobal() {
+    if (!defaultPhase || savingRef.current) return;
+    try {
+      const config = spriteDefaultFromPreset(draft, defaultPhase, blocking);
+      if (!CSS.supports("animation-timing-function", config.easing || "ease-out")) throw new Error("缓动函数无效，请检查后保存。");
+      const nodes = useEditorStore.getState().nodes;
+      const request = {owner:editorProjectOwner(), nodes, settings:useProjectStore.getState().settings,
+        phase:defaultPhase, config, count:useGlobalSpriteAnimation(nodes, defaultPhase).count};
+      if (applyExisting && request.count) setPendingSave(request);
+      else void commitGlobal(request, false);
+    } catch (error) { setSaveStatus(error instanceof Error ? error.message : String(error)); }
+  }
 
   useEffect(() => {
     setPreviewAssetOverrides({});
@@ -283,6 +370,9 @@ export function AnimationEditorPanel() {
 
   function applyToNode() {
     if (!selectedNodeId) return;
+    if (draft.target_type === "sprite" && (categoryId === "sprite_enter" || categoryId === "sprite_exit")) {
+      useEditorStore.getState().setNotice("这只会插入一次演出；要统一每次入退场，请使用顶部的全局保存。", "info");
+    }
     const command = exportAnimationCommand({ preset: draft, target, blocking });
     if (node?.data.nodeKind === "animation") updateNodeData(selectedNodeId, { animation: command });
     if (node?.data.scene) {
@@ -375,8 +465,25 @@ export function AnimationEditorPanel() {
       <header className="animation-editor-header">
         <div>
           <h3>动效工作室</h3>
+          {defaultPhase && <small>{spriteDefaults?.[defaultPhase] ? "已设全局默认" : "尚未设置全局默认"} · 单个事件可独立覆盖</small>}
         </div>
+        {defaultPhase && <div className="animation-global-actions">
+          <label className="check-row"><input type="checkbox" checked={applyExisting} disabled={saving}
+            onChange={event => setApplyExisting(event.target.checked)} />同步应用到现有{defaultPhase === "enter" ? "入场" : "退场"}事件</label>
+          <button type="button" onClick={saveGlobal} disabled={saving || detailPhase !== "idle"} data-help-key="animation.saveGlobal">
+            <Save size={16} /><span>{saving ? "正在保存…" : `保存全局${defaultPhase === "enter" ? "入场" : "退场"}`}</span>
+          </button>
+        </div>}
+        {saveStatus && <p className="animation-global-status" role="status">{saveStatus}</p>}
       </header>
+
+      <OperationResultDialog open={Boolean(pendingSave)} tone="warning" label="全局立绘动画"
+        title={`统一应用${pendingSave?.phase === "exit" ? "退场" : "入场"}动画？`}
+        message={`将 ${pendingSave?.count ?? 0} 个现有事件改为继承全局设置；另一阶段与强调动画保持原样。`}
+        icon={<Save size={20} />} testId="sprite-animation-default-confirmation" confirmLabel="取消" inertBackground suppressHoverHelp
+        contextAction={{label:"确认应用", dismissOnClick:true, onClick:() => {
+          if (pendingSave) void commitGlobal(pendingSave, true);
+        }}} onDismiss={() => setPendingSave(undefined)} />
 
       <div className="animation-editor-grid">
         <aside className="animation-template-sidebar">

@@ -7,7 +7,15 @@ AgentVN has two animation paths:
 
 Both paths are exported into `script.json` and played by GameCLI with the Web Animations API. The editor keeps the original model result and author input; validation reports problems before export instead of silently replacing animation data.
 
-## AnimationCommand
+## 全局立绘入退场
+
+在“选项 → 动画编辑”选择“立绘入场”或“立绘退场”，调整模板后点击顶部固定的“保存全局入场／退场”。两阶段独立保存在工程设置 `spriteAnimationDefaults`，通过正常工程写队列持久化；保存失败保留设置并允许重试。
+
+“同步应用到现有事件”会先列出数量，确认后将同阶段立绘事件改为继承；另一阶段、强调及独立演出动画命令保持原样。原有明确自定义动画默认作为单独覆盖保留。新建立绘事件继承全局，事件中的“继承全局立绘动画”可开关，修改事件动画参数会切换为单独设置。
+
+预览与导出把继承解析为已有的 `SpriteCommand.animation_config`，不向 Runtime 泄漏编辑器字段 `animation_source`。无需新 Runtime 协议。循环、反向或自定义 CSS 不能保存为全局入退场，须明确报错。`sprite:all` 只对某次演出作用于当前立绘，不能代替此全局默认。
+
+## AnimationCommand（单次演出）
 
 An `animation` command is still available for reusable performance beats.
 

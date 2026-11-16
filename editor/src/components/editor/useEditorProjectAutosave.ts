@@ -22,19 +22,24 @@ export function useEditorProjectAutosave() {
   useEffect(() => {
     let disposed = false;
     let timer: number | undefined;
+    let deadlineTimer: number | undefined;
     let inFlight = false;
     let pending = false;
     let recoveryOwner: ReturnType<typeof editorProjectOwner> | undefined = editorProjectOwner();
     let recoveredMetadata = recoveryMetadataRevision(captureEditorProject());
+    let persistedMetadata = recoveredMetadata;
     let recoveryRetry = false;
     const resetRecoveryOwner = () => {
       recoveryOwner = editorProjectOwner();
       recoveredMetadata = recoveryMetadataRevision(captureEditorProject());
+      persistedMetadata = recoveredMetadata;
       recoveryRetry = false;
     };
     const flush = async () => {
       window.clearTimeout(timer);
       timer = undefined;
+      window.clearTimeout(deadlineTimer);
+      deadlineTimer = undefined;
       if (disposed) return;
       if (inFlight) { pending = true; return; }
       inFlight = true;
@@ -44,6 +49,8 @@ export function useEditorProjectAutosave() {
         const saved = await persistEditorProject();
         if (!disposed && ownsEditorProject(owner)) {
           const revision = recoveryMetadataRevision(saved.snapshot);
+          // Disk success is independent of the optional recovery-point write.
+          persistedMetadata = revision;
           if ((saved.wasDirty || recoveryRetry || revision !== recoveredMetadata) && "__TAURI_INTERNALS__" in window) {
             try {
               await writeProjectBackup(saved.snapshot, "auto_save");
@@ -86,10 +93,18 @@ export function useEditorProjectAutosave() {
     const schedule = () => {
       window.clearTimeout(timer);
       timer = window.setTimeout(() => { void flush(); }, 800);
+      // Typing and dragging may never pause for 800ms. Keep the deadline from
+      // the first edit, while still coalescing writes through the shared queue.
+      if (deadlineTimer === undefined) {
+        deadlineTimer = window.setTimeout(() => { void flush(); }, 5000);
+      }
     };
     const stopGraph = useEditorStore.subscribe((next, previous) => {
       if (next.projectLoadGeneration !== previous.projectLoadGeneration) {
         window.clearTimeout(timer);
+        timer = undefined;
+        window.clearTimeout(deadlineTimer);
+        deadlineTimer = undefined;
         pending = false;
         recoveryOwner = undefined;
         recoveryRetry = false;
@@ -104,17 +119,30 @@ export function useEditorProjectAutosave() {
     });
     const flushPending = () => { if (timer !== undefined || pending || recoveryRetry || useEditorStore.getState().dirty) void flush(); };
     const hidden = () => { if (document.visibilityState === "hidden") flushPending(); };
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      // pagehide cannot keep an HTTP request alive. Ask before navigation while
+      // author content or a save is pending; never treat a failed backup alone
+      // as unsaved data after the database acknowledged the actual content.
+      if (inFlight || pending || useEditorStore.getState().dirty
+        || recoveryMetadataRevision(captureEditorProject()) !== persistedMetadata) {
+        event.preventDefault();
+        event.returnValue = "";
+      }
+    };
     window.addEventListener("agentvn:workspace-surface-changed", flushPending);
     window.addEventListener("pagehide", flushPending);
+    window.addEventListener("beforeunload", beforeUnload);
     document.addEventListener("visibilitychange", hidden);
     if (useEditorStore.getState().dirty) schedule();
     return () => {
       disposed = true;
       pending = false;
       window.clearTimeout(timer);
+      window.clearTimeout(deadlineTimer);
       stopGraph(); stopMetadata();
       window.removeEventListener("agentvn:workspace-surface-changed", flushPending);
       window.removeEventListener("pagehide", flushPending);
+      window.removeEventListener("beforeunload", beforeUnload);
       document.removeEventListener("visibilitychange", hidden);
     };
   }, []);

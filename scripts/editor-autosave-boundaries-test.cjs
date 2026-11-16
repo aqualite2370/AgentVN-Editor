@@ -8,7 +8,7 @@ assert(out.toLowerCase().replaceAll("\\", "/").startsWith("f:/testavn/"));
 fs.mkdirSync(out, { recursive: true });
 const report = { status: "RUNNING", scope: "ACTUAL_AUTOSAVE_EFFECT_STORES_AND_QUEUE_CONTROLLED_CLOCK_TRANSPORT_NATIVE_IPC", cases: [], models: 0, builds: 0 };
 const records = new Map(), timers = new Map(), listeners = new Map();
-let timerId = 0, effect, dispose, calls, backups, transport, ipc, remote;
+let timerId = 0, effect, dispose, calls, backups, transport, ipc, remote, deferrals = [];
 global.window = {
   location: { search: "" },
   localStorage: { getItem: k => records.get(k) ?? null, setItem: (k, v) => records.set(k, v), removeItem: k => records.delete(k) },
@@ -43,12 +43,23 @@ const { fixture } = require("./lib/editor-ui-acceptance.cjs");
 const tick = () => new Promise(setImmediate);
 async function settle() { for (let i = 0; i < 15; i += 1) await tick(); }
 async function until(predicate) { for (let i = 0; i < 150; i += 1) { if (predicate()) return; await tick(); } throw Error("Expected controlled operation not reached"); }
-function deferred() { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; }
+function deferred() { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); const item = { promise, resolve, reject }; deferrals.push(item); return item; }
 function load(id = "a") { const f = fixture(id); store.getState().importProject(f); project.getState().loadProjectMetadata(f); }
 function debounce() {
   const scheduled = [...timers.entries()].findLast(([, timer]) => timer.ms === 800);
   assert(scheduled, "An actual autosave debounce must be scheduled");
   timers.delete(scheduled[0]); scheduled[1].fn();
+}
+function deadline() {
+  const scheduled = [...timers.entries()].find(([, timer]) => timer.ms === 5000);
+  assert(scheduled, "Continuous editing must have a bounded five-second save deadline");
+  timers.delete(scheduled[0]); scheduled[1].fn();
+}
+function closing() {
+  const event = { type: "beforeunload", defaultPrevented: false, returnValue: undefined,
+    preventDefault() { this.defaultPrevented = true; } };
+  window.dispatchEvent(event);
+  return event;
 }
 function flush() { window.dispatchEvent(new CustomEvent("agentvn:workspace-surface-changed")); }
 const save = () => fs.writeFileSync(path.join(out, "report.json"), JSON.stringify(report, null, 2));
@@ -69,11 +80,12 @@ window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
 } };
 async function test(name, fn) {
   dispose?.(); await settle(); timers.clear();
-  calls = []; backups = []; transport = undefined; ipc = undefined; remote = undefined; load();
+  calls = []; backups = []; transport = undefined; ipc = undefined; remote = undefined; deferrals = []; load();
   api.useEditorProjectAutosave(); assert.equal(typeof effect, "function"); dispose = effect();
   const row = { name, status: "RUNNING" }; report.cases.push(row); save();
   try { await fn(row); row.status = "PASS"; }
   catch (error) { row.status = "FAILED"; row.error = error.stack; }
+  finally { for (const item of deferrals) item.resolve({ file_name: "qa-release.vnproj" }); await settle(); }
   row.writes = calls.length; row.backupAttempts = backups.length; save();
 }
 (async () => {
@@ -153,6 +165,72 @@ async function test(name, fn) {
     if ([...timers.values()].some(t => t.ms === 800)) debounce();
     await settle(); assert.equal(backups.length, 1);
   });
+  await test("连续编辑不重置最长保存期限，并提交最后的事件内容", async () => {
+    const scene = store.getState().nodes.find(node => node.data.scene);
+    const change = text => store.setState(state => ({
+      dirty: true, nodes: state.nodes.map(node => node.id === scene.id
+        ? { ...node, data: { ...node.data, scene: { ...node.data.scene,
+          commands: [{ type: "narration", text }] } } } : node),
+    }));
+    change("第一轮");
+    const firstDeadline = [...timers.entries()].find(([, timer]) => timer.ms === 5000)?.[0];
+    assert(firstDeadline, "Continuous authoring needs a first deadline");
+    for (let i = 0; i < 50; i++) change(`连续输入${i}`);
+    assert.equal([...timers.entries()].find(([, timer]) => timer.ms === 5000)?.[0], firstDeadline);
+    deadline(); await until(() => backups.length === 1); await settle();
+    assert.equal(remote.project_graph.nodes.find(node => node.id === scene.id).data.scene.commands[0].text, "连续输入49");
+    assert.equal(store.getState().dirty, false); assert.equal(timers.size, 0);
+    change("下一轮"); deadline(); await until(() => backups.length === 2);
+  });
+  await test("普通800ms保存完成会取消最长期限，避免重复写入", async () => {
+    project.getState().setMetadata({ title: "短输入" });
+    assert([...timers.values()].some(timer => timer.ms === 5000));
+    debounce(); await until(() => backups.length === 1); await settle();
+    assert.equal(timers.size, 0); assert.equal(calls.length, 1);
+  });
+  await test("在途写入达到最长期限时排队最新修订，不并发写入", async () => {
+    const held = deferred();
+    transport = async payload => { if (calls.length === 1) await held.promise; remote = structuredClone(payload); return { data: payload }; };
+    project.getState().setMetadata({ title: "在途第一版" }); debounce(); await until(() => calls.length === 1);
+    project.getState().setMetadata({ title: "在途最终版" }); deadline(); assert.equal(calls.length, 1);
+    held.resolve(); await until(() => backups.length === 2); await settle();
+    assert.equal(remote.project_metadata.title, "在途最终版"); assert.equal(timers.size, 0);
+  });
+  await test("切换工程取消旧最长期限，新工程仍有独立期限", async () => {
+    project.getState().setMetadata({ title: "A未提交" });
+    const oldDeadline = [...timers.entries()].find(([, timer]) => timer.ms === 5000)?.[0];
+    assert(oldDeadline); load("b"); assert(!timers.has(oldDeadline));
+    project.getState().setMetadata({ title: "B最终内容" }); deadline(); await until(() => backups.length === 1);
+    assert.equal(remote.project_metadata.projectId, "b"); assert.equal(remote.project_metadata.title, "B最终内容");
+  });
+  await test("仅元数据未保存和正在保存时关闭有提醒，成功后不再拦截", async () => {
+    assert.equal(closing().defaultPrevented, false);
+    project.getState().setMetadata({ title: "需要保存的标题" }); assert.equal(store.getState().dirty, false);
+    assert.equal(closing().defaultPrevented, true);
+    const held = deferred(); transport = async payload => { await held.promise; return { data: payload }; };
+    debounce(); await until(() => calls.length === 1); assert.equal(closing().defaultPrevented, true);
+    held.resolve(); await until(() => backups.length === 1); await settle();
+    assert.equal(closing().defaultPrevented, false);
+  });
+  await test("数据库拒写后关闭仍提醒，成功重试后解除", async () => {
+    transport = async () => { throw Error("SAVE_DENIED"); };
+    project.getState().setMetadata({ author: "未保存作者" }); debounce(); await until(() => calls.length === 1); await settle();
+    assert.equal(closing().defaultPrevented, true);
+    transport = undefined; flush(); await until(() => backups.length === 1); await settle();
+    assert.equal(closing().defaultPrevented, false);
+  });
+  await test("仅恢复点失败但工程已落盘时不错误提示未保存", async () => {
+    ipc = async () => { throw Error("BACKUP_DENIED"); };
+    project.getState().setMetadata({ title: "工程已落盘" }); debounce(); await until(() => backups.length === 1); await settle();
+    assert.equal(remote.project_metadata.title, "工程已落盘"); assert.equal(closing().defaultPrevented, false);
+  });
+  await test("卸载清除最长期限与关闭提醒监听", async () => {
+    project.getState().setMetadata({ title: "将卸载" });
+    assert([...timers.values()].some(timer => timer.ms === 5000));
+    assert.equal(closing().defaultPrevented, true);
+    dispose(); dispose = undefined;
+    assert.equal(timers.size, 0); assert.equal(listeners.get("beforeunload")?.size || 0, 0);
+  });
   await test("卸载取消debounce与监听器，在途请求完成不新增备份或提示", async () => {
     const held = deferred(); transport = async payload => { await held.promise; return { data: payload }; };
     project.getState().setMetadata({ title: "卸载在途" }); debounce(); await until(() => calls.length === 1);
@@ -162,6 +240,6 @@ async function test(name, fn) {
     flush(); await settle(); assert.equal(calls.length, 1);
     for (const name of ["agentvn:workspace-surface-changed", "pagehide", "visibilitychange"]) assert.equal(listeners.get(name)?.size || 0, 0);
   });
-  report.status = report.cases.length === 13 && report.cases.every(c => c.status === "PASS") ? "PASS" : "FAILED";
+  report.status = report.cases.length === 21 && report.cases.every(c => c.status === "PASS") ? "PASS" : "FAILED";
 })().catch(error => { report.status = "FAILED"; report.error = error.stack; })
   .finally(() => { dispose?.(); save(); console.log(JSON.stringify(report)); if (report.status !== "PASS") process.exitCode = 1; });

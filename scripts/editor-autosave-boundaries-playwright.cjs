@@ -209,7 +209,63 @@ async function switchWorkspace(surface) {
     assert.deepEqual(backup.project.edges, persisted.edges);
     row.nodeId = id;
   });
-  report.status = report.cases.length === 5 && report.cases.every(c => c.status === "PASS") && !report.errors.length ? "PASS" : "FAILED";
+  await test("连续真实输入超过5秒时中途已落盘，结束后保存最终标题", async row => {
+    await clean();
+    const input = await settings();
+    const prefix = "连续编辑保护";
+    const suffix = "1234567890".repeat(8);
+    const first = report.writes.length;
+    const started = Date.now();
+    await input.fill(prefix);
+    await input.pressSequentially(suffix, { delay: 100 });
+    const finishedTyping = Date.now();
+    await until(() => report.writes.some(w => w.payload.project_metadata.title === prefix + suffix && w.finished), "final continuously typed title");
+    const writes = report.writes.slice(first);
+    const duringTyping = writes.filter(w => w.started < finishedTyping && w.finished < finishedTyping);
+    assert(duringTyping.some(w => w.started - started <= 6500), "The first edit deadline must save during continued typing");
+    assert.equal((await remote()).title, prefix + suffix);
+    assert(writes.every(w => w.activeAtStart === 1));
+    row.typingDurationMs = finishedTyping - started;
+    row.writes = writes.map(w => ({ startMs: w.started - started, titleLength: w.payload.project_metadata.title.length }));
+  });
+  await test("真实保存拒绝后网页刷新产生关闭确认，取消刷新保留编辑内容", async row => {
+    failWrite = true;
+    const title = "刷新取消后仍保留的标题";
+    await changeTitle(title);
+    await until(() => report.writes.some(w => w.payload.project_metadata.title === title && w.status === 503 && w.finished), "rejected save before reload");
+    const observed = page.waitForEvent("dialog", { timeout: 6000 });
+    const navigation = page.reload({ waitUntil: "domcontentloaded" }).catch(error => String(error));
+    const dialog = await observed;
+    row.dialogType = dialog.type();
+    assert.equal(row.dialogType, "beforeunload");
+    await dialog.dismiss();
+    await navigation;
+    assert.equal(await (await settings()).inputValue(), title);
+    failWrite = false;
+    await switchWorkspace("edit");
+    await until(() => report.writes.some(w => w.payload.project_metadata.title === title && w.status === 200 && w.finished), "retry after canceled navigation");
+    assert.equal((await remote()).title, title);
+  });
+  await test("保存成功后刷新不再弹未保存确认，真实重开图及标题保持", async row => {
+    await clean();
+    const before = await remote();
+    let dialogs = 0;
+    const listener = async dialog => { dialogs++; await dialog.dismiss(); };
+    page.on("dialog", listener);
+    try {
+      await page.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
+      await page.locator(".recent-project-open").first().click();
+      await page.locator(".editor-toolbar").waitFor();
+      await clean();
+      assert.equal(dialogs, 0);
+      const after = await remote();
+      assert.equal(after.title, before.title);
+      assert.deepEqual(after.nodes.map(n => ({ id: n.id, data: n.data })), before.nodes.map(n => ({ id: n.id, data: n.data })));
+      assert.deepEqual(after.edges, before.edges);
+      row.nodes = after.nodes.length; row.edges = after.edges.length;
+    } finally { page.off("dialog", listener); }
+  });
+  report.status = report.cases.length === 8 && report.cases.every(c => c.status === "PASS") && !report.errors.length ? "PASS" : "FAILED";
 })().catch(error => { report.status = "FAILED"; report.error = error.stack; })
   .finally(async () => {
     gate?.resolve();

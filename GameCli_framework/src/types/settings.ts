@@ -107,6 +107,8 @@ export interface BgmState {
 export interface SfxEvent {
   id: string;
   sfx_id: string;
+  action?: "play" | "stop";
+  fade_ms?: number | null;
   volume?: number | null;
 }
 

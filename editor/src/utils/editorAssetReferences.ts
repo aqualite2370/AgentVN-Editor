@@ -68,7 +68,7 @@ export function collectCommandAssetFields(command: GameCommand, assets: readonly
   if (command.type === "video") return [field("video_id", command.video_id, "video")];
   if (command.type === "sprite") return command.visible === false ? [] : [field("sprite_id", command.sprite_id, "sprite")];
   if (command.type === "bgm") return command.action === "stop" ? [] : [field("bgm_id", command.bgm_id, "bgm")];
-  if (command.type === "sfx") return [field("sfx_id", command.sfx_id, "sfx")];
+  if (command.type === "sfx") return command.action === "stop" ? [] : [field("sfx_id", command.sfx_id, "sfx")];
   if (command.type === "animation") {
     const id = animationAssetId(command, assets);
     return id ? [field(command.animation_asset_id ? "animation_asset_id" : "animation_id", id, "animation")] : [];

@@ -30,7 +30,7 @@ export function commandPreview(command: GameCommand): string {
     case "bgm":
       return "调整背景音乐";
     case "sfx":
-      return "播放音效";
+      return command.action === "stop" ? `停止${command.sfx_id ? "指定音效" : "全部音效"}${(command.fade_ms ?? 0) > 0 ? ` / 淡出 ${command.fade_ms}ms` : ""}` : "播放音效";
     case "camera":
       return "播放镜头效果";
     case "wait":

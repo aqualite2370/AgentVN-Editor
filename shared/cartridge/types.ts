@@ -139,7 +139,7 @@ export type GameCommand =
   | { type: "jump"; target_scene_id: string }
   | { type: "animation"; animation_id: string; animation_asset_id?: string; target: string; params: Record<string, JsonValue>; blocking: boolean }
   | { type: "bgm"; bgm_id?: string | null; action: "play" | "stop"; volume?: number | null; fade_ms?: number | null }
-  | { type: "sfx"; sfx_id: string; volume?: number | null }
+  | { type: "sfx"; sfx_id: string; action?: "play" | "stop"; fade_ms?: number | null; volume?: number | null }
   | CameraCommand
   | { type: "wait"; duration_ms: number }
   | { type: "gallery_anchor"; anchor_id: string; title: string; asset_id: string; description?: string | null; image_fit?: import("./galleryPresentation").GalleryImageFit }

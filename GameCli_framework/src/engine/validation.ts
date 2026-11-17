@@ -42,6 +42,14 @@ export function validateCommandFields(script: RuntimeScript): ValidationIssue[] 
   for (const scene of scenesOf(script)) {
     for (const [index, command] of scene.commands.entries()) {
       const path = `${scene.scene_id}.commands.${index}`;
+      if (command.type === "sfx") {
+        if (command.action !== undefined && command.action !== "play" && command.action !== "stop")
+          issues.push({ code: "sfx_action", message: `${path} 的音效动作无效。` });
+        if (command.action !== "stop" && !command.sfx_id?.trim())
+          issues.push({ code: "sfx_asset_missing", message: `${path} 未选择播放音效。` });
+        if (command.fade_ms != null && (!Number.isInteger(command.fade_ms) || command.fade_ms < 0 || command.fade_ms > 60000))
+          issues.push({ code: "sfx_fade_duration", message: `${path} 的音效淡出时长须为 0 到 60000 毫秒的整数。` });
+      }
       if (command.type === "gallery_anchor" && command.image_fit !== undefined
         && !["contain", "cover", "fullscreen"].includes(command.image_fit))
         issues.push({ code: "gallery_image_fit", message: `${path} 的画廊图片显示方式无效。` });
@@ -288,7 +296,7 @@ export function validateAssetReferences(script: RuntimeScript, manifest: GameMan
       if (command.type === "bgm" && command.action !== "stop") {
         check(command.bgm_id, "bgm_asset", "音乐素材", locationFor("播放音乐", "音乐素材"));
       }
-      if (command.type === "sfx") check(command.sfx_id, "sfx_asset", "音效素材", locationFor("播放音效", "音效素材"));
+      if (command.type === "sfx" && command.action !== "stop") check(command.sfx_id, "sfx_asset", "音效素材", locationFor("播放音效", "音效素材"));
     }
   }
   return issues;

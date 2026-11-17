@@ -5,6 +5,7 @@ import { useSettingsStore } from "../../store/settingsStore";
 import { reportFrontendError } from "../../../../shared/logging/frontendErrorLogger";
 import { normalizeBgmCommandFields } from "../../../../shared/cartridge/bgmTransition";
 import { BgmAudioController } from "./bgmAudioController";
+import { SfxAudioController } from "./sfxAudioController";
 import { resolvePlayableMediaUrl } from "../../utils/runtimeAssetUrl";
 import { recordRuntimeAudio } from "../../utils/runtimeDiagnostics";
 
@@ -20,13 +21,13 @@ function playAudio(audio: HTMLAudioElement, label: string) {
 
 export function RuntimeAudio() {
   const bgmState = useRuntimeStore((state) => state.engineState.bgmState);
-  const sfxEvent = useRuntimeStore((state) => state.engineState.sfxEvent);
   const dialog = useRuntimeStore((state) => state.engineState.dialog);
   const dialogRestored = useRuntimeStore((state) => state.engineState.dialogRestored);
   const screen = useRuntimeStore((state) => state.screen);
   const setVoicePlaying = useRuntimeStore((state) => state.setVoicePlaying);
   const settings = useSettingsStore((state) => state.settings);
   const bgmControllerRef = useRef<BgmAudioController | null>(null);
+  const sfxControllerRef = useRef<SfxAudioController | null>(null);
   const voiceRef = useRef<HTMLAudioElement | null>(null);
   const sfxVolumeRef = useRef(settings.volumeSfx);
   const voiceVolumeRef = useRef(settings.volumeVoice);
@@ -45,6 +46,21 @@ export function RuntimeAudio() {
   const sfxVolume = settings.muteSfx ? 0 : masterVolume * settings.volumeSfx;
   const voiceVolume = settings.muteVoice ? 0 : masterVolume * settings.volumeVoice;
 
+  if (!sfxControllerRef.current) {
+    sfxControllerRef.current = new SfxAudioController({
+      createAudio: (url) => new Audio(url),
+      resolveUrl: async (assetId) => {
+        const source = assetResolver.resolveSfx(assetId);
+        if (!source) throw new Error("找不到音效素材。");
+        return resolvePlayableMediaUrl(source);
+      },
+      requestFrame: (callback) => window.requestAnimationFrame(callback),
+      cancelFrame: (id) => window.cancelAnimationFrame(id),
+      now: () => performance.now(),
+      onError: (error, assetId) => reportFrontendError("player.audio", error, { operation: "sfx", assetId }),
+    });
+  }
+
   if (!bgmControllerRef.current) {
     bgmControllerRef.current = new BgmAudioController({
       createAudio: (url) => new Audio(url),
@@ -61,6 +77,7 @@ export function RuntimeAudio() {
   useEffect(() => {
     return () => {
       bgmControllerRef.current?.dispose();
+      sfxControllerRef.current?.dispose();
       voiceRef.current?.pause();
       setVoicePlaying(false);
     };
@@ -81,7 +98,10 @@ export function RuntimeAudio() {
 
   useEffect(() => {
     sfxVolumeRef.current = sfxVolume;
-  }, [sfxVolume]);
+    const emphasis = settings.audioEmphasis && voicePlayingRef.current
+      ? 0.35 : settings.selfVoicing ? settings.selfVoicingVolumeDrop : 1;
+    sfxControllerRef.current?.setMasterVolume(sfxVolume * emphasis);
+  }, [sfxVolume, settings.audioEmphasis, settings.selfVoicing, settings.selfVoicingVolumeDrop]);
 
   useEffect(() => {
     audioEmphasisRef.current = settings.audioEmphasis;
@@ -116,6 +136,7 @@ export function RuntimeAudio() {
         ? 0.35
         : settings.selfVoicing ? settings.selfVoicingVolumeDrop : 1;
       bgmControllerRef.current?.setMasterVolume(bgmVolume * emphasis * focusGain);
+      sfxControllerRef.current?.setMasterVolume(sfxVolume * emphasis * focusGain);
       if (voiceRef.current) voiceRef.current.volume = clampVolume(voiceVolume * focusGain);
     };
     window.addEventListener("focus", syncFocus);
@@ -135,6 +156,7 @@ export function RuntimeAudio() {
     settings.selfVoicing,
     settings.selfVoicingVolumeDrop,
     voiceVolume,
+    sfxVolume,
   ]);
 
   useEffect(() => {
@@ -172,30 +194,24 @@ export function RuntimeAudio() {
   }, [bgmState?.action, bgmState?.bgm_id, bgmState?.fade_ms]);
 
   useEffect(() => {
-    if (!sfxEvent) return;
-    const sourceUrl = assetResolver.resolveSfx(sfxEvent.sfx_id);
-    if (!sourceUrl) {
-      reportFrontendError("player.audio", "找不到音效素材。", {
-        operation: "resolve",
-        label: "SFX",
-        assetId: sfxEvent.sfx_id,
-      });
-      return;
-    }
-    let cancelled = false;
-    void resolvePlayableMediaUrl(sourceUrl).then((url) => {
-      if (cancelled || !url) return;
-      const audio = new Audio(url);
-      const emphasis = audioEmphasisRef.current && voicePlayingRef.current
-        ? 0.35
-        : selfVoicingRef.current ? selfVoicingVolumeDropRef.current : 1;
-      audio.volume = clampVolume(sfxVolumeRef.current * emphasis * (sfxEvent.volume ?? 1));
-      playAudio(audio, "SFX");
-    });
-    return () => {
-      cancelled = true;
+    // Subscribe to the event stream: React may batch several consecutive commands.
+    const consume = (state: ReturnType<typeof useRuntimeStore.getState>, previous?: ReturnType<typeof useRuntimeStore.getState>) => {
+      const event = state.engineState.sfxEvent;
+      if (!event || state.currentGame?.game_id !== previous?.currentGame?.game_id
+        || state.engineState.playthroughId !== previous?.engineState.playthroughId) sfxControllerRef.current?.dispose();
+      if (!event || (previous && event.id === previous.engineState.sfxEvent?.id)) return;
+      recordRuntimeAudio({ phase: event.action === "stop" ? "stop" : "play-request",
+        kind: "sfx", assetId: event.sfx_id, fadeMs: event.fade_ms });
+      if (event.action === "stop") sfxControllerRef.current?.stop(event.sfx_id, event.fade_ms ?? 0);
+      else void sfxControllerRef.current?.play(event.sfx_id, event.volume ?? 1);
     };
-  }, [sfxEvent?.id]);
+    consume(useRuntimeStore.getState());
+    const unsubscribe = useRuntimeStore.subscribe(consume);
+    return () => {
+      unsubscribe();
+      sfxControllerRef.current?.dispose();
+    };
+  }, []);
 
   useEffect(() => {
     if (dialogRestored) {
@@ -237,6 +253,7 @@ export function RuntimeAudio() {
         ? (audioWhenMinimizedRef.current ? 1 : 0)
         : (focusedRef.current || audioWhenUnfocusedRef.current ? 1 : 0);
       bgmControllerRef.current?.setMasterVolume(bgmVolumeRef.current * (audioEmphasisRef.current ? 0.35 : 1) * focusGain);
+      sfxControllerRef.current?.setMasterVolume(sfxVolumeRef.current * (audioEmphasisRef.current ? 0.35 : selfVoicingRef.current ? selfVoicingVolumeDropRef.current : 1) * focusGain);
     };
     audio.onended = () => {
       if (voiceRef.current === audio) voiceRef.current = null;
@@ -246,6 +263,7 @@ export function RuntimeAudio() {
         ? (audioWhenMinimizedRef.current ? 1 : 0)
         : (focusedRef.current || audioWhenUnfocusedRef.current ? 1 : 0);
       bgmControllerRef.current?.setMasterVolume(bgmVolumeRef.current * focusGain);
+      sfxControllerRef.current?.setMasterVolume(sfxVolumeRef.current * (selfVoicingRef.current ? selfVoicingVolumeDropRef.current : 1) * focusGain);
     };
       voiceRef.current = audio;
       playAudio(audio, "Voice");

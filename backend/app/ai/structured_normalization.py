@@ -1085,7 +1085,7 @@ def _normalize_command(command: dict[str, Any]) -> None:
             if command.get("fade_ms") is None:
                 command["fade_ms"] = 500
     if command.get("type") == "sfx":
-        command.setdefault("sfx_id", "unknown_sfx")
+        command.setdefault("sfx_id", "" if command.get("action") == "stop" else "unknown_sfx")
     if command.get("type") == "camera":
         if command.get("motion") is None:
             command.setdefault("action", "hold")
@@ -1117,7 +1117,7 @@ def _strip_unknown_command_fields(command: dict[str, Any]) -> None:
         "jump": {"type", "target_scene_id"},
         "animation": {"type", "animation_id", "animation_display_name", "target", "params", "blocking"},
         "bgm": {"type", "bgm_id", "action", "volume", "fade_ms"},
-        "sfx": {"type", "sfx_id", "volume"},
+        "sfx": {"type", "sfx_id", "volume", "action", "fade_ms"},
         "camera": {"type", "action", "params", "motion", "blocking"},
         "wait": {"type", "duration_ms"},
         "rollback": {"type", "action", "hard"},

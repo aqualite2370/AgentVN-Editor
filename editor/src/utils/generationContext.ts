@@ -65,7 +65,7 @@ function collectCommandIndex(commands: GameCommand[]) {
     if (command.type === "background") backgrounds.add(command.background_id);
     if (command.type === "show_image") focusedImages.add(command.image_id);
     if (command.type === "bgm" && command.bgm_id) bgm.add(command.bgm_id);
-    if (command.type === "sfx") sfx.add(command.sfx_id);
+    if (command.type === "sfx" && command.action !== "stop" && command.sfx_id) sfx.add(command.sfx_id);
     if (command.type === "state_update") stateKeys.add(command.key);
     if (command.type === "choice") {
       command.choices.forEach((choice) => {

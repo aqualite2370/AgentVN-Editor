@@ -37,6 +37,19 @@
 
 .preview-launch-header { border-bottom: 1px solid var(--line); }
 
+.preview-gallery-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  flex: 0 0 auto;
+  color: var(--ink);
+  font-size: 12px;
+  cursor: pointer;
+}
+.preview-gallery-option input { flex: 0 0 auto; margin: 0; }
+.preview-gallery-option:has(input:disabled) { cursor: default; opacity: .6; }
+
 .preview-launch-header h3 { margin: 0; font-size: 17px; }
 .preview-launch-header p,
 .preview-launch-hint { margin: 4px 0; color: var(--muted); font-size: 12px; }

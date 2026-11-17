@@ -3,6 +3,11 @@ import type { UISkinLayout } from "../cartridge/uiSkin";
 
 export const LIVE_PREVIEW_PROTOCOL_VERSION = 2;
 
+/** Session-only preview choices. Never serialized into a game or player progress. */
+export interface PreviewOptions {
+  unlockAllGallery?: boolean;
+}
+
 export type LivePreviewScreen = "title_menu" | "playing" | "settings" | "save_load" | "history" | "gallery" | "about" | "help";
 export type LivePreviewPlaybackRate = 0.5 | 1 | 2;
 
@@ -58,6 +63,7 @@ export interface LivePreviewInitMessage extends LivePreviewMessageIdentity {
   assetUrls: Record<string, string>;
   start: PreviewStartSpec;
   screen?: LivePreviewScreen;
+  previewOptions?: PreviewOptions;
 }
 
 export interface LivePreviewStartMessage extends LivePreviewMessageIdentity {
@@ -79,8 +85,9 @@ export interface LivePreviewPatchMessage extends LivePreviewMessageIdentity {
 
 export interface LivePreviewControlMessage extends LivePreviewMessageIdentity {
   type: "agentvn.live-preview.control";
-  action: "pause" | "resume" | "replay" | "finish" | "set_playback_rate";
+  action: "pause" | "resume" | "replay" | "finish" | "set_playback_rate" | "set_gallery_unlock_all";
   playbackRate?: LivePreviewPlaybackRate;
+  unlockAllGallery?: boolean;
 }
 
 export interface PreviewFreezeFrameRequest extends LivePreviewMessageIdentity {

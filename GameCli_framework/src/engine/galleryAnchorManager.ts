@@ -3,10 +3,7 @@ import type { SaveData } from "../types/save";
 import { isTauriRuntime } from "../utils/platform";
 import { sha256String } from "../../../shared/cartridge/checksum";
 
-/** External previews share a Player installation, but never a project's progress.
- * Keep fixed exports/library identities unchanged. The old global preview records
- * have no verifiable project owner and must not be assigned to the current game.
- */
+/** Normal previews retain their own progress; bypass previews never call storage. */
 export async function galleryStorageId(game: { install_id: string; game_id: string }): Promise<string> {
   return game.install_id === "preview_gamecli"
     ? `preview_gallery_${await sha256String(game.game_id)}`

@@ -34,6 +34,7 @@ import type { LibraryGame } from "../types/cartridge";
 import type { SaveData, SaveKind, SaveSlotRef } from "../types/save";
 import type {
   LivePreviewControlMessage,
+  PreviewOptions,
   PreviewStartSpec,
 } from "../../../shared/preview/livePreviewProtocol";
 
@@ -104,6 +105,7 @@ interface RuntimeStore {
   launchPreparation?: AssetPreparationProgress;
   entryError?: string;
   galleryUnlocks: string[];
+  previewUnlockAllGallery: boolean;
   galleryNotice?: string;
   galleryReplayActive: boolean;
   galleryReturnSnapshot?: SaveData;
@@ -112,14 +114,14 @@ interface RuntimeStore {
   spritePresentationMode: "animate" | "settle";
   setRuntimeMode: (mode: RuntimeMode) => void;
   setPresentationMode: (mode: "development" | "release") => void;
-  loadGame: (game: LibraryGame) => Promise<void>;
-  loadLivePreview: (game: LibraryGame, start?: PreviewStartSpec) => Promise<void>;
+  loadGame: (game: LibraryGame, options?: PreviewOptions) => Promise<void>;
+  loadLivePreview: (game: LibraryGame, start?: PreviewStartSpec, options?: PreviewOptions) => Promise<void>;
   updateLivePreviewAppearance: (game: Pick<LibraryGame, "game_id" | "manifest" | "uiSkin" | "assetUrls">) => void;
   startGame: () => Promise<void>;
   startNewGame: () => Promise<void>;
   previewScene: (sceneId: string) => Promise<void>;
   previewStart: (start: PreviewStartSpec) => Promise<void>;
-  controlLivePreview: (control: Pick<LivePreviewControlMessage, "action" | "playbackRate">) => void;
+  controlLivePreview: (control: Pick<LivePreviewControlMessage, "action" | "playbackRate" | "unlockAllGallery">) => void | Promise<void>;
   continueGame: () => Promise<void>;
   resumeActiveGame: () => Promise<void>;
   next: (automatic?: boolean) => void;
@@ -329,6 +331,7 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
   const saveWrites = createSaveWriteBarrier();
   const saveQueue = createSerialSaveQueue<void>();
   let saveOwner = 0;
+  let galleryOptionsRevision = 0;
   let quickWrite: { owner: number; promise: Promise<void> } | undefined;
   let confirmingQuickLoad = false;
   // Temporary presentation state, deliberately outside save snapshots/settings.
@@ -485,21 +488,27 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
     const item = game?.gallery.find((candidate) => (
       candidate.anchor_id === anchorId || candidate.item_id === anchorId
     ));
-    if (item?.scene_id) {
-      if (!game?.script.scenes.some(scene => scene.scene_id === item.scene_id))
+    const preview = get().runtimeMode === "preview";
+    const sceneId = item?.scene_id ?? (preview
+      ? game?.script.scenes.find(scene => scene.commands.some(command =>
+        command.type === "gallery_anchor" && command.anchor_id === anchorId))?.scene_id
+      : undefined);
+    if (sceneId) {
+      if (!game?.script.scenes.some(scene => scene.scene_id === sceneId))
         throw new Error(`画廊关联的剧情场景不存在，请检查画廊锚点设置。`);
       const ready = await progressiveAssetLoader.prepareScene(
-        item.scene_id,
+        sceneId,
         10_000,
         (progress) => updateLaunchProgress(id, progress),
       );
       if (!ready) throw new Error("画廊回放场景资源准备超时，请稍后重试。");
-      return { kind: "gallery_anchor", gallerySceneId: item.scene_id };
+      return { kind: "gallery_anchor", gallerySceneId: sceneId };
     }
 
-    const installId = game?.install_id;
-    if (!game || !installId) throw new Error("当前还没有载入卡带。");
-    const record = await readGalleryAnchor(await galleryStorageId(game), anchorId);
+    if (preview) throw new Error("画廊条目未关联可回放的剧情场景，请检查画廊锚点设置。");
+    if (!game) throw new Error("当前还没有载入卡带。");
+    const installId = await galleryStorageId(game);
+    const record = await readGalleryAnchor(installId, anchorId);
     if (!record) throw new Error("找不到这个画廊锚点的回看记录。");
     if (isGalleryUnlockRecord(record)) {
       if (!game?.script.scenes.some(scene => scene.scene_id === record.scene_id))
@@ -686,6 +695,7 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
     const installId = state.currentGame?.install_id;
     if (
       !installId
+      || (state.runtimeMode === "preview" && state.previewUnlockAllGallery)
       || state.galleryReplayActive
       || engine.state.isGalleryReplay
       || state.galleryUnlocks.includes(command.anchor_id)
@@ -743,6 +753,7 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
     saveMigrationOpen: false,
     saveMigrationPending: false,
     runtimeMode: "library",
+    previewUnlockAllGallery: false,
     presentationMode: "development",
     saves: [],
     galleryUnlocks: [],
@@ -760,6 +771,7 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
     spritePresentationMode: "settle",
     setRuntimeMode: (runtimeMode) => set({
       runtimeMode,
+      previewUnlockAllGallery: false,
       screen: runtimeMode === "library" ? "library" : "title_menu",
       pendingScreenNavigation: undefined,
       returnScreen: undefined,
@@ -769,8 +781,10 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
       skipHoldActive: false,
     }),
     setPresentationMode: (presentationMode) => set({ presentationMode }),
-    async loadGame(game) {
+    async loadGame(game, options) {
       const owner = ++saveOwner;
+      const preview = get().runtimeMode === "preview";
+      const unlockAllGallery = preview && options?.unlockAllGallery === true;
       invalidateLaunchForGameLoad();
       const script = await resolveNativeAnimationAssets(game.script, game.manifest.assets, asset => {
         const url = game.assetUrls[asset.asset_id] || game.assetUrls[asset.path];
@@ -784,7 +798,7 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
       if (owner !== saveOwner) return;
       if (!script) return;
       game = { ...game, script };
-      set({ quickSavePending: false, quickLoadCandidate: undefined, saveNotice: undefined,
+      set({ quickSavePending: false, quickLoadCandidate: undefined, saveNotice: undefined, galleryNotice: undefined,
         galleryReplayActive: false, galleryReturnSnapshot: undefined, galleryReplayReturnScreen: undefined, galleryReturnSession: undefined,
         saveStorageInfo: undefined, saveMigrationOpen: false, saveMigrationPending: false, saveMigrationError: undefined });
       confirmingQuickLoad = false;
@@ -798,7 +812,7 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
       resetAutoSaveTracking();
       const [saves, galleryUnlocks, storage] = await Promise.all([
         listDesktopSaves(game.install_id),
-        galleryStorageId(game).then(listGalleryUnlocks),
+        unlockAllGallery ? Promise.resolve([]) : galleryStorageId(game).then(listGalleryUnlocks),
         get().runtimeMode === "fixed"
           ? getSaveStorageInfo(game.install_id).then(info => ({ info, error: undefined as string | undefined }))
             .catch(error => {
@@ -811,7 +825,7 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
       const unlocked = new Set(galleryUnlocks);
       const hydratedGame = {
         ...game,
-        gallery: game.gallery.map((item) => ({ ...item, unlocked: unlocked.has(item.anchor_id ?? item.item_id) })),
+        gallery: game.gallery.map((item) => ({ ...item, unlocked: unlockAllGallery || unlocked.has(item.anchor_id ?? item.item_id) })),
       };
       set({
         currentGame: hydratedGame,
@@ -822,6 +836,7 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
           && (storage.info.availableFiles.length || storage.info.unverifiedFiles?.length)),
         saveMigrationError: storage.error,
         galleryUnlocks,
+        previewUnlockAllGallery: unlockAllGallery,
         screen: "title_menu",
         pendingScreenNavigation: undefined,
         returnScreen: undefined,
@@ -841,8 +856,10 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
       // This is a visual draft, not another cartridge load or playback request.
       set({ currentGame: { ...current, manifest: game.manifest, uiSkin: game.uiSkin, assetUrls: game.assetUrls } });
     },
-    async loadLivePreview(game, start) {
+    async loadLivePreview(game, start, options) {
       const owner = ++saveOwner;
+      const preview = get().runtimeMode === "preview";
+      const unlockAllGallery = preview && options?.unlockAllGallery === true;
       invalidateLaunchForGameLoad();
       const script = await resolveNativeAnimationAssets(game.script, game.manifest.assets, asset => {
         const url = game.assetUrls[asset.asset_id] || game.assetUrls[asset.path];
@@ -856,7 +873,7 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
       if (owner !== saveOwner) return;
       if (!script) return;
       game = { ...game, script };
-      set({ quickSavePending: false, quickLoadCandidate: undefined, saveNotice: undefined,
+      set({ quickSavePending: false, quickLoadCandidate: undefined, saveNotice: undefined, galleryNotice: undefined,
         galleryReplayActive: false, galleryReturnSnapshot: undefined, galleryReplayReturnScreen: undefined, galleryReturnSession: undefined,
         saveStorageInfo: undefined, saveMigrationOpen: false, saveMigrationPending: false, saveMigrationError: undefined });
       confirmingQuickLoad = false;
@@ -870,19 +887,20 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
       resetAutoSaveTracking();
       const [saves, galleryUnlocks] = await Promise.all([
         listDesktopSaves(game.install_id),
-        galleryStorageId(game).then(listGalleryUnlocks),
+        unlockAllGallery ? Promise.resolve([]) : galleryStorageId(game).then(listGalleryUnlocks),
       ]);
       if (owner !== saveOwner) return;
       const unlocked = new Set(galleryUnlocks);
       const hydratedGame = {
         ...game,
-        gallery: game.gallery.map((item) => ({ ...item, unlocked: unlocked.has(item.anchor_id ?? item.item_id) })),
+        gallery: game.gallery.map((item) => ({ ...item, unlocked: unlockAllGallery || unlocked.has(item.anchor_id ?? item.item_id) })),
       };
       set({
         currentGame: hydratedGame,
         engineState: snapshotEngineState(engine.state),
         saves,
         galleryUnlocks,
+        previewUnlockAllGallery: unlockAllGallery,
         screen: "title_menu",
         pendingScreenNavigation: undefined,
         returnScreen: undefined,
@@ -955,7 +973,28 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
         previewStart: structuredClone(start),
       }));
     },
-    controlLivePreview: (control) => {
+    controlLivePreview: async (control) => {
+      if (control.action === "set_gallery_unlock_all") {
+        const state = get(), game = state.currentGame;
+        if (state.runtimeMode !== "preview" || !game) return;
+        const owner = saveOwner;
+        const unlockAllGallery = control.unlockAllGallery === true;
+        // Set the intent before awaiting storage; older toggles may not commit.
+        const request = ++galleryOptionsRevision;
+        const writes = await saveWrites.wait();
+        if (writes.status === "failed") throw new Error(`画廊保存失败：${writes.message}`);
+        const unlocks = unlockAllGallery ? [] : await galleryStorageId(game).then(listGalleryUnlocks);
+        if (owner !== saveOwner || request !== galleryOptionsRevision) return;
+        set((current) => ({
+          previewUnlockAllGallery: unlockAllGallery,
+          galleryUnlocks: unlocks,
+          galleryNotice: undefined,
+          currentGame: current.currentGame ? { ...current.currentGame,
+            gallery: current.currentGame.gallery.map(item => ({ ...item,
+              unlocked: unlockAllGallery || unlocks.includes(item.anchor_id ?? item.item_id) })) } : undefined,
+        }));
+        return;
+      }
       engine.controlPreview(control.action, control.playbackRate);
       set({ engineState: snapshotEngineState(engine.state) });
     },

@@ -285,7 +285,7 @@ function validateCommandReferences(input: {
     }
 
     if (command.type === "sfx") {
-      validateAssetReference({ assetId: command.sfx_id, expectedType: "sfx", path: `${path}.sfx_id`, assetTypes: input.assetTypes, hasProjectAssets: input.hasProjectAssets, errors: input.errors, warnings: input.warnings, passed: input.passed });
+      if (command.action !== "stop") validateAssetReference({ assetId: command.sfx_id, expectedType: "sfx", path: `${path}.sfx_id`, assetTypes: input.assetTypes, hasProjectAssets: input.hasProjectAssets, errors: input.errors, warnings: input.warnings, passed: input.passed });
       return;
     }
 

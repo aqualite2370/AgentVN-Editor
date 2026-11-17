@@ -1479,7 +1479,8 @@ export class StoryEngine {
           this.executeCurrentCommand();
           break;
         }
-        this.state.sfxEvent = { id: newId("sfx"), sfx_id: command.sfx_id, volume: command.volume };
+        this.state.sfxEvent = { id: newId("sfx"), sfx_id: command.sfx_id, volume: command.volume,
+          action: command.action ?? "play", fade_ms: command.fade_ms };
         this.emitAndContinue();
         break;
       case "camera":

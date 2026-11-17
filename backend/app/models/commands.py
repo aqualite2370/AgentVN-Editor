@@ -348,7 +348,9 @@ class BgmCommand(StrictBaseModel):
 
 class SfxCommand(StrictBaseModel):
     type: Literal["sfx"] = "sfx"
-    sfx_id: str
+    sfx_id: str = ""
+    action: Literal["play", "stop"] = "play"
+    fade_ms: int | None = Field(default=None, ge=0, le=60000)
     volume: float | None = Field(default=None, ge=0.0, le=1.0)
 
 

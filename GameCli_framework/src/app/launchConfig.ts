@@ -8,6 +8,7 @@ export interface LaunchConfig {
   presentationMode: "development" | "release";
   cartridgePath?: string;
   previewRoot?: string;
+  unlockAllGallery?: boolean;
 }
 
 interface RuntimeModeFile {
@@ -95,6 +96,7 @@ export async function getLaunchConfig(): Promise<LaunchConfig> {
   if (queryMode || legacyPreviewMode) {
     return {
       mode: legacyPreviewMode ? "preview" : normalizeMode(queryMode ?? undefined),
+      unlockAllGallery: (legacyPreviewMode || queryMode === "preview") && params.get("unlockAllGallery") === "1",
       presentationMode: "development",
       cartridgePath: params.get("cartridge") ?? undefined,
       previewRoot: params.get("previewRoot") ?? undefined,
@@ -109,6 +111,7 @@ export async function getLaunchConfig(): Promise<LaunchConfig> {
         presentationMode: config.presentationMode === "release" ? "release" : presentationMode,
         cartridgePath: config.cartridgePath,
         previewRoot: config.previewRoot,
+        unlockAllGallery: config.mode === "preview" && config.unlockAllGallery === true,
       };
     }
   }
@@ -116,6 +119,7 @@ export async function getLaunchConfig(): Promise<LaunchConfig> {
   if (modeFromFile) {
     return {
       mode: modeFromFile,
+      unlockAllGallery: modeFromFile === "preview" && params.get("unlockAllGallery") === "1",
       presentationMode,
       cartridgePath: params.get("cartridge") ?? undefined,
       previewRoot: params.get("previewRoot") ?? undefined,
@@ -125,6 +129,7 @@ export async function getLaunchConfig(): Promise<LaunchConfig> {
   if (buildMode) {
     return {
       mode: buildMode,
+      unlockAllGallery: buildMode === "preview" && params.get("unlockAllGallery") === "1",
       presentationMode,
       cartridgePath: params.get("cartridge") ?? undefined,
       previewRoot: params.get("previewRoot") ?? undefined,
@@ -138,6 +143,7 @@ export async function getLaunchConfig(): Promise<LaunchConfig> {
       presentationMode: config.presentationMode === "release" ? "release" : presentationMode,
       cartridgePath: config.cartridgePath,
       previewRoot: config.previewRoot,
+      unlockAllGallery: config.mode === "preview" && config.unlockAllGallery === true,
     };
   }
 

@@ -161,6 +161,8 @@ export interface BgmCommand {
 export interface SfxCommand {
   type: "sfx";
   sfx_id: string;
+  action?: "play" | "stop";
+  fade_ms?: number | null;
   volume?: number | null;
 }
 

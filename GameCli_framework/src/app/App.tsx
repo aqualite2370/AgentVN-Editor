@@ -111,6 +111,7 @@ interface RuntimePreviewMessage {
   screen?: string;
   sessionId?: string;
   revision?: number;
+  previewOptions?: { unlockAllGallery?: boolean };
 }
 
 function livePreviewGame(
@@ -387,7 +388,9 @@ export function App() {
     };
   }, []);
 
-  const loadPreviewCartridge = useCallback(async (cartridgeBuffer: ArrayBuffer, fileName?: string) => {
+  const loadPreviewCartridge = useCallback(async (
+    cartridgeBuffer: ArrayBuffer, fileName?: string, previewOptions?: { unlockAllGallery?: boolean },
+  ) => {
     resetBootSession();
     setBootStatus("正在接收编辑器预览卡带...");
     try {
@@ -399,10 +402,10 @@ export function App() {
       setBootAnimation(game.script.loading_animation);
       setBootAssetUrls(game.assetUrls ?? {});
       setBootStatus("预览卡带已载入，正在准备播放器...");
-      // Legacy complete-cartridge preview is a playable runtime. The structured
-      // live-preview protocol uses `preview` with project-isolated save data.
-      setRuntimeMode("fixed");
-      await loadGame(game);
+      // Both complete-cartridge and structured editor previews use preview
+      // behavior; installed games keep their fixed/library launch modes.
+      setRuntimeMode("preview");
+      await loadGame(game, previewOptions);
       setBootReady(true);
       setBootStatus("进入预览标题菜单...");
     } catch (error) {
@@ -538,7 +541,7 @@ export function App() {
         setBootAnimation(game.script.loading_animation);
         setBootAssetUrls(game.assetUrls ?? {});
         setBootStatus("校验卡带脚本并准备播放器...");
-        await loadGame(game);
+        await loadGame(game, { unlockAllGallery: config.unlockAllGallery === true });
         setBootReady(true);
         setBootStatus("进入标题菜单...");
       } catch (error) {
@@ -628,7 +631,7 @@ export function App() {
                 || message.revision !== livePreviewRevisionRef.current) return;
               livePreviewStartRef.current = structuredClone(message.start);
               livePreviewRunRef.current = message.runId;
-              await useRuntimeStore.getState().loadLivePreview(livePreviewGame(message), message.start);
+              await useRuntimeStore.getState().loadLivePreview(livePreviewGame(message), message.start, message.previewOptions);
               if (message.sessionId !== livePreviewSessionRef.current
                 || message.revision !== livePreviewRevisionRef.current) return;
               if (message.screen && message.screen !== "playing")
@@ -666,7 +669,7 @@ export function App() {
               const start = resolveLivePreviewPatchStart(nextGame.script, requestedStart, message.requestId);
               livePreviewStartRef.current = structuredClone(start);
               livePreviewRunRef.current = message.runId;
-              await latestRuntime.loadLivePreview(nextGame, start);
+              await latestRuntime.loadLivePreview(nextGame, start, { unlockAllGallery: latestRuntime.previewUnlockAllGallery });
             });
             livePreviewPatchQueueRef.current = queuedPatch.then(
               () => undefined,
@@ -674,7 +677,7 @@ export function App() {
             );
             await queuedPatch;
           } else {
-            runtime.controlLivePreview(message);
+            await runtime.controlLivePreview(message);
           }
           respond({
             type: "agentvn.live-preview.ready",
@@ -734,7 +737,7 @@ export function App() {
         setBootError("编辑器发送的预览卡带为空。");
         return;
       }
-      void loadPreviewCartridge(cartridgeBuffer, event.data.fileName).then(() => {
+      void loadPreviewCartridge(cartridgeBuffer, event.data.fileName, event.data.previewOptions).then(() => {
         const screen = event.data.screen;
         if (screen === "title_menu" || screen === "playing" || screen === "settings" || screen === "save_load" || screen === "history" || screen === "gallery" || screen === "about" || screen === "help") {
           useRuntimeStore.getState().openPreviewScreen(screen);

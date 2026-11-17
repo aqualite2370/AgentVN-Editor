@@ -74,6 +74,7 @@ export function PreviewWindowControls({ sessionRef, onBusyChange, onBack }: {
   const setNotice = useEditorStore((state) => state.setNotice);
   const project = useProjectStore();
   const [busy, setBusy] = useState(false);
+  const [unlockAllGallery, setUnlockAllGallery] = useState(false);
   const [windowStatus, setWindowStatus] = useState<"checking" | "running" | "closed" | "unknown">("checking");
   const inFlightRef = useRef(false);
   const lifetimeRef = useRef<object | null>(null);
@@ -86,6 +87,8 @@ export function PreviewWindowControls({ sessionRef, onBusyChange, onBack }: {
     tone: "idle",
   });
   const [logs, setLogs] = useState<PreviewLogEntry[]>(sessionRef?.current?.logs ?? []);
+
+  useEffect(() => { setUnlockAllGallery(false); }, [project.projectId]);
 
   useEffect(() => {
     const lifetime = {};
@@ -236,6 +239,7 @@ export function PreviewWindowControls({ sessionRef, onBusyChange, onBack }: {
 
   async function syncPreview() {
     if (!beginOperation()) return;
+    const previewOptions = { unlockAllGallery };
     setMessage("正在生成临时预览卡带...");
     setDiagnostics([]);
     setLogs([]);
@@ -298,6 +302,7 @@ export function PreviewWindowControls({ sessionRef, onBusyChange, onBack }: {
             fileName: previewDirectory.fileName,
             textFiles: previewDirectory.textFiles,
             assets: previewDirectory.assets,
+            previewOptions,
             onProgress: (event) => {
               const mappedPercent = event.phase === "launch"
                 ? 94 + (((event.percent ?? 0) / 100) * 6)
@@ -334,6 +339,7 @@ export function PreviewWindowControls({ sessionRef, onBusyChange, onBack }: {
       const result = await openGameCliPreview({
         cartridge: cartridge.blob,
         fileName: cartridge.fileName,
+        previewOptions,
         onProgress: (event) => {
           const mappedPercent = event.phase === "upload" || event.phase === "legacy"
             ? 66 + ((event.percent ?? 0) * 0.24)
@@ -417,6 +423,11 @@ export function PreviewWindowControls({ sessionRef, onBusyChange, onBack }: {
         <div><dt>素材</dt><dd>{project.assetManifest.length} 个</dd></div>
       </dl>
       <p className="preview-launch-hint">使用当前编辑草稿生成临时预览，不修改已保存的工程；启动前会检查场景连线与素材。</p>
+      <label className="preview-gallery-option" title="仅影响本次预览，不改变正式游戏的画廊进度。">
+        <input type="checkbox" checked={unlockAllGallery} disabled={busy}
+          onChange={(event) => setUnlockAllGallery(event.target.checked)} />
+        <span>直接解锁全部画廊</span>
+      </label>
       <p className="preview-launch-hint" data-testid="preview-window-status" role="status">
         外部窗口：{windowStatus === "running" ? "运行中" : windowStatus === "closed" ? "已关闭" : windowStatus === "unknown" ? "状态未知，正在重新检查" : "正在检查"}
       </p>

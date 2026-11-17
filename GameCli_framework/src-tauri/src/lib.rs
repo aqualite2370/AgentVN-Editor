@@ -263,6 +263,7 @@ struct LaunchConfig {
     mode: String,
     cartridge_path: Option<String>,
     preview_root: Option<String>,
+    unlock_all_gallery: bool,
 }
 
 struct PreviewRootState(Mutex<Option<PathBuf>>);
@@ -319,6 +320,7 @@ fn parse_launch_config() -> LaunchConfig {
     let mut mode = "library".to_string();
     let mut cartridge_path = None;
     let mut preview_root = None;
+    let mut unlock_all_gallery = false;
     let mut args = std::env::args().skip(1);
 
     while let Some(arg) = args.next() {
@@ -334,6 +336,9 @@ fn parse_launch_config() -> LaunchConfig {
             "--preview-root" => {
                 preview_root = args.next();
             }
+            "--preview-unlock-all-gallery" => {
+                unlock_all_gallery = true;
+            }
             _ => {}
         }
     }
@@ -343,6 +348,7 @@ fn parse_launch_config() -> LaunchConfig {
     }
 
     LaunchConfig {
+        unlock_all_gallery: mode == "preview" && unlock_all_gallery,
         mode,
         cartridge_path,
         preview_root,

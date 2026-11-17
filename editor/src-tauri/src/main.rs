@@ -2085,6 +2085,7 @@ fn start_gamecli_preview(
     app: &tauri::AppHandle,
     state: &DevProcesses,
     cartridge_path: PathBuf,
+    unlock_all_gallery: bool,
 ) -> Result<String, String> {
     close_gamecli_preview_process(state)?;
     cleanup_gamecli_preview_cartridges(app, Some(&cartridge_path))?;
@@ -2097,6 +2098,9 @@ fn start_gamecli_preview(
     );
 
     let mut player_command = background_command(&exe);
+    if unlock_all_gallery {
+        player_command.arg("--preview-unlock-all-gallery");
+    }
     player_command
         .args(["--mode", "preview", "--cartridge"])
         .arg(&cartridge_path)
@@ -2118,17 +2122,19 @@ fn start_gamecli_preview_from_unpacked_dir(
     app: &tauri::AppHandle,
     state: &DevProcesses,
     preview_root: PathBuf,
+    unlock_all_gallery: bool,
 ) -> Result<String, String> {
     close_gamecli_preview_process(state)?;
     cleanup_gamecli_preview_disk_workspace(app, true)?;
     cleanup_gamecli_preview_cartridges(app, None)?;
-    launch_gamecli_preview_from_unpacked_dir(app, state, preview_root)
+    launch_gamecli_preview_from_unpacked_dir(app, state, preview_root, unlock_all_gallery)
 }
 
 fn launch_gamecli_preview_from_unpacked_dir(
     app: &tauri::AppHandle,
     state: &DevProcesses,
     preview_root: PathBuf,
+    unlock_all_gallery: bool,
 ) -> Result<String, String> {
     let exe = resolve_gamecli_exe(app)?;
     eprintln!(
@@ -2138,6 +2144,9 @@ fn launch_gamecli_preview_from_unpacked_dir(
     );
 
     let mut player_command = background_command(&exe);
+    if unlock_all_gallery {
+        player_command.arg("--preview-unlock-all-gallery");
+    }
     let gamecli_cdp_args = std::env::var("AGENTVN_GAMECLI_PREVIEW_WEBVIEW2_ARGS")
         .ok()
         .filter(|value| !value.trim().is_empty())
@@ -2173,9 +2182,10 @@ fn open_gamecli_preview(
     state: tauri::State<'_, DevProcesses>,
     cartridge_bytes: Vec<u8>,
     file_name: String,
+    unlock_all_gallery: Option<bool>,
 ) -> Result<String, String> {
     let cartridge_path = write_gamecli_preview_cartridge(&app, &file_name, cartridge_bytes)?;
-    start_gamecli_preview(&app, state.inner(), cartridge_path)
+    start_gamecli_preview(&app, state.inner(), cartridge_path, unlock_all_gallery.unwrap_or(false))
 }
 
 #[tauri::command]
@@ -2295,6 +2305,7 @@ fn open_gamecli_preview_disk_upload(
     app: tauri::AppHandle,
     state: tauri::State<'_, DevProcesses>,
     upload_id: String,
+    unlock_all_gallery: Option<bool>,
 ) -> Result<String, String> {
     if upload_id != "incoming.vncart" {
         return Err("Invalid GameCLI disk preview upload id.".to_string());
@@ -2344,7 +2355,7 @@ fn open_gamecli_preview_disk_upload(
         .gamecli_preview_disk_upload
         .lock()
         .map_err(|_| "GameCLI disk preview upload lock is poisoned.".to_string())? = None;
-    start_gamecli_preview_from_unpacked_dir(&app, state.inner(), preview_root)
+    start_gamecli_preview_from_unpacked_dir(&app, state.inner(), preview_root, unlock_all_gallery.unwrap_or(false))
 }
 
 #[tauri::command]
@@ -2554,6 +2565,7 @@ fn finalize_gamecli_preview_directory(
     app: tauri::AppHandle,
     state: tauri::State<'_, DevProcesses>,
     session_id: String,
+    unlock_all_gallery: Option<bool>,
 ) -> Result<String, String> {
     {
         let guard = state
@@ -2631,7 +2643,7 @@ fn finalize_gamecli_preview_directory(
         .gamecli_preview_directory
         .lock()
         .map_err(|_| "GameCLI directory preview lock is poisoned.".to_string())? = None;
-    launch_gamecli_preview_from_unpacked_dir(&app, state.inner(), current_dir)
+    launch_gamecli_preview_from_unpacked_dir(&app, state.inner(), current_dir, unlock_all_gallery.unwrap_or(false))
 }
 
 #[tauri::command]
@@ -2683,12 +2695,13 @@ fn open_gamecli_preview_upload(
     app: tauri::AppHandle,
     state: tauri::State<'_, DevProcesses>,
     upload_id: String,
+    unlock_all_gallery: Option<bool>,
 ) -> Result<String, String> {
     let cartridge_path = gamecli_preview_upload_path(&app, &upload_id)?;
     if !cartridge_path.exists() {
         return Err("Temporary preview cartridge upload was not found.".to_string());
     }
-    start_gamecli_preview(&app, state.inner(), cartridge_path)
+    start_gamecli_preview(&app, state.inner(), cartridge_path, unlock_all_gallery.unwrap_or(false))
 }
 
 #[tauri::command]

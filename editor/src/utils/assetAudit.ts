@@ -311,7 +311,7 @@ export function buildPendingVisualAssetsForScene(
         optional: true,
       }));
     }
-    if (!commands.some((command) => command.type === "sfx")) {
+    if (!commands.some((command) => command.type === "sfx" && command.action !== "stop")) {
       pending.push(makePending(scene, {
         node_id,
         node_label,

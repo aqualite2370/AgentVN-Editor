@@ -321,6 +321,14 @@ export function validateRuntimeScript(script: RuntimeScript, manifest?: GameMani
           issues.push(issue("show_image_backdrop_blur", `展示图片背景模糊超出 0..24px：${String(command.backdrop_blur_px)}。`, "error", `scene.${scene.scene_id}.show_image.backdrop_blur_px`));
         }
       }
+      if (command.type === "sfx") {
+        if (command.action !== undefined && command.action !== "play" && command.action !== "stop")
+          issues.push(issue("sfx_action", "音效动作只能是播放或停止。", "error", `scene.${scene.scene_id}.sfx.action`));
+        if (command.action !== "stop" && !command.sfx_id?.trim())
+          issues.push(issue("sfx_asset_missing", "播放音效前请选择音效素材。", "error", `scene.${scene.scene_id}.sfx.sfx_id`));
+        if (command.fade_ms != null && (!Number.isInteger(command.fade_ms) || command.fade_ms < 0 || command.fade_ms > 60000))
+          issues.push(issue("sfx_fade_duration", "音效淡出时长须为 0 到 60000 毫秒的整数。", "error", `scene.${scene.scene_id}.sfx.fade_ms`));
+      }
       if (command.type === "video") {
         if (!command.video_id.trim()) {
           issues.push(issue("video_asset_missing", "过场视频事件缺少 video_id。请选择视频素材后再导出。", "error", `scene.${scene.scene_id}.video.video_id`));
@@ -441,7 +449,7 @@ function collectCommandAssetReferences(command: GameCommand): Array<{ asset_id: 
   if (command.type === "bgm" && command.action !== "stop" && command.bgm_id) {
     return [{ asset_id: command.bgm_id, asset_type: "bgm" }];
   }
-  if (command.type === "sfx") return command.sfx_id ? [{ asset_id: command.sfx_id, asset_type: "sfx" }] : [];
+  if (command.type === "sfx") return command.action !== "stop" && command.sfx_id ? [{ asset_id: command.sfx_id, asset_type: "sfx" }] : [];
   if (command.type === "gallery_anchor") return command.asset_id ? [{ asset_id: command.asset_id, asset_type: "ui", image_like: true }] : [];
   if (command.type === "animation") return command.animation_asset_id
     ? [{ asset_id: command.animation_asset_id, asset_type: "animation" }] : [];

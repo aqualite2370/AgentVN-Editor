@@ -109,6 +109,8 @@ export function PreviewPanel({
   const [phase, setPhase] = useState<"idle" | "opening" | "closing">("idle");
   const [activeScreen, setActiveScreen] = useState<RuntimePreviewScreen>("playing");
   const [status, setStatus] = useState<PreviewStatus>("idle");
+  const [unlockAllGallery, setUnlockAllGallery] = useState(false);
+  const unlockAllGalleryRef = useRef(false);
   const [message, setMessage] = useState("展开后会连接内嵌 GameCLI 实时预览。");
   const [uiSkinCompatibilityWarnings, setUISkinCompatibilityWarnings] = useState<string[]>([]);
   const phaseTimerRef = useRef<number | null>(null);
@@ -150,6 +152,11 @@ export function PreviewPanel({
   const selectedNode = useEditorStore((state) => state.nodes.find((node) => node.id === state.selectedNodeId));
   const project = useProjectStore();
   const commandCount = nodes.reduce((total, node) => total + (node.data.scene?.commands.length ?? 0), 0);
+
+  useEffect(() => {
+    unlockAllGalleryRef.current = false;
+    setUnlockAllGallery(false);
+  }, [project.projectId]);
 
   useEffect(() => () => {
     if (phaseTimerRef.current !== null) window.clearTimeout(phaseTimerRef.current);
@@ -396,6 +403,7 @@ export function PreviewPanel({
         assetUrls: liveAssetUrls(currentProject.assetManifest),
         start: stableSceneStart(sceneId, requestId),
         screen: activeScreen,
+        previewOptions: { unlockAllGallery: unlockAllGalleryRef.current },
       });
       setMessage("实时预览数据已发送，正在等待 GameCLI 确认...");
       armHandshakeWatchdog();
@@ -783,6 +791,25 @@ export function PreviewPanel({
             {screen.label}
           </button>
         ))}
+        <label className="preview-gallery-option" title="仅影响预览，不改变正式游戏的画廊进度。">
+          <input type="checkbox" checked={unlockAllGallery}
+            onChange={(event) => {
+              const checked = event.target.checked;
+              unlockAllGalleryRef.current = checked;
+              setUnlockAllGallery(checked);
+              if (liveInitializedRef.current && activeRunIdRef.current) postLiveMessage({
+                type: "agentvn.live-preview.control",
+                protocolVersion: LIVE_PREVIEW_PROTOCOL_VERSION,
+                sessionId: liveSessionRef.current,
+                revision: nextLiveRevision(),
+                requestId: nextRequestId("gallery-access"),
+                runId: activeRunIdRef.current,
+                action: "set_gallery_unlock_all",
+                unlockAllGallery: checked,
+              });
+            }} />
+          <span>直接解锁全部画廊</span>
+        </label>
         <button
           ref={reloadButtonRef}
           type="button"

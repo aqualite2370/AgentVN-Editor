@@ -186,7 +186,9 @@ export function commandSummary(command: GameCommand): string {
       return `${bgmActionLabel(normalized.action)} ${command.bgm_id || "当前音乐"} / ${command.volume ?? 1} / ${effect}`;
     }
     case "sfx":
-      return `${command.sfx_id || "音效"} / ${command.volume ?? 1}`;
+      return command.action === "stop"
+        ? `停止${command.sfx_id ? `音效 ${command.sfx_id}` : "全部音效"} / ${(command.fade_ms ?? 0) > 0 ? `淡出 ${command.fade_ms}ms` : "立即停止"}`
+        : `${command.sfx_id || "音效"} / ${command.volume ?? 1}`;
     case "camera":
       return cameraSummary(command);
     case "wait":

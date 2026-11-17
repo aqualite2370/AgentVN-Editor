@@ -32,6 +32,7 @@ export const OPENING_PRESENTATION_RUNTIME_VERSION = "0.29.0";
 export const GALLERY_PRESENTATION_RUNTIME_VERSION = "0.30.0";
 export const CLIENT_PRESENTATION_RUNTIME_VERSION = "0.31.0";
 export const RENPY_QUICK_PLACEMENT_RUNTIME_VERSION = "0.32.0";
+export const SFX_STOP_RUNTIME_VERSION = "0.33.0";
 
 export function minimumRuntimeVersionForLayout(scriptVersion: string, layout?: UISkinLayout): string {
   if (layout?.layout_type === "renpy" && layout.screens.some(screen => screen.screen_id === "player"
@@ -206,6 +207,8 @@ export function scriptUsesGalleryAnchor(script: Pick<RuntimeScript, "scenes">): 
 }
 
 export function minimumRuntimeVersionForScript(script: PresentationScript & { opening_audio?: RuntimeScript["opening_audio"]; rollback?: RuntimeScript["rollback"]; loading_animation?: RuntimeScript["loading_animation"] }): string {
+  if (script.scenes.some(scene => scene.commands.some(command => command.type === "sfx" && command.action === "stop")))
+    return SFX_STOP_RUNTIME_VERSION;
   if (script.scenes.some(scene => scene.commands.some(command =>
     command.type === "gallery_anchor" && command.image_fit !== undefined)))
     return CLIENT_PRESENTATION_RUNTIME_VERSION;

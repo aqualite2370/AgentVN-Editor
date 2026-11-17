@@ -18,8 +18,7 @@ import type { SpeakerFocusConfig } from "../../../../shared/cartridge/types";
 import { DEFAULT_SPEAKER_FOCUS } from "../../../../shared/cartridge/speakerFocus";
 import {
   orderedVisibleSprites,
-  resolveSpriteSlotIndices,
-  resolveSpriteSlotLayout,
+  resolveSpriteStageLayouts,
   type SpriteStageSize,
 } from "../../engine/spriteStageLayout";
 
@@ -499,13 +498,12 @@ export function SpriteLayer({
     spriteLayerZIndex(undefined, false),
   ) + 2;
   const orderedPresentKeys = presentSprites.map((item) => item.key);
-  const presentSlotIndices = resolveSpriteSlotIndices(presentSprites.map((item) => item.sprite));
+  const presentLayouts = resolveSpriteStageLayouts(stageSize, presentSprites.map((item) => item.sprite));
   const activeSlotCount = Math.max(1, orderedPresentKeys.length);
   const slotStyles = new Map<string, CSSProperties>();
   for (const item of renderedSprites) {
-    const slotIndex = presentSlotIndices.get(item.sprite.character_id);
-    const layout = item.phase !== "exiting" && slotIndex !== undefined && stageSize.width > 0 && stageSize.height > 0
-      ? resolveSpriteSlotLayout({ stage: stageSize, spriteCount: activeSlotCount, spriteIndex: slotIndex, position: item.sprite.position })
+    const layout = item.phase !== "exiting" && stageSize.width > 0 && stageSize.height > 0
+      ? presentLayouts.get(item.sprite.character_id)
       : undefined;
     // Retain the last committed geometry while fading out, even after the active
     // count/position changes or a replacement for this character has entered.

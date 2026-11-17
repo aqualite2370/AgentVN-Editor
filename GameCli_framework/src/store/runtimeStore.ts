@@ -22,6 +22,7 @@ import { isTextRead, markTextRead } from "../engine/readProgress";
 import { createSerialSaveQueue, createSaveWriteBarrier } from "../utils/runtimeSaveQueue";
 import { chooseQuickSaveSlot, expiredQuickSaves, latestQuickSave } from "../utils/quickSavePolicy";
 import {
+  galleryStorageId,
   listGalleryUnlocks,
   readGalleryAnchor,
   writeGalleryAnchor,
@@ -497,8 +498,8 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
     }
 
     const installId = game?.install_id;
-    if (!installId) throw new Error("当前还没有载入卡带。");
-    const record = await readGalleryAnchor(installId, anchorId);
+    if (!game || !installId) throw new Error("当前还没有载入卡带。");
+    const record = await readGalleryAnchor(await galleryStorageId(game), anchorId);
     if (!record) throw new Error("找不到这个画廊锚点的回看记录。");
     if (isGalleryUnlockRecord(record)) {
       if (!game?.script.scenes.some(scene => scene.scene_id === record.scene_id))
@@ -695,10 +696,9 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
       unlocked_at: new Date().toISOString(),
     };
     const owner = saveOwner;
-    // External previews unlock within this run, without modifying player data.
-    const write = state.runtimeMode === "preview" && installId === "preview_gamecli"
-      ? Promise.resolve()
-      : saveWrites.track(() => writeGalleryAnchor(installId, command.anchor_id, persisted));
+    const game = state.currentGame!;
+    const write = saveWrites.track(async () =>
+      writeGalleryAnchor(await galleryStorageId(game), command.anchor_id, persisted));
     void write
       .then(() => {
         if (owner !== saveOwner || get().currentGame?.install_id !== installId) return;
@@ -798,8 +798,7 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
       resetAutoSaveTracking();
       const [saves, galleryUnlocks, storage] = await Promise.all([
         listDesktopSaves(game.install_id),
-        get().runtimeMode === "preview" && game.install_id === "preview_gamecli"
-          ? Promise.resolve([]) : listGalleryUnlocks(game.install_id),
+        galleryStorageId(game).then(listGalleryUnlocks),
         get().runtimeMode === "fixed"
           ? getSaveStorageInfo(game.install_id).then(info => ({ info, error: undefined as string | undefined }))
             .catch(error => {
@@ -871,8 +870,7 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => {
       resetAutoSaveTracking();
       const [saves, galleryUnlocks] = await Promise.all([
         listDesktopSaves(game.install_id),
-        get().runtimeMode === "preview" && game.install_id === "preview_gamecli"
-          ? Promise.resolve([]) : listGalleryUnlocks(game.install_id),
+        galleryStorageId(game).then(listGalleryUnlocks),
       ]);
       if (owner !== saveOwner) return;
       const unlocked = new Set(galleryUnlocks);

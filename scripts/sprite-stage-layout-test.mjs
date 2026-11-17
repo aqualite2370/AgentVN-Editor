@@ -43,8 +43,8 @@ const pair = [0, 1].map((spriteIndex) => resolveSpriteSlotLayout({
   position: spriteIndex === 0 ? "left" : "right",
 }));
 close(pair[0].width, centered.width);
-close(pair[0].left, 134.4);
-close(pair[1].left, 684.8);
+close(pair[0].left, left.left);
+close(pair[1].left, right.left);
 assert.ok(pair[0].left + pair[0].width < pair[1].left);
 
 const rightFirstSprites = {
@@ -103,6 +103,7 @@ const five = Array.from({ length: 5 }, (_, spriteIndex) => resolveSpriteSlotLayo
   spriteCount: 5,
   spriteIndex,
   position: "center",
+  automaticPlacement: true,
 }));
 assert.ok(five.every((slot) => Math.abs(slot.width - centered.width) <= 1e-9));
 assert.ok(five.every((slot, index) => index === 0 || slot.left > five[index - 1].left));

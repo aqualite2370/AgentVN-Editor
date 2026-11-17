@@ -3,7 +3,7 @@ import { assetResolver } from "./assetResolver";
 import type { SaveData } from "../types/save";
 import { DEFAULT_SPRITE_SCALE, sanitizeSpriteScale } from "../../../shared/cartridge/spriteScale";
 import { sanitizeSpriteOffsetX, sanitizeSpriteOffsetY } from "../../../shared/cartridge/spritePlacement";
-import { orderedVisibleSprites, resolveSpriteSlotIndices, resolveSpriteSlotLayout } from "./spriteStageLayout";
+import { orderedVisibleSprites, resolveSpriteStageLayouts } from "./spriteStageLayout";
 
 export const SAVE_PREVIEW_VERSION = 2;
 
@@ -115,18 +115,13 @@ function createFallbackPreviewStage(save: SaveData): HTMLElement {
   });
 
   const sprites = orderedVisibleSprites(save.sprites, save.sprite_order);
-  const slotIndices = resolveSpriteSlotIndices(sprites);
+  const layouts = resolveSpriteStageLayouts({
+    width: FALLBACK_STAGE_WIDTH,
+    height: FALLBACK_STAGE_HEIGHT,
+    uiScale: 1,
+  }, sprites);
   sprites.forEach((sprite) => {
-    const layout = resolveSpriteSlotLayout({
-      stage: {
-        width: FALLBACK_STAGE_WIDTH,
-        height: FALLBACK_STAGE_HEIGHT,
-        uiScale: 1,
-      },
-      spriteCount: Math.max(1, sprites.length),
-      spriteIndex: slotIndices.get(sprite.character_id) ?? 0,
-      position: sprite.position,
-    });
+    const layout = layouts.get(sprite.character_id)!;
     const offsetX = FALLBACK_STAGE_WIDTH * sanitizeSpriteOffsetX(sprite.offset_x) / 100;
     const offsetY = FALLBACK_STAGE_HEIGHT * sanitizeSpriteOffsetY(sprite.offset_y) / 100;
     const slot = document.createElement("div");

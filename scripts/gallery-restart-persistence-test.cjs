@@ -28,7 +28,7 @@ if (!child) {
         ["fixed", "fixed_embedded_game", true],
         ["fixed", "preview_gamecli", true],
         ["library", "installed-isolated-game", true],
-        ["preview", "preview_gamecli", false],
+        ["preview", "preview_gamecli", true],
       ]) {
         const scenario = `${theme}-${boundary}-${mode}-${id}`, directory = path.join(out, scenario);
         fs.mkdirSync(directory);
@@ -46,7 +46,7 @@ if (!child) {
       }
     }
     assert.equal(report.cases.length, 16);
-    for (const phase of ["pending-success", "pending-failure", "loader-identity"]) {
+    for (const phase of ["pending-success", "pending-failure", "loader-identity", "preview-isolation"]) {
       const directory = path.join(out, phase); fs.mkdirSync(directory);
       const result = cp.spawnSync(process.execPath, [__filename, out, "--child", directory,
         "fixed", "fixed_embedded_game", "true", "native", "shared-state", phase], {
@@ -56,7 +56,7 @@ if (!child) {
         exit: result.status, stdout: result.stdout, stderr: result.stderr });
       assert.equal(result.status, 0, phase + "\n" + result.stderr);
     }
-    assert.equal(report.cases.length, 19);
+    assert.equal(report.cases.length, 20);
     report.status = "PASS";
   } catch (error) { report.status = "FAILED"; report.error = String(error.stack || error); process.exitCode = 1; }
   finally {
@@ -111,6 +111,31 @@ if (!child) {
       return;
     }
     store.getState().setRuntimeMode(mode);
+    if (phase === "preview-isolation") {
+      store.getState().setRuntimeMode("preview");
+      const a = { ...game, install_id: "preview_gamecli", game_id: "preview-A" };
+      const b = { ...game, install_id: "preview_gamecli", game_id: "preview-B" };
+      // No trustworthy owner is available for the old shared preview cache.
+      put({ ...read(), "native.gallery.preview_gamecli": { anchor: { anchor_id: "anchor", scene_id: "main" } } });
+      await store.getState().loadGame(a);
+      assert(!store.getState().currentGame.gallery[0].unlocked, "Do not adopt unowned legacy unlocks");
+      settings.getState().updateSettings({ autoSaveEnabled: false, textSpeed: 0 });
+      const launch = store.getState().startNewGame(); store.getState().beginLaunchCover();
+      await store.getState().completeLaunchCover(); store.getState().completeLaunchReveal(); await launch;
+      store.getState().engine.completeTyping(); store.getState().next();
+      await store.getState().flushAutoSave();
+      await new Promise(resolve => setImmediate(resolve));
+      assert(store.getState().currentGame.gallery[0].unlocked);
+      await store.getState().loadGame(b);
+      assert(!store.getState().currentGame.gallery[0].unlocked, "Same anchor ID in another project stays locked");
+      await store.getState().loadGame(a);
+      assert(store.getState().currentGame.gallery[0].unlocked, "A→B→A reload restores A");
+      const expected = "native.gallery.preview_gallery_" + crypto.createHash("sha256").update(a.game_id).digest("hex");
+      assert(get(expected).anchor);
+      assert(get("native.gallery.preview_gamecli").anchor, "Unowned legacy record is preserved");
+      console.log("PASS preview project isolation, stable hashed namespace and A-B-A");
+      return;
+    }
     await store.getState().loadGame(game);
     settings.getState().updateSettings({ autoSaveEnabled: false, textSpeed: 0 });
     if (phase === "restart") {

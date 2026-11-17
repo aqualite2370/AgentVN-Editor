@@ -120,11 +120,13 @@ export function resolveSpriteSlotLayout({
   spriteCount,
   spriteIndex,
   position,
+  automaticPlacement = false,
 }: {
   stage: SpriteStageSize;
   spriteCount: number;
   spriteIndex: number;
   position?: string | null;
+  automaticPlacement?: boolean;
 }): SpriteSlotLayout {
   const width = Math.max(0, stage.width);
   const height = Math.max(0, stage.height);
@@ -134,7 +136,7 @@ export function resolveSpriteSlotLayout({
   // Image contain uses this width as a scale bound. Count changes only placement.
   const slotWidth = clamp(width * 0.36, 220 * uiScale, 560 * uiScale);
 
-  if (spriteCount > 1) {
+  if (spriteCount > 1 && (automaticPlacement || !canonicalPosition(position))) {
     const centerPercent = 7 + (86 / spriteCount) * (spriteIndex + 0.5);
     return {
       left: clamp(width * centerPercent / 100 - slotWidth / 2, 0, Math.max(0, width - slotWidth)),
@@ -156,4 +158,31 @@ export function resolveSpriteSlotLayout({
     width: slotWidth,
     height: slotHeight,
   };
+}
+
+/** Explicit, unambiguous author anchors must not move when another actor enters.
+ * Repeated/unknown positions retain the existing automatic distribution.
+ * Share this decision with save previews so they reproduce the live stage.
+ */
+export function resolveSpriteStageLayouts(
+  stage: SpriteStageSize,
+  sprites: SpriteState[],
+): Map<string, SpriteSlotLayout> {
+  const visible = sprites.filter(sprite => sprite.visible);
+  const indices = resolveSpriteSlotIndices(visible);
+  const positionCounts = new Map<string, number>();
+  for (const sprite of visible) {
+    const position = canonicalPosition(sprite.position);
+    if (position) positionCounts.set(position, (positionCounts.get(position) ?? 0) + 1);
+  }
+  return new Map(visible.map(sprite => {
+    const position = canonicalPosition(sprite.position);
+    return [sprite.character_id, resolveSpriteSlotLayout({
+      stage,
+      spriteCount: Math.max(1, visible.length),
+      spriteIndex: indices.get(sprite.character_id) ?? 0,
+      position: sprite.position,
+      automaticPlacement: !position || (positionCounts.get(position) ?? 0) > 1,
+    })];
+  }));
 }

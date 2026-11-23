@@ -46,6 +46,7 @@ export interface NovelProcessPhaseProgress {
   updatedAt?: string | null;
   etaMs?: number | null;
   blockingReason?: string | null;
+  progressBasis?: string;
 }
 
 export interface NovelProcessQualityIssue {
@@ -176,6 +177,7 @@ export interface NovelProcessJob {
   completedChunks: number;
   failedChunks: number;
   cancelledChunks: number;
+  skippedScenes?: number;
   runningAgentCount: number;
   estimatedRemainingChunks: number;
   maxConcurrency?: number;

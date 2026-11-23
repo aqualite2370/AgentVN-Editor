@@ -169,7 +169,11 @@ function unpackedPreviewToGame(payload: UnpackedPreviewPayload, previewRoot: str
     gallery: galleryItems.map((item) => ({
       item_id: item.item_id,
       title: item.title,
+      description: item.description,
       asset_id: item.asset_id,
+      anchor_id: item.anchor_id ?? item.item_id,
+      scene_id: item.scene_id,
+      command_index: item.command_index,
       unlock_condition: item.unlock_condition as LibraryGame["gallery"][number]["unlock_condition"],
       unlocked: false,
     })),
@@ -200,7 +204,11 @@ function packageToGame(cartridge: SharedCartridgePackage, record: InstalledCartr
     gallery: cartridge.gallery.items.map((item) => ({
       item_id: item.item_id,
       title: item.title,
+      description: item.description,
       asset_id: item.asset_id,
+      anchor_id: item.anchor_id ?? item.item_id,
+      scene_id: item.scene_id,
+      command_index: item.command_index,
       unlock_condition: item.unlock_condition as LibraryGame["gallery"][number]["unlock_condition"],
       unlocked: false,
     })),
@@ -318,9 +326,9 @@ export async function loadInstalledGame(index: InstalledCartridgeIndex): Promise
     const { cartridge } = await importRuntimeCartridgeFromArrayBuffer(buffer, record.sourceFileName);
     return packageToGame(cartridge, record);
   }
-  const bytes = await invoke<number[]>("load_installed_cartridge", { installId: index.installId });
+  const buffer = await invoke<ArrayBuffer>("load_installed_cartridge", { installId: index.installId });
   const { cartridge } = await importRuntimeCartridgeFromArrayBuffer(
-    bytesToArrayBuffer(bytes),
+    buffer,
     index.sourceFileName,
   );
   return packageToGame(cartridge, index);
@@ -387,9 +395,11 @@ export async function loadGameFromEmbeddedDirectory(): Promise<LibraryGame> {
 }
 
 export async function loadGameFromPath(sourcePath: string, installId: string): Promise<LibraryGame> {
-  const bytes = await invoke<number[]>("read_cartridge_from_path", { sourcePath });
+  // Native raw IPC returns an ArrayBuffer. Serializing a large archive as a
+  // JSON number[] expands it several times before ZIP validation even starts.
+  const buffer = await invoke<ArrayBuffer>("read_cartridge_from_path", { sourcePath });
   const { cartridge } = await importRuntimeCartridgeFromArrayBuffer(
-    bytesToArrayBuffer(bytes),
+    buffer,
     fileNameFromPath(sourcePath),
   );
   return packageToGame(cartridge, recordForPackage(cartridge, fileNameFromPath(sourcePath), installId, sourcePath));

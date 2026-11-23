@@ -1,3 +1,4 @@
+import { NumberInput } from "../common/NumberInput";
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, Circle, Copy, Film, HelpCircle, ImagePlus, Repeat2, Sparkles, Trash2, UploadCloud, WandSparkles, X } from "lucide-react";
 import { backendClient } from "../../api/backendClient";
@@ -6,18 +7,21 @@ import { getProviderSelectionPayload } from "../../providers/providerRegistry";
 import { useEditorStore } from "../../store/editorStore";
 import { useProjectStore } from "../../store/projectStore";
 import { useSelectedNode } from "../../store/selectors";
-import type { AnimationCommand, StateUpdateCommand } from "../../types/commands";
-import type { AssetRef, AssetType } from "../../types/assets";
+import type { AnimationCommand, GameCommandType, StateUpdateCommand } from "../../types/commands";
+import type { AssetRef, AssetType, PendingVisualAsset } from "../../types/assets";
 import type { LoadingAnimationConfig } from "../../../../shared/cartridge/types";
 import { assetTypeDisplayLabel } from "../../../../shared/cartridge/assetTaxonomy";
 import type { EditorNode, LoopData } from "../../types/nodes";
 import { EmptyState } from "../common/EmptyState";
 import { AssetPicker } from "../common/AssetPicker";
+import { OpeningAudioQueueEditor } from "../common/OpeningAudioQueueEditor";
+import { OpeningAnimationEditor } from "../common/OpeningAnimationEditor";
 import { FieldHelp } from "../common/FieldHelp";
 import { JsonPreview } from "../common/JsonPreview";
 import { AnimationCommandEditor } from "../command-editors/AnimationCommandEditor";
 import { ChoiceCommandEditor } from "../command-editors/ChoiceCommandEditor";
 import { CommandListEditor, currentPoseBeforeList } from "../command-editors/CommandListEditor";
+import { SceneAssetAuditPanel } from "./SceneAssetAuditPanel";
 import { ConditionBuilderEditor } from "../command-editors/ConditionBuilderEditor";
 import { FloatingCommandWorkbench } from "../command-editors/FloatingCommandWorkbench";
 import { CameraStudioDialog } from "../command-editors/CameraStudioDialog";
@@ -26,12 +30,14 @@ import { MemoryModeSelector } from "./MemoryModeSelector";
 import { collectStateVariableKeys, conditionOperatorLabels, type ConditionValueType } from "../../utils/conditions";
 import { buildPreviousSummary } from "../../utils/graphTraversal";
 import { buildEditorGenerationContextPackage } from "../../utils/generationContext";
+import { sanitizeGeneratedSceneAssetReferences } from "../../utils/generatedAssetReferences";
 import { buildSceneAssetAudit } from "../../utils/assetAudit";
 import { buildProjectAssetPath, sanitizeAssetId } from "../../utils/projectAssets";
 import { reportFrontendError } from "../../../../shared/logging/frontendErrorLogger";
 import { analyzeAnimationNodeMigration } from "../../utils/animationNodeMigration";
 import { TimelineUnavailableError, writeProjectBackup } from "../../utils/projectTimeline";
 import { createDefaultCameraCommand } from "../../../../shared/camera/cameraMotion";
+import { workspaceGenerationEventName, pendingAssetLocationEventName, type PendingAssetLocationRequest, type GenerationRequest } from "../workspace/workspaceContracts";
 
 const inspectorExitDurationMs = 220;
 
@@ -271,7 +277,11 @@ function GenerationDebugPanel() {
 }
 
 export function InspectorPanel() {
+  const [assetTarget, setAssetTarget] = useState<{ sceneId: string; index: number; field?: string; nonce: number }>();
   const [workbenchOpen, setWorkbenchOpen] = useState(false);
+  const [workbenchTarget, setWorkbenchTarget] = useState<{
+    sceneId: string; type: GameCommandType; characterId?: string; nonce: number;
+  }>();
   const [workbenchCameraOpen, setWorkbenchCameraOpen] = useState(false);
   const [loadingImageToAddId, setLoadingImageToAddId] = useState("");
   const [displayNode, setDisplayNode] = useState<EditorNode | undefined>();
@@ -280,6 +290,7 @@ export function InspectorPanel() {
   const [isBatchMigratingAnimations, setIsBatchMigratingAnimations] = useState(false);
   const node = useSelectedNode();
   const nodes = useEditorStore((state) => state.nodes);
+  const projectLoadGeneration = useEditorStore((state) => state.projectLoadGeneration);
   const edges = useEditorStore((state) => state.edges);
   const globalMemoryMode = useEditorStore((state) => state.memoryMode);
   const updateNodeData = useEditorStore((state) => state.updateNodeData);
@@ -299,8 +310,8 @@ export function InspectorPanel() {
   const applyGeneratedSceneToNode = useEditorStore((state) => state.applyGeneratedSceneToNode);
   const setNotice = useEditorStore((state) => state.setNotice);
   const setAssetManifest = useProjectStore((state) => state.setAssetManifest);
-  const closeTimerRef = useRef<number>();
-  const lastNodeRef = useRef<EditorNode>();
+  const closeTimerRef = useRef<number | undefined>(undefined);
+  const lastNodeRef = useRef<EditorNode | undefined>(undefined);
   const exitReasonRef = useRef<InspectorExitReason | null>(null);
 
   function clearCloseTimer() {
@@ -399,6 +410,30 @@ export function InspectorPanel() {
   }, []);
 
   const activeNode = (node ?? displayNode) as EditorNode;
+  const enrichCurrentSceneRef = useRef<() => Promise<boolean>>(() => Promise.resolve(false));
+  enrichCurrentSceneRef.current = enrichCurrentSceneFromOutline;
+
+  useEffect(() => {
+    const handleGenerationRequest = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        input?: GenerationRequest;
+        resolve?: (result: { ok: boolean; message?: string }) => void;
+      }>).detail;
+      const resolve = detail?.resolve;
+      const input = detail?.input;
+      if (!resolve || !input) return;
+      if (input.nodeId !== activeNode?.id) {
+        resolve({ ok: false, message: "请先选中要生成的场景节点。" });
+        return;
+      }
+      void enrichCurrentSceneRef.current()
+        .then((ok) => resolve({ ok, message: ok ? undefined : "生成未执行或未写入当前节点。" }))
+        .catch((error) => resolve({ ok: false, message: error instanceof Error ? error.message : "生成失败。" }));
+    };
+    window.addEventListener(workspaceGenerationEventName, handleGenerationRequest);
+    return () => window.removeEventListener(workspaceGenerationEventName, handleGenerationRequest);
+  }, [activeNode?.id]);
+
   const animationMigration = useMemo(
     () => activeNode?.data.nodeKind === "animation"
       ? analyzeAnimationNodeMigration(nodes, edges, activeNode.id)
@@ -421,6 +456,34 @@ export function InspectorPanel() {
     useEditorStore.getState().nodes.map((item) => item.data.scene?.scene_id).filter((sceneId): sceneId is string => Boolean(sceneId))
   );
   const [sceneAssetAudit, setSceneAssetAudit] = useState<SceneAssetAudit | undefined>();
+  const auditSceneRef = useRef<unknown>(undefined);
+
+  function locatePendingAsset(item: PendingVisualAsset, fromNavigation = false): boolean {
+    const scene = activeNode?.data.scene;
+    if (!scene || item.node_id !== activeNode.id || (!fromNavigation && auditSceneRef.current !== scene)) return false;
+    if (item.command_index !== undefined && item.command_index >= 0) {
+      if (scene.commands[item.command_index]?.type !== item.command_type) return false;
+      setAssetTarget({ sceneId: scene.scene_id, index: item.command_index, field: item.field, nonce: performance.now() });
+    } else {
+      // Suggestions open the existing composer without creating or changing a command.
+      const type = item.command_type;
+      if (type !== "background" && type !== "sprite" && type !== "dialog"
+        && type !== "bgm" && type !== "sfx" && type !== "camera") return false;
+      setWorkbenchTarget({ sceneId: scene.scene_id, type, characterId: item.character_id, nonce: performance.now() });
+      setWorkbenchOpen(true);
+    }
+    return true;
+  }
+
+  useEffect(() => {
+    const locate = (event: Event) => {
+      const request = (event as CustomEvent<PendingAssetLocationRequest>).detail;
+      if (request?.isCurrent() && request.item.node_id === activeNode?.id)
+        request.handled = locatePendingAsset(request.item, true);
+    };
+    window.addEventListener(pendingAssetLocationEventName, locate);
+    return () => window.removeEventListener(pendingAssetLocationEventName, locate);
+  }, [activeNode?.id, activeNode?.data.scene]);
 
   useEffect(() => {
     const timeout = nodes.length > 80 ? 260 : 120;
@@ -440,8 +503,10 @@ export function InspectorPanel() {
     const nodeId = activeNode.id;
     const timeout = nodes.length > 80 ? 260 : 120;
     return scheduleInspectorDerivedWork(() => {
+      auditSceneRef.current = scene;
       setSceneAssetAudit(buildSceneAssetAudit(scene, {
         nodeId,
+        nodeLabel: activeNode.data.label,
         projectAssets: assetManifest,
         includeOptional: true,
       }));
@@ -552,17 +617,17 @@ export function InspectorPanel() {
     setNotice("已设置为“直到某件事完成”。请在下方把“是否已经完成”改成剧情实际使用的记录名称。", "success");
   }
 
-  async function enrichCurrentSceneFromOutline() {
-    if (activeNode.data.nodeKind !== "scene" || !activeNode.data.scene) return;
+  async function enrichCurrentSceneFromOutline(): Promise<boolean> {
+    if (activeNode.data.nodeKind !== "scene" || !activeNode.data.scene) return false;
     const scene = activeNode.data.scene;
     const outline = activeNode.data.aiSettings.generationOutline?.trim();
     if (!outline) {
       setNotice("请先填写“下一步生成大纲”，再丰富当前节点。", "warning");
-      return;
+      return false;
     }
     if (activeGeneration) {
       setNotice(activeGeneration.nodeId === activeNode.id ? "当前节点正在生成，请等待完成后再点击。" : "已有场景正在生成，请等待当前生成完成后再点击。", "warning");
-      return;
+      return false;
     }
     const providerSelection = getProviderSelectionPayload("text_generation");
     if (!providerSelection) {
@@ -578,13 +643,13 @@ export function InspectorPanel() {
         action: "打开“工具/设置”的“模型/连接”，添加连接、模型并保存 Token。",
         reportable: false,
       });
-      return;
+      return false;
     }
 
     const generationLock = beginGeneration(activeNode.id);
     if (!generationLock.ok) {
       setNotice(generationLock.activeNodeId === activeNode.id ? "当前节点正在生成，请等待完成后再点击。" : "已有场景正在生成，请等待当前生成完成后再点击。", "warning");
-      return;
+      return false;
     }
 
     setIsEnrichingCurrentScene(true);
@@ -595,6 +660,7 @@ export function InspectorPanel() {
         contextNodeId: activeNode.id,
         nodes,
         edges,
+        assetManifest,
         memoryMode,
         providerSelection,
       });
@@ -638,8 +704,27 @@ export function InspectorPanel() {
           onTrace: addGenerationTrace,
         },
       );
-      const applied = applyGeneratedSceneToNode(activeNode.id, generated, { preserveSceneId: true, preserveChapter: true, generatedFromNodeId: activeNode.id });
-      setNotice(applied.replaced ? "已根据大纲丰富当前节点内容，没有创建新节点。" : "生成完成，但未能写入当前节点，请检查节点状态。", applied.replaced ? "success" : "warning");
+      const sanitizedGenerated = sanitizeGeneratedSceneAssetReferences(generated, assetManifest);
+      const applied = applyGeneratedSceneToNode(activeNode.id, sanitizedGenerated.scene, { preserveSceneId: true, preserveChapter: true, generatedFromNodeId: activeNode.id });
+      if (applied.replaced && sanitizedGenerated.removed.length > 0) {
+        const ignoredAssetIds = [...new Set(sanitizedGenerated.removed.map((reference) => reference.asset_id))];
+        setNotice({
+          tone: "warning",
+          reportable: false,
+          source: "AI Generation / Asset Guard",
+          message: `已根据大纲丰富当前节点；已忽略 ${sanitizedGenerated.removed.length} 处不存在的视觉素材引用。`,
+          detail: `模型引用了素材库中不存在或不可用的视觉素材：${ignoredAssetIds.join("、")}。剧情、对白和其他合法命令已保留。`,
+          action: "如需对应画面，请先把素材导入素材库，再重新选择或生成该视觉命令。",
+          context: {
+            nodeId: activeNode.id,
+            sceneId: scene.scene_id,
+            ignoredVisualAssetReferences: sanitizedGenerated.removed,
+          },
+        });
+      } else {
+        setNotice(applied.replaced ? "已根据大纲丰富当前节点内容，没有创建新节点。" : "生成完成，但未能写入当前节点，请检查节点状态。", applied.replaced ? "success" : "warning");
+      }
+      return applied.replaced;
     } catch (error) {
       reportFrontendError("editor.scene-generation", error, {
         operation: "enrich-current-scene",
@@ -653,6 +738,7 @@ export function InspectorPanel() {
         action: "检查模型连接、Token、Base URL 与后端日志后重试。",
         context: { nodeId: activeNode.id, sceneId: scene.scene_id },
       });
+      return false;
     } finally {
       endGeneration(generationLock.token);
       setIsEnrichingCurrentScene(false);
@@ -791,7 +877,10 @@ export function InspectorPanel() {
           <button type="button" aria-label="复制节点" data-help-key="inspector.duplicateNode" onClick={() => duplicateNode(activeNode.id)}>
             <Copy size={14} />
           </button>
-          <button type="button" aria-label="删除节点" data-help-key="inspector.deleteNode" onClick={() => deleteNode(activeNode.id)}>
+          <button type="button" aria-label="删除节点" data-help-key="inspector.deleteNode"
+            disabled={activeNode.data.nodeKind === "start"}
+            title={activeNode.data.nodeKind === "start" ? "入口节点不能删除" : "删除节点"}
+            onClick={() => deleteNode(activeNode.id)}>
             <Trash2 size={14} />
           </button>
         </div>
@@ -808,24 +897,8 @@ export function InspectorPanel() {
               </div>
             </div>
           )}
-          {sceneAssetAudit && sceneAssetAudit.pending.length > 0 && (
-            <section className="inspector-asset-audit">
-              <header>
-                <strong>待补视觉资产</strong>
-                <span>{sceneAssetAudit.pending.filter((item) => !item.optional).length} 项必补 / {sceneAssetAudit.optional_audio_performance.length} 项可选</span>
-              </header>
-              <div className="inspector-asset-audit-list">
-                {sceneAssetAudit.pending.slice(0, 8).map((item) => (
-                  <article key={item.id} className={item.optional ? "is-optional" : item.placeholder ? "is-placeholder" : ""}>
-                    <span>{item.optional ? "可选" : item.placeholder ? "占位" : "缺失"}</span>
-                    <div>
-                      <strong>{item.label}</strong>
-                      <small>{item.character_id ? `${item.character_id} · ` : ""}{item.asset_id ?? assetTypeDisplayLabel(item.asset_type ?? item.kind)}</small>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            </section>
+          {sceneAssetAudit?.node_id === activeNode.id && sceneAssetAudit.pending.length > 0 && (
+            <SceneAssetAuditPanel key={`audit:${activeNode.id}`} audit={sceneAssetAudit} onLocate={locatePendingAsset} />
           )}
           <label>
             场景稳定索引 ID <FieldHelp field="scene_id" />
@@ -862,7 +935,7 @@ export function InspectorPanel() {
           </label>
           <label>
             章节编号 <FieldHelp field="chapter" />
-            <input
+            <NumberInput
               type="number"
               value={activeNode.data.scene.chapter}
               data-help-key="field.chapter"
@@ -955,7 +1028,6 @@ export function InspectorPanel() {
           <section className={`inspector-secondary-panel command-workbench-launcher${workbenchOpen ? " is-open" : ""}`}>
             <div>
               <strong>事件工作台</strong>
-              <p>{workbenchOpen ? "悬浮工作台已打开；可最小化以专注编辑当前场景事件。" : "工作台已最小化，右侧场景事件编辑会继续保留。"}</p>
             </div>
             <button type="button" data-help-key="workbench.commandType" onClick={() => setWorkbenchOpen((current) => !current)}>
               {workbenchOpen ? "隐藏工作台" : "打开工作台"}
@@ -963,7 +1035,18 @@ export function InspectorPanel() {
           </section>
           {workbenchOpen && (
             <FloatingCommandWorkbench
+              key={`workbench:${activeNode.id}`}
+              requestedCommand={workbenchTarget}
+              sceneId={activeNode.data.scene.scene_id}
+              commands={activeNode.data.scene.commands}
               onAdd={(command) => updateSceneCommands(activeNode.id, [...activeNode.data.scene!.commands, command])}
+              onInsert={(command, afterIndex) =>
+                updateSceneCommands(activeNode.id, [
+                  ...activeNode.data.scene!.commands.slice(0, afterIndex),
+                  command,
+                  ...activeNode.data.scene!.commands.slice(afterIndex),
+                ])
+              }
               onOpenCameraStudio={() => {
                 setWorkbenchOpen(false);
                 setWorkbenchCameraOpen(true);
@@ -974,11 +1057,17 @@ export function InspectorPanel() {
             />
           )}
           <CommandListEditor
+            key={`commands:${projectLoadGeneration}:${activeNode.id}`}
+            assetTarget={assetTarget}
             commands={activeNode.data.scene.commands}
             sceneId={activeNode.data.scene.scene_id}
             variableKeys={stateVariableKeys}
             sceneIds={runtimeSceneIds}
-            onChange={(commands) => updateSceneCommands(activeNode.id, commands)}
+            onChange={(commands) => {
+              if (useEditorStore.getState().projectLoadGeneration === projectLoadGeneration) {
+                updateSceneCommands(activeNode.id, commands);
+              }
+            }}
           />
           {workbenchCameraOpen && (
             <CameraStudioDialog
@@ -1007,12 +1096,6 @@ export function InspectorPanel() {
 
       {activeNode.data.nodeKind === "choice" && activeNode.data.choice && (
         <div className="inspector-section">
-          <section className="inspector-secondary-panel">
-            <div>
-              <strong>选项分支</strong>
-              <p>这里的选项会作为独立节点导出。你可以从每个选项手柄连到不同场景，也可以保留目标场景编号手动填写。</p>
-            </div>
-          </section>
           <ChoiceCommandEditor
             command={activeNode.data.choice}
             variableKeys={stateVariableKeys}
@@ -1034,12 +1117,6 @@ export function InspectorPanel() {
 
       {activeNode.data.nodeKind === "condition" && (
         <div className="inspector-section">
-          <section className="inspector-secondary-panel condition-helper-card">
-            <div>
-              <strong>条件节点会决定两条出口</strong>
-              <p>满足条件时走 true 出口，不满足时走 false 出口。建议用变量、判断方式和值来构建条件，减少手写表达式出错。</p>
-            </div>
-          </section>
           <ConditionBuilderEditor
             condition={activeNode.data.condition}
             variableKeys={stateVariableKeys}
@@ -1095,38 +1172,21 @@ export function InspectorPanel() {
 
       {activeNode.data.nodeKind === "loop" && activeNode.data.loop && (
         <div className="inspector-section loop-inspector">
-          <section className="loop-guide-card" data-help-key="node.loop">
-            <header>
-              <Repeat2 size={18} />
-              <div>
-                <strong>让一段剧情重复执行</strong>
-                <p>这个节点会决定接下来是“再做一次”，还是“重复完成后继续剧情”。只想重复固定次数时，直接选择下方方案即可。</p>
-              </div>
-            </header>
-            <ol className="loop-flow-steps">
-              <li><span>1</span><div><strong>记住已经做了几次</strong><small>系统用“{activeNode.data.loop.variableKey || "次数记录"}”保存进度，返回这里时不会从头清零。</small></div></li>
-              <li><span>2</span><div><strong>每回来一次就更新记录</strong><small>当前设置：把记录的数字 {activeNode.data.loop.step >= 0 ? "增加" : "减少"} {Math.abs(activeNode.data.loop.step)}。</small></div></li>
-              <li><span>3</span><div><strong>决定是再做一次还是结束</strong><small>检查“{readableLoopCondition(activeNode.data.loop)}”；满足时再做一次，不满足时继续后面的剧情。</small></div></li>
-            </ol>
-          </section>
-
           <section className="loop-preset-panel">
             <div className="loop-section-heading">
               <div>
-                <strong><WandSparkles size={15} /> 先选择最接近的重复方式</strong>
-                <span>零基础用户建议从这里开始。选择后，系统会自动填好下面的大部分内容。</span>
+                <strong><WandSparkles size={15} /> 重复方式</strong>
               </div>
             </div>
             <div className="loop-preset-actions" role="group" aria-label="选择剧情重复方式">
-              <button type="button" onClick={() => applyFixedLoopPreset(3)}>重复 3 次（推荐）</button>
-              <button type="button" onClick={() => applyFixedLoopPreset(5)}>重复 5 次</button>
-              <button type="button" onClick={applyFlagLoopPreset}>直到某件事完成</button>
+              <button data-help-key="editor.control" type="button" onClick={() => applyFixedLoopPreset(3)}>重复 3 次（推荐）</button>
+              <button data-help-key="editor.control" type="button" onClick={() => applyFixedLoopPreset(5)}>重复 5 次</button>
+              <button data-help-key="editor.control" type="button" onClick={applyFlagLoopPreset}>直到某件事完成</button>
             </div>
           </section>
 
           <fieldset className="loop-config-card">
             <legend>1. 设置“已经做了几次”的记录方式</legend>
-            <p>使用固定次数方案时，下面三个设置通常保持默认即可。</p>
             <div className="loop-counter-grid">
               <label>
                 次数记录名称
@@ -1148,12 +1208,12 @@ export function InspectorPanel() {
               </label>
               <label>
                 开始前记作几次
-                <input type="number" data-help-key="field.loop.initialValue" value={activeNode.data.loop.initialValue} onChange={(event) => updateNodeData(activeNode.id, { loop: { ...activeNode.data.loop!, initialValue: Number(event.target.value) } })} />
+                <NumberInput type="number" data-help-key="field.loop.initialValue" value={activeNode.data.loop.initialValue} onChange={(event) => updateNodeData(activeNode.id, { loop: { ...activeNode.data.loop!, initialValue: Number(event.target.value) } })} />
                 <small>填 0 表示开始前还没有执行过；一般不用修改。</small>
               </label>
               <label>
                 每完成一轮增加多少
-                <input type="number" data-help-key="field.loop.step" value={activeNode.data.loop.step} onChange={(event) => updateNodeData(activeNode.id, { loop: { ...activeNode.data.loop!, step: Number(event.target.value) } })} />
+                <NumberInput type="number" data-help-key="field.loop.step" value={activeNode.data.loop.step} onChange={(event) => updateNodeData(activeNode.id, { loop: { ...activeNode.data.loop!, step: Number(event.target.value) } })} />
                 <small>通常填 1。只有倒数时才填负数；填 0 会让记录一直停在同一个数字。</small>
               </label>
             </div>
@@ -1162,7 +1222,7 @@ export function InspectorPanel() {
           <div className="loop-section-heading">
             <div>
               <strong>2. 设置“什么时候再做一次”</strong>
-              <span>把下面的判断补成一句话：满足时再做一次，不满足时结束重复。</span>
+              <small>让一段剧情重复执行，直到记录满足结束条件。</small>
             </div>
           </div>
           <ConditionBuilderEditor
@@ -1215,7 +1275,7 @@ export function InspectorPanel() {
                   当前工程共有 {legacyAnimationNodeCount} 个旧版动画节点。
                   批量转换前会先创建项目时间线备份，整次操作只占用一个撤销记录。
                 </p>
-                <button
+                <button data-help-key="editor.control"
                   type="button"
                   disabled={isBatchMigratingAnimations}
                   onClick={() => void migrateAllLegacyAnimationNodes()}
@@ -1231,7 +1291,7 @@ export function InspectorPanel() {
                   {animationMigration.bypassPathCount > 0 ? `，另有 ${animationMigration.bypassPathCount} 条路线会绕过这个动画` : ""}。
                 </p>
                 <div>
-                  <button
+                  <button data-help-key="editor.control"
                     type="button"
                     disabled={!animationMigration.canPrepend}
                     onClick={() => {
@@ -1249,7 +1309,7 @@ export function InspectorPanel() {
                       ? `（影响 ${animationMigration.prependAffectedPathCount} 条路线）`
                       : ""}
                   </button>
-                  <button
+                  <button data-help-key="editor.control"
                     type="button"
                     disabled={!animationMigration.canAppend}
                     onClick={() => {
@@ -1267,7 +1327,7 @@ export function InspectorPanel() {
                       ? `（影响 ${animationMigration.appendAffectedPathCount} 条路线）`
                       : ""}
                   </button>
-                  <button type="button" onClick={() => migrateAnimationNode(activeNode.id, "convert_scene")}>
+                  <button data-help-key="editor.control" type="button" onClick={() => migrateAnimationNode(activeNode.id, "convert_scene")}>
                     原地转成普通场景
                   </button>
                 </div>
@@ -1289,118 +1349,18 @@ export function InspectorPanel() {
 
       {activeNode.data.nodeKind === "start" && (
         <div className="inspector-section">
-          <p>入口节点是项目入口。导出时会从该节点的第一条连线确定玩家开始播放的位置。</p>
-          <section className="loading-animation-panel" data-help-key="start.loadingAnimation">
-            <header>
-              <div>
-                <strong>载入动画</strong>
-                <span>默认使用编辑器启动时的圆环；也可以导入视频或多张图片作为 GameCLI 启动动画。</span>
-              </div>
-            </header>
-            <div className="loading-animation-mode" role="group" aria-label="载入动画类型">
-              <button
-                type="button"
-                className={loadingAnimation.kind === "default" ? "is-active" : ""}
-                aria-pressed={loadingAnimation.kind === "default"}
-                data-help-key="start.loadingAnimation.default"
-                onClick={() => setLoadingAnimationMode("default")}
-              >
-                默认圆环
-              </button>
-              <button
-                type="button"
-                className={loadingAnimation.kind === "video" ? "is-active" : ""}
-                aria-pressed={loadingAnimation.kind === "video"}
-                data-help-key="start.loadingAnimation.video"
-                onClick={() => setLoadingAnimationMode("video")}
-              >
-                <Film size={14} /> 视频
-              </button>
-              <button
-                type="button"
-                className={loadingAnimation.kind === "image_sequence" ? "is-active" : ""}
-                aria-pressed={loadingAnimation.kind === "image_sequence"}
-                data-help-key="start.loadingAnimation.imageSequence"
-                onClick={() => setLoadingAnimationMode("image_sequence")}
-              >
-                <ImagePlus size={14} /> 多图
-              </button>
-            </div>
-
-            {loadingAnimation.kind === "video" && (
-              <div className="loading-animation-editor">
-                <AssetPicker
-                  label="当前视频素材"
-                  field="loading_animation.video_asset_id"
-                  value={loadingAnimation.video_asset_id}
-                  allowedTypes={["video"]}
-                  helpKey="start.loadingAnimation.videoAsset"
-                  emptyLabel="暂无可用视频素材"
-                  onChange={(assetId) => updateLoadingAnimation({ kind: "video", video_asset_id: assetId })}
-                />
-                <label className="loading-animation-import" data-help-key="start.loadingAnimation.videoImport">
-                  <input type="file" accept="video/*,.mp4,.webm,.mov,.m4v,.ogv" onChange={(event) => void importLoadingVideo(event)} />
-                  <UploadCloud size={15} /> 导入视频
-                </label>
-              </div>
-            )}
-
-            {loadingAnimation.kind === "image_sequence" && (
-              <div className="loading-animation-editor">
-                <div className="loading-animation-picker-row">
-                  <AssetPicker
-                    label="添加图片帧"
-                    field="loading_animation.image_asset_ids"
-                    value={loadingImageToAddId}
-                    allowedTypes={["ui", "background"]}
-                    helpKey="start.loadingAnimation.imageAsset"
-                    emptyLabel="暂无可用图片帧素材"
-                    onChange={setLoadingImageToAddId}
-                  />
-                  <button type="button" data-help-key="start.loadingAnimation.addFrame" disabled={!loadingImageToAddId} onClick={() => addLoadingImageAsset(loadingImageToAddId)}>
-                    添加为帧
-                  </button>
-                </div>
-                <label className="loading-animation-import" data-help-key="start.loadingAnimation.imageImport">
-                  <input type="file" accept="image/*,.png,.jpg,.jpeg,.webp,.gif,.bmp,.svg" multiple onChange={(event) => void importLoadingImages(event)} />
-                  <UploadCloud size={15} /> 导入图片
-                </label>
-                <label className="loading-animation-duration">
-                  切换时间（毫秒）
-                  <input
-                    type="number"
-                    data-help-key="start.loadingAnimation.frameDuration"
-                    min={100}
-                    step={100}
-                    value={loadingAnimation.frame_duration_ms ?? 1000}
-                    onChange={(event) => updateImageFrameDuration(Number(event.target.value))}
-                  />
-                </label>
-                <div className="loading-animation-frame-list">
-                  {loadingAnimation.image_asset_ids.length === 0 ? (
-                    <p>尚未导入图片帧；导入多张图片后默认每 1 秒切换一张。</p>
-                  ) : (
-                    loadingAnimation.image_asset_ids.map((assetId, index) => {
-                      const asset = loadingImageAssets[index];
-                      const src = asset?.metadata.data_url ?? asset?.metadata.blob_url ?? asset?.metadata.url;
-                      return (
-                        <article key={`${assetId}_${index}`} className="loading-animation-frame">
-                          {src ? <img src={src} alt={assetId} /> : <span>{index + 1}</span>}
-                          <div>
-                            <strong>{assetDisplayName(asset, assetId)}</strong>
-                            <small>{assetId}</small>
-                          </div>
-                          <button type="button" data-help-key="start.loadingAnimation.removeFrame" aria-label="移除图片帧" title="移除图片帧" onClick={() => removeLoadingImage(assetId)}>
-                            <X size={14} />
-                          </button>
-                        </article>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
-            )}
-          </section>
+          <OpeningAnimationEditor
+            animation={activeNode.data.loadingAnimation}
+            assets={assetManifest}
+            helpKey="start.loadingAnimation"
+            onChange={(loadingAnimation) => updateNodeData(activeNode.id, { loadingAnimation })}
+          />
+          <OpeningAudioQueueEditor
+            tracks={activeNode.data.openingAudio}
+            assets={assetManifest}
+            helpKey="start.openingAudio"
+            onChange={(openingAudio) => updateNodeData(activeNode.id, { openingAudio })}
+          />
           <JsonPreview value={activeNode.data} />
         </div>
       )}

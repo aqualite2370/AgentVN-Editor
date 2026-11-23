@@ -1,6 +1,7 @@
-import { Background, BaseEdge, ConnectionLineType, Controls, ReactFlow, ReactFlowProvider, useReactFlow, type DefaultEdgeOptions, type EdgeProps, type Viewport } from "@xyflow/react";
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
+import { Background, BaseEdge, ConnectionLineType, Controls, ReactFlow, ReactFlowProvider, useNodesInitialized, type DefaultEdgeOptions, type EdgeProps } from "@xyflow/react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { backendClient } from "../../api/backendClient";
+import { editorCanvasBackgroundSource } from "../../utils/editorCanvasBackground";
 import type { SharedEditorState } from "../../api/types";
 import { useEditorStore } from "../../store/editorStore";
 import { useProjectStore } from "../../store/projectStore";
@@ -17,21 +18,30 @@ import { LoopNode } from "../nodes/LoopNode";
 import { SceneNode } from "../nodes/SceneNode";
 import { StartNode } from "../nodes/StartNode";
 import { EditorToolbar } from "./EditorToolbar";
+import { GraphHistoryShortcuts } from "./GraphHistoryShortcuts";
+import { useEditorProjectAutosave } from "./useEditorProjectAutosave";
+import { StoryMiniMap } from "./StoryMiniMap";
+import { graphCards, graphEndpointPath, routeGraphEdges, type GraphPoint } from "../../utils/graphGeometry";
 import { InspectorPanel } from "./InspectorPanel";
 import { NodePalette } from "./NodePalette";
 import { PreviewPanel } from "./PreviewPanel";
 import { reportFrontendError } from "../../../../shared/logging/frontendErrorLogger";
+import { EditorWorkspace } from "../workspace/EditorWorkspace";
+import { openWorkspaceSurface, requestBack, requestGeneration, type WorkspaceController, type SaveResult } from "../workspace/workspaceContracts";
+import { WorkspaceStatusBar } from "../workspace/WorkspaceStatusBar";
+import { AssistantProjectCreationLockGate } from "../assistant/AssistantProjectCreationLockGate";
 
 const dynamicFlowNodeClasses = new Set(["is-new-node", "is-new-ai-node", "is-decluttered-node"]);
-const orthogonalCornerRadius = 12;
 const previewSplitStorageKey = "agentvn.previewSplitRatio";
 const previewSplitDefault = 0.4;
 const previewSplitMinimum = 0.35;
 const previewSplitMaximum = 0.65;
-const previewPaneMinimumPx = 240;
+const previewPaneTargetPx = 252;
+const inspectorPaneTargetPx = 152;
 const previewSplitterSizePx = 10;
 
 interface OrthogonalEdgeData extends Record<string, unknown> {
+  route?: GraphPoint[];
   isJunctionEdge?: boolean;
   isBackEdge?: boolean;
   isLoopEdge?: boolean;
@@ -39,45 +49,77 @@ interface OrthogonalEdgeData extends Record<string, unknown> {
   edgeRole?: string;
 }
 
-type CanvasViewportController = {
-  setCenter: (x: number, y: number, options?: { zoom?: number; duration?: number }) => Promise<boolean>;
-};
+function EditorPrerenderReadiness() {
+  const nodesInitialized = useNodesInitialized();
+  const nodeCount = useEditorStore((state) => state.nodes.length);
 
-const storyMiniMapWidth = 232;
-const storyMiniMapHeight = 92;
-const storyMiniMapPadding = 10;
-type StoryMiniMapDensityTone = "soft" | "solid" | "dense";
-const storyMiniMapDensityPaint: Record<StoryMiniMapDensityTone, { fill: string; stroke: string }> = {
-  soft: { fill: "#60a5fa", stroke: "rgba(30, 64, 175, 0.52)" },
-  solid: { fill: "#2563eb", stroke: "rgba(30, 64, 175, 0.56)" },
-  dense: { fill: "#1e40af", stroke: "rgba(15, 23, 42, 0.56)" },
-};
-const storyMiniMapNodeColors: Record<string, string> = {
-  start: "#137c86",
-  scene: "#5965c9",
-  choice: "#b45b9f",
-  modifier: "#9b6a2f",
-  condition: "#3f8f70",
-  loop: "#7a6dc8",
-  animation: "#c06b4b",
-  end: "#9c3d52",
-};
+  useEffect(() => {
+    if (nodeCount > 0 && !nodesInitialized) return;
+    const surface = document.querySelector<HTMLElement>(".flow-surface");
+    if (!surface) return;
+
+    let active = true;
+    let frame = 0;
+    let previousGeometry: string | undefined;
+    const verifyCommittedGeometry = () => {
+      if (!active) return;
+      const surfaceRect = surface.getBoundingClientRect();
+      const nodes = [...surface.querySelectorAll<HTMLElement>(".react-flow__node")]
+        .filter((node) => node.getClientRects().length > 0);
+      const nodesHaveGeometry = nodes.every((node) => {
+        const rect = node.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      });
+      if (surfaceRect.width <= 0 || surfaceRect.height <= 0 || !nodesHaveGeometry) {
+        previousGeometry = undefined;
+        frame = window.requestAnimationFrame(verifyCommittedGeometry);
+        return;
+      }
+
+      const geometry = [
+        Math.round(surfaceRect.width),
+        Math.round(surfaceRect.height),
+        ...nodes.flatMap((node) => {
+          const rect = node.getBoundingClientRect();
+          return [
+            node.dataset.id,
+            Math.round(rect.width),
+            Math.round(rect.height),
+          ];
+        }),
+      ].join(":");
+      if (geometry !== previousGeometry) {
+        previousGeometry = geometry;
+        frame = window.requestAnimationFrame(verifyCommittedGeometry);
+        return;
+      }
+
+      surface.dataset.editorPrerenderReady = "true";
+    };
+
+    frame = window.requestAnimationFrame(verifyCommittedGeometry);
+    return () => {
+      active = false;
+      window.cancelAnimationFrame(frame);
+      delete surface.dataset.editorPrerenderReady;
+    };
+  }, [nodeCount, nodesInitialized]);
+
+  return null;
+}
 
 function stableNodeClassName(value?: string): string | undefined {
   const classes = value?.split(/\s+/).filter((item) => item && !dynamicFlowNodeClasses.has(item)) ?? [];
   return classes.length > 0 ? classes.join(" ") : undefined;
 }
 
-function clampPreviewSplitRatio(value: number, workspaceHeight?: number): number {
-  const parsed = Number.isFinite(value) ? value : previewSplitDefault;
-  if (!workspaceHeight || workspaceHeight <= previewSplitterSizePx) {
-    return Math.min(previewSplitMaximum, Math.max(previewSplitMinimum, parsed));
-  }
-  const availableHeight = workspaceHeight - previewSplitterSizePx;
-  const minimumRatio = Math.max(previewSplitMinimum, previewPaneMinimumPx / availableHeight);
-  const maximumRatio = Math.min(previewSplitMaximum, 1 - previewPaneMinimumPx / availableHeight);
-  if (minimumRatio > maximumRatio) return previewSplitDefault;
-  return Math.min(maximumRatio, Math.max(minimumRatio, parsed));
+function previewSplitBounds(height: number) {
+  if (height <= previewSplitterSizePx) return { minimum: previewSplitMinimum, maximum: previewSplitMaximum };
+  // Treat the pixel targets as soft floors. Preserve at least 12 points of
+  // travel on compact workspaces so both the pointer and keyboard can resize.
+  const maximum = Math.max(0.5, Math.min(previewSplitMaximum, (height - previewSplitterSizePx - inspectorPaneTargetPx) / height));
+  const minimum = Math.max(previewSplitMinimum, Math.min(previewPaneTargetPx / height, maximum - 0.12));
+  return { minimum, maximum };
 }
 
 function loadPreviewSplitRatio(): number {
@@ -88,12 +130,6 @@ function loadPreviewSplitRatio(): number {
     return previewSplitDefault;
   }
   return parsed;
-}
-
-function shouldPreserveNativeUndo(target: EventTarget | null): boolean {
-  if (!(target instanceof Element)) return false;
-  const editable = target.closest("input, textarea, select, [contenteditable], [role='textbox']");
-  return Boolean(editable);
 }
 
 function countVisibleEdgesBy<T extends "source" | "target">(edges: Array<Record<T, string> & { hidden?: boolean }>, key: T) {
@@ -122,9 +158,20 @@ function shouldApplyPersistedAssetManifest(current: AssetRef[], incoming: AssetR
   });
 }
 
-function applyPersistedProjectMetadata(state: SharedEditorState): void {
+function applyPersistedProjectMetadata(
+  state: SharedEditorState,
+  submitted: ReturnType<typeof useProjectStore.getState>,
+  generation: number,
+): void {
   const incomingAssets = state.project_metadata.assetManifest;
   const current = useProjectStore.getState();
+  if (useEditorStore.getState().projectLoadGeneration !== generation
+    || current.projectId !== submitted.projectId
+    || current.title !== submitted.title
+    || current.author !== submitted.author
+    || current.assetManifest !== submitted.assetManifest
+    || current.settings !== submitted.settings) return;
+  if (state.project_metadata.projectId && state.project_metadata.projectId !== current.projectId) return;
   const shouldApplyAssets = Array.isArray(incomingAssets) && shouldApplyPersistedAssetManifest(current.assetManifest, incomingAssets as AssetRef[]);
   const shouldApplySettings = Boolean(state.project_metadata.settings) && countEmbeddedAssetPayloads(current.settings).count > 0;
   if (shouldApplyAssets || shouldApplySettings) {
@@ -182,73 +229,9 @@ function edgeColorForConnection(
   }
 }
 
-function roundedOrthogonalPath(points: Array<{ x: number; y: number }>, radius = orthogonalCornerRadius): string {
-  if (points.length === 0) return "";
-  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
-  let path = `M ${points[0].x} ${points[0].y}`;
-  for (let index = 1; index < points.length - 1; index += 1) {
-    const previous = points[index - 1];
-    const current = points[index];
-    const next = points[index + 1];
-    const incomingLength = Math.abs(current.x - previous.x) + Math.abs(current.y - previous.y);
-    const outgoingLength = Math.abs(next.x - current.x) + Math.abs(next.y - current.y);
-    const cornerRadius = Math.min(radius, incomingLength / 2, outgoingLength / 2);
-    const incomingX = current.x === previous.x ? current.x : current.x + (previous.x > current.x ? cornerRadius : -cornerRadius);
-    const incomingY = current.y === previous.y ? current.y : current.y + (previous.y > current.y ? cornerRadius : -cornerRadius);
-    const outgoingX = current.x === next.x ? current.x : current.x + (next.x > current.x ? cornerRadius : -cornerRadius);
-    const outgoingY = current.y === next.y ? current.y : current.y + (next.y > current.y ? cornerRadius : -cornerRadius);
-    if (cornerRadius <= 0 || (incomingX === outgoingX && incomingY === outgoingY)) {
-      path += ` L ${current.x} ${current.y}`;
-    } else {
-      path += ` L ${incomingX} ${incomingY} Q ${current.x} ${current.y} ${outgoingX} ${outgoingY}`;
-    }
-  }
-  const last = points[points.length - 1];
-  return `${path} L ${last.x} ${last.y}`;
-}
-
-function buildOrthogonalEdgePath(sourceX: number, sourceY: number, targetX: number, targetY: number, data?: OrthogonalEdgeData): string {
-  const deltaX = targetX - sourceX;
-  const deltaY = targetY - sourceY;
-  const sameLane = Math.abs(deltaX) <= 8;
-  const isBackEdge = Boolean(data?.isBackEdge) || deltaY <= -24;
-  if (sameLane && !isBackEdge) {
-    return roundedOrthogonalPath([
-      { x: sourceX, y: sourceY },
-      { x: sourceX, y: targetY },
-      { x: targetX, y: targetY },
-    ], 0);
-  }
-
-  if (isBackEdge) {
-    const side = deltaX >= 0 ? 1 : -1;
-    const laneX = side > 0
-      ? Math.max(sourceX, targetX) + (data?.isLoopEdge ? 148 : 116)
-      : Math.min(sourceX, targetX) - (data?.isLoopEdge ? 148 : 116);
-    const exitY = sourceY + (data?.isJunctionEdge ? 62 : 46);
-    const entryY = targetY - 46;
-    return roundedOrthogonalPath([
-      { x: sourceX, y: sourceY },
-      { x: sourceX, y: exitY },
-      { x: laneX, y: exitY },
-      { x: laneX, y: entryY },
-      { x: targetX, y: entryY },
-      { x: targetX, y: targetY },
-    ]);
-  }
-
-  const midpointY = Math.round(sourceY + Math.max(48, deltaY / 2));
-  return roundedOrthogonalPath([
-    { x: sourceX, y: sourceY },
-    { x: sourceX, y: midpointY },
-    { x: targetX, y: midpointY },
-    { x: targetX, y: targetY },
-  ]);
-}
-
 function OrthogonalEdge({ id, sourceX, sourceY, targetX, targetY, markerEnd, style, data }: EdgeProps) {
   const edgeData = data as OrthogonalEdgeData | undefined;
-  const path = buildOrthogonalEdgePath(sourceX, sourceY, targetX, targetY, edgeData);
+  const path = graphEndpointPath(edgeData?.route ?? [], { x: sourceX, y: sourceY }, { x: targetX, y: targetY });
   const className = [
     "orthogonal-edge-path",
     edgeData?.edgeKind ? "edge-kind-" + edgeSourceClass(edgeData.edgeKind) : "",
@@ -260,384 +243,32 @@ function OrthogonalEdge({ id, sourceX, sourceY, targetX, targetY, markerEnd, sty
   return <BaseEdge id={id} path={path} markerEnd={markerEnd} style={style} className={className} />;
 }
 
-function StoryMiniMap({
-  nodes,
-  edges,
-  selectedNodeId,
-  onNodeClick,
+export function VisualNovelEditor({
+  onReturnHome,
+  deferRuntimePreview = false,
 }: {
-  nodes: EditorNode[];
-  edges: EditorEdge[];
-  selectedNodeId?: string;
-  onNodeClick: (event: ReactMouseEvent, node: EditorNode) => void;
+  onReturnHome: () => void;
+  deferRuntimePreview?: boolean;
 }) {
-  const contentWidth = storyMiniMapWidth - storyMiniMapPadding * 2;
-  const contentHeight = storyMiniMapHeight - storyMiniMapPadding * 2;
-  const treeLayout = useMemo(() => {
-    const nodesById = new Map(nodes.map((node) => [node.id, node]));
-    const nodeIds = new Set(nodesById.keys());
-    const validEdges = edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target));
-    const outgoing = new Map<string, EditorEdge[]>();
-    const incoming = new Map<string, number>();
-    for (const edge of validEdges) {
-      outgoing.set(edge.source, [...(outgoing.get(edge.source) ?? []), edge]);
-      incoming.set(edge.target, (incoming.get(edge.target) ?? 0) + 1);
-    }
-
-    const roots = nodes.filter((node) => node.data.nodeKind === "start");
-    const fallbackRoots = roots.length > 0 ? roots : nodes.filter((node) => (incoming.get(node.id) ?? 0) === 0);
-    const orderedRoots = (fallbackRoots.length > 0 ? fallbackRoots : nodes.slice(0, 1))
-      .sort((left, right) => left.position.x - right.position.x || left.position.y - right.position.y);
-    const positioned = new Set<string>();
-    const layoutRows: EditorNode[][] = [];
-    let rowCursor = 0;
-
-    const place = (node: EditorNode, depth: number, stack: Set<string>) => {
-      if (stack.has(node.id)) return;
-      if (!positioned.has(node.id)) {
-        const row = layoutRows[depth] ?? [];
-        row.push(node);
-        layoutRows[depth] = row;
-        positioned.add(node.id);
-      }
-      const nextStack = new Set(stack);
-      nextStack.add(node.id);
-      const children = [...(outgoing.get(node.id) ?? [])]
-        .sort((left, right) => (left.sourceHandle ?? "").localeCompare(right.sourceHandle ?? "") || left.target.localeCompare(right.target))
-        .map((edge) => nodesById.get(edge.target))
-        .filter((child): child is EditorNode => Boolean(child));
-      children.forEach((child) => place(child, depth + 1, nextStack));
-    };
-
-    orderedRoots.forEach((root) => {
-      place(root, rowCursor, new Set());
-      rowCursor = layoutRows.length + 1;
-    });
-    nodes
-      .filter((node) => !positioned.has(node.id))
-      .sort((left, right) => left.position.x - right.position.x || left.position.y - right.position.y)
-      .forEach((node) => {
-        place(node, rowCursor, new Set());
-        rowCursor = layoutRows.length + 1;
-      });
-
-    const compactRows = layoutRows.filter((row) => Array.isArray(row) && row.length > 0);
-    const maxColumns = Math.max(1, ...compactRows.map((row) => row.length));
-    const rows = Math.max(1, compactRows.length);
-    const cellWidth = contentWidth / maxColumns;
-    const cellHeight = contentHeight / rows;
-    const nodeWidth = Math.max(8, Math.min(18, cellWidth * 0.56));
-    const nodeHeight = Math.max(5.5, Math.min(10, cellHeight * 0.44));
-    const positions = new Map<string, { x: number; y: number; width: number; height: number }>();
-    compactRows.forEach((row, rowIndex) => {
-      const rowWidth = row.length * cellWidth;
-      const rowOffset = (contentWidth - rowWidth) / 2;
-      row.forEach((node, columnIndex) => {
-        positions.set(node.id, {
-          x: storyMiniMapPadding + rowOffset + columnIndex * cellWidth + (cellWidth - nodeWidth) / 2,
-          y: storyMiniMapPadding + rowIndex * cellHeight + (cellHeight - nodeHeight) / 2,
-          width: nodeWidth,
-          height: nodeHeight,
-        });
-      });
-    });
-    return { positions, edges: validEdges };
-  }, [contentHeight, contentWidth, edges, nodes]);
-
-  const selectedPosition = selectedNodeId ? treeLayout.positions.get(selectedNodeId) : undefined;
-
-  return (
-    <div className="story-minimap" aria-label="?????">
-      <svg viewBox={`0 0 ${storyMiniMapWidth} ${storyMiniMapHeight}`} role="img">
-        <rect className="story-minimap-frame" x="0.5" y="0.5" width={storyMiniMapWidth - 1} height={storyMiniMapHeight - 1} rx="8" />
-        <g className="story-minimap-edges">
-          {treeLayout.edges.map((edge) => {
-            const source = treeLayout.positions.get(edge.source);
-            const target = treeLayout.positions.get(edge.target);
-            if (!source || !target) return null;
-            const sourceX = source.x + source.width / 2;
-            const sourceY = source.y + source.height;
-            const targetX = target.x + target.width / 2;
-            const targetY = target.y;
-            const middleY = sourceY + Math.max(5, (targetY - sourceY) / 2);
-            return (
-              <path
-                key={edge.id}
-                className="story-minimap-edge"
-                d={`M ${sourceX} ${sourceY} C ${sourceX} ${middleY}, ${targetX} ${middleY}, ${targetX} ${targetY}`}
-              />
-            );
-          })}
-        </g>
-        <g>
-          {nodes.map((node) => {
-            const position = treeLayout.positions.get(node.id);
-            if (!position) return null;
-            const selected = node.id === selectedNodeId;
-            return (
-              <rect
-                key={node.id}
-                className={`story-minimap-node${selected ? " is-selected" : ""}`}
-                x={position.x}
-                y={position.y}
-                width={position.width}
-                height={position.height}
-                rx="1.8"
-                fill={storyMiniMapNodeColors[node.data.nodeKind] ?? "#6f7480"}
-                stroke={selected ? "#f3b84d" : "#35242a"}
-                strokeWidth={selected ? 1.6 : 0.9}
-                onClick={(event) => onNodeClick(event, node)}
-              />
-            );
-          })}
-        </g>
-        {selectedPosition && (
-          <rect
-            className="story-minimap-viewport"
-            x={selectedPosition.x - 2}
-            y={selectedPosition.y - 2}
-            width={selectedPosition.width + 4}
-            height={selectedPosition.height + 4}
-            rx="3"
-          />
-        )}
-      </svg>
-    </div>
-  );
-}
-
-function DistributionMiniMap({
-  nodes,
-  viewport,
-  surfaceSize,
-}: {
-  nodes: EditorNode[];
-  viewport: Viewport;
-  surfaceSize: { width: number; height: number };
-}) {
-  const reactFlow = useReactFlow<EditorNode>();
-  const contentWidth = storyMiniMapWidth - storyMiniMapPadding * 2;
-  const contentHeight = storyMiniMapHeight - storyMiniMapPadding * 2;
-  const distribution = useMemo(() => {
-    type MiniMapNodeRect = {
-      id: string;
-      x: number;
-      y: number;
-      width: number;
-      height: number;
-      tone: StoryMiniMapDensityTone;
-      centerX: number;
-      centerY: number;
-      worldCenterX: number;
-      worldCenterY: number;
-    };
-    if (nodes.length === 0) {
-      return {
-        bounds: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
-        scaleX: 1,
-        scaleY: 1,
-        projectX: (x: number) => x,
-        projectY: (y: number) => y,
-        offsetX: storyMiniMapPadding,
-        offsetY: storyMiniMapPadding,
-        drawnWidth: contentWidth,
-        drawnHeight: contentHeight,
-        nodeRects: [] as MiniMapNodeRect[],
-      };
-    }
-    const nodePoints = nodes.map((node) => {
-      const measured = node.measured as { width?: number; height?: number } | undefined;
-      const width = measured?.width ?? node.width ?? 300;
-      const height = measured?.height ?? node.height ?? 180;
-      return {
-        id: node.id,
-        minX: node.position.x,
-        minY: node.position.y,
-        maxX: node.position.x + width,
-        maxY: node.position.y + height,
-        centerX: node.position.x + width / 2,
-        centerY: node.position.y + height / 2,
-        kind: node.data.nodeKind,
-      };
-    });
-    const bounds = nodePoints.reduce((accumulator, point) => {
-      return {
-        minX: Math.min(accumulator.minX, point.minX),
-        minY: Math.min(accumulator.minY, point.minY),
-        maxX: Math.max(accumulator.maxX, point.maxX),
-        maxY: Math.max(accumulator.maxY, point.maxY),
-      };
-    }, { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity });
-    const worldWidth = Math.max(1, bounds.maxX - bounds.minX);
-    const worldHeight = Math.max(1, bounds.maxY - bounds.minY);
-    const drawnWidth = contentWidth;
-    const drawnHeight = contentHeight;
-    const offsetX = storyMiniMapPadding;
-    const offsetY = storyMiniMapPadding;
-    const scaleX = drawnWidth / worldWidth;
-    const scaleY = drawnHeight / worldHeight;
-    const projectX = (x: number) => offsetX + (x - bounds.minX) * scaleX;
-    const projectY = (y: number) => offsetY + (y - bounds.minY) * scaleY;
-    const miniNodeWidth = nodes.length > 100 ? 4.8 : nodes.length > 60 ? 5.6 : 6.6;
-    const miniNodeHeight = nodes.length > 100 ? 2.9 : nodes.length > 60 ? 3.2 : 3.8;
-    const toneForNode = (kind: string): StoryMiniMapDensityTone => {
-      if (kind === "start" || kind === "end") return "dense";
-      if (kind === "choice" || kind === "condition" || kind === "loop") return "solid";
-      return "soft";
-    };
-    const clampRectPosition = (value: number, size: number, min: number, max: number) => {
-      if (max - min <= size) return min + Math.max(0, (max - min - size) / 2);
-      return Math.min(max - size, Math.max(min, value));
-    };
-    return {
-      bounds,
-      scaleX,
-      scaleY,
-      offsetX,
-      offsetY,
-      drawnWidth,
-      drawnHeight,
-      projectX,
-      projectY,
-      nodeRects: nodePoints.map((point): MiniMapNodeRect => {
-        const centerX = projectX(point.centerX);
-        const centerY = projectY(point.centerY);
-        return {
-          id: point.id,
-          x: Math.round(clampRectPosition(centerX - miniNodeWidth / 2, miniNodeWidth, offsetX, offsetX + drawnWidth) * 2) / 2,
-          y: Math.round(clampRectPosition(centerY - miniNodeHeight / 2, miniNodeHeight, offsetY, offsetY + drawnHeight) * 2) / 2,
-          width: miniNodeWidth,
-          height: miniNodeHeight,
-          tone: toneForNode(point.kind),
-          centerX,
-          centerY,
-          worldCenterX: point.centerX,
-          worldCenterY: point.centerY,
-        };
-      }),
-    };
-  }, [contentHeight, contentWidth, nodes]);
-
-  const visibleWorld = viewport.zoom > 0 && surfaceSize.width > 0 && surfaceSize.height > 0
-    ? {
-      x: (0 - viewport.x) / viewport.zoom,
-      y: (0 - viewport.y) / viewport.zoom,
-      width: surfaceSize.width / viewport.zoom,
-      height: surfaceSize.height / viewport.zoom,
-    }
-    : undefined;
-
-  const handlePointerDown = (event: ReactMouseEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
-    const rect = event.currentTarget.getBoundingClientRect();
-    const localX = ((event.clientX - rect.left) / rect.width) * storyMiniMapWidth;
-    const localY = ((event.clientY - rect.top) / rect.height) * storyMiniMapHeight;
-    const clampedX = Math.min(distribution.offsetX + distribution.drawnWidth, Math.max(distribution.offsetX, localX));
-    const clampedY = Math.min(distribution.offsetY + distribution.drawnHeight, Math.max(distribution.offsetY, localY));
-    const xRatio = (clampedX - distribution.offsetX) / Math.max(distribution.drawnWidth, 1);
-    const yRatio = (clampedY - distribution.offsetY) / Math.max(distribution.drawnHeight, 1);
-    const worldX = distribution.bounds.minX + xRatio * Math.max(1, distribution.bounds.maxX - distribution.bounds.minX);
-    const worldY = distribution.bounds.minY + yRatio * Math.max(1, distribution.bounds.maxY - distribution.bounds.minY);
-    void reactFlow.setCenter(worldX, worldY, {
-      zoom: Math.max(0.28, Math.min(0.82, viewport.zoom || 0.62)),
-      duration: 180,
-    });
-  };
-  const clampMiniMapValue = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
-  const focusPosition = visibleWorld
-    ? {
-      x: clampMiniMapValue(
-        distribution.projectX(visibleWorld.x + visibleWorld.width / 2),
-        distribution.offsetX,
-        distribution.offsetX + distribution.drawnWidth,
-      ),
-      y: clampMiniMapValue(
-        distribution.projectY(visibleWorld.y + visibleWorld.height / 2),
-        distribution.offsetY,
-        distribution.offsetY + distribution.drawnHeight,
-      ),
-    }
-    : undefined;
-  const focusMarker = focusPosition
-    ? {
-      x: clampMiniMapValue(focusPosition.x - 7, distribution.offsetX, distribution.offsetX + distribution.drawnWidth - 14),
-      y: clampMiniMapValue(focusPosition.y - 5, distribution.offsetY, distribution.offsetY + distribution.drawnHeight - 10),
-      width: 14,
-      height: 10,
-    }
-    : undefined;
-
-  return (
-    <div className="story-minimap" aria-label="节点分布缩略图" onPointerDown={handlePointerDown}>
-      <svg viewBox={`0 0 ${storyMiniMapWidth} ${storyMiniMapHeight}`} role="img">
-        <g>
-          {distribution.nodeRects.map((node) => {
-            const paint = storyMiniMapDensityPaint[node.tone];
-            return (
-              <rect
-                key={node.id}
-                className={`story-minimap-distribution-node is-${node.tone}`}
-                data-node-id={node.id}
-                data-mini-center-x={node.centerX}
-                data-mini-center-y={node.centerY}
-                data-world-center-x={node.worldCenterX}
-                data-world-center-y={node.worldCenterY}
-                x={node.x}
-                y={node.y}
-                width={node.width}
-                height={node.height}
-                rx="1.6"
-                fill={paint.fill}
-                stroke={paint.stroke}
-                strokeWidth="0.65"
-              />
-            );
-          })}
-        </g>
-        {focusMarker && (
-          <>
-            <rect
-              className="story-minimap-focus-window"
-              x={focusMarker.x}
-              y={focusMarker.y}
-              width={focusMarker.width}
-              height={focusMarker.height}
-              rx="2.4"
-              fill="rgba(245, 158, 11, 0.12)"
-              stroke="#d97706"
-              strokeWidth="1.35"
-            />
-            <path
-              className="story-minimap-focus-brackets"
-              d={`M ${focusMarker.x - 2} ${focusMarker.y + 2} L ${focusMarker.x - 2} ${focusMarker.y - 1} L ${focusMarker.x + 2} ${focusMarker.y - 1} M ${focusMarker.x + focusMarker.width + 2} ${focusMarker.y + 2} L ${focusMarker.x + focusMarker.width + 2} ${focusMarker.y - 1} L ${focusMarker.x + focusMarker.width - 2} ${focusMarker.y - 1} M ${focusMarker.x - 2} ${focusMarker.y + focusMarker.height - 2} L ${focusMarker.x - 2} ${focusMarker.y + focusMarker.height + 1} L ${focusMarker.x + 2} ${focusMarker.y + focusMarker.height + 1} M ${focusMarker.x + focusMarker.width + 2} ${focusMarker.y + focusMarker.height - 2} L ${focusMarker.x + focusMarker.width + 2} ${focusMarker.y + focusMarker.height + 1} L ${focusMarker.x + focusMarker.width - 2} ${focusMarker.y + focusMarker.height + 1}`}
-              fill="none"
-              stroke="#f59e0b"
-              strokeWidth="1"
-            />
-          </>
-        )}
-      </svg>
-    </div>
-  );
-}
-
-export function VisualNovelEditor({ onReturnHome }: { onReturnHome: () => void }) {
   const [isDeclutteringNodes, setIsDeclutteringNodes] = useState(false);
   const [miniMapReady, setMiniMapReady] = useState(true);
+  const [viewportRevision, setViewportRevision] = useState(0);
+  const viewportMovingRef = useRef(false);
   const [inspectorWidth, setInspectorWidth] = useState(() => {
-    const saved = window.localStorage.getItem("agentvn.inspectorWidth");
-    return saved ? Number(saved) : 440;
+    const saved = Number(window.localStorage.getItem("agentvn.inspectorWidth"));
+    return Number.isFinite(saved) && saved >= 320 ? Math.min(1120, saved) : 440;
   });
   const [previewCollapsed, setPreviewCollapsed] = useState(false);
+  const [workspaceActive, setWorkspaceActive] = useState(true);
   const [previewResizing, setPreviewResizing] = useState(false);
   const [previewSplitRatio, setPreviewSplitRatio] = useState(loadPreviewSplitRatio);
+  const [previewStackHeight, setPreviewStackHeight] = useState(0);
+  const previewBounds = previewSplitBounds(previewStackHeight);
+  const displayedPreviewRatio = Math.max(previewBounds.minimum, Math.min(previewBounds.maximum, previewSplitRatio));
   const nodes = useEditorStore((state) => state.nodes);
   const edges = useEditorStore((state) => state.edges);
   const selectedNodeId = useEditorStore((state) => state.selectedNodeId);
   const viewport = useEditorStore((state) => state.viewport);
-  const flowSurfaceSize = useEditorStore((state) => state.flowSurfaceSize);
-  const memoryMode = useEditorStore((state) => state.memoryMode);
   const onNodesChange = useEditorStore((state) => state.onNodesChange);
   const onEdgesChange = useEditorStore((state) => state.onEdgesChange);
   const connectNodes = useEditorStore((state) => state.connectNodes);
@@ -665,6 +296,8 @@ export function VisualNovelEditor({ onReturnHome }: { onReturnHome: () => void }
     type: "orthogonal",
     interactionWidth: 18,
   }), []);
+  const cards = useMemo(() => graphCards(nodes), [nodes]);
+  const edgeRoutes = useMemo(() => routeGraphEdges(cards, edges), [cards, edges]);
   const flowEdges = useMemo(
     () => {
       const outgoingCounts = countVisibleEdgesBy(edges, "source");
@@ -692,6 +325,7 @@ export function VisualNovelEditor({ onReturnHome }: { onReturnHome: () => void }
           ].filter(Boolean).join(" ") || undefined,
           data: {
             ...(edge.data as Record<string, unknown> | undefined),
+            route: edgeRoutes.get(edge.id),
             isJunctionEdge,
             isBackEdge,
             isLoopEdge,
@@ -706,12 +340,13 @@ export function VisualNovelEditor({ onReturnHome }: { onReturnHome: () => void }
         };
       });
     },
-    [edges, nodes],
+    [edges, nodes, edgeRoutes],
   );
   const flowSurfaceRef = useRef<HTMLElement>(null);
+  const shellRef = useRef<HTMLDivElement>(null);
   const previewStackRef = useRef<HTMLElement>(null);
-  const previewKeyboardResizeTimerRef = useRef<number>();
-  const reactFlowInstanceRef = useRef<CanvasViewportController | null>(null);
+  const previewKeyboardResizeTimerRef = useRef<number | undefined>(undefined);
+  const previewDragCleanupRef = useRef<(() => void) | undefined>(undefined);
   const nodeDragRef = useRef({ dragging: false, endedAt: 0 });
   const flowNodes = useMemo(
     () => nodes.map((node) => {
@@ -731,32 +366,80 @@ export function VisualNovelEditor({ onReturnHome }: { onReturnHome: () => void }
     [nodes, recentNodeEffects, selectedNodeId]
   );
   const project = useProjectStore();
+  const saveRequestIdRef = useRef(0);
   const editorAppearance = project.settings.editorAppearance;
-  const canvasBackgroundImage = editorAppearance.canvasBackgroundImage;
+  const canvasBackgroundSource = editorCanvasBackgroundSource(editorAppearance.canvasBackgroundImage);
   const canvasBackgroundFit = editorAppearance.canvasBackgroundFit ?? "cover";
   const canvasBackgroundOpacity = editorAppearance.canvasBackgroundOpacity ?? 0.38;
   const shellBackgroundLayerStyle = useMemo<CSSProperties | undefined>(() => {
-    const source = canvasBackgroundImage?.dataUrl ?? canvasBackgroundImage?.url;
-    if (!source) return undefined;
+    if (!canvasBackgroundSource) return undefined;
     return {
-      backgroundImage: `url("${source}")`,
+      backgroundImage: `url("${canvasBackgroundSource}")`,
       backgroundSize: "cover",
       backgroundRepeat: "no-repeat",
       backgroundPosition: "center",
       opacity: canvasBackgroundOpacity > 0 ? Math.min(0.48, canvasBackgroundOpacity + 0.12) : 0,
     };
-  }, [canvasBackgroundImage?.dataUrl, canvasBackgroundImage?.url, canvasBackgroundOpacity]);
+  }, [canvasBackgroundSource, canvasBackgroundOpacity]);
   const flowBackgroundLayerStyle = useMemo<CSSProperties | undefined>(() => {
-    const source = canvasBackgroundImage?.dataUrl ?? canvasBackgroundImage?.url;
-    if (!source) return undefined;
+    if (!canvasBackgroundSource) return undefined;
     return {
-      backgroundImage: `url("${source}")`,
+      backgroundImage: `url("${canvasBackgroundSource}")`,
       backgroundSize: canvasBackgroundFit === "tile" ? "320px auto" : canvasBackgroundFit,
       backgroundRepeat: canvasBackgroundFit === "tile" ? "repeat" : "no-repeat",
       backgroundPosition: "center",
       opacity: canvasBackgroundOpacity,
     };
-  }, [canvasBackgroundFit, canvasBackgroundImage?.dataUrl, canvasBackgroundImage?.url, canvasBackgroundOpacity]);
+  }, [canvasBackgroundFit, canvasBackgroundSource, canvasBackgroundOpacity]);
+
+  const requestSave = useCallback(async (): Promise<SaveResult> => {
+    const requestId = ++saveRequestIdRef.current;
+    const state = useEditorStore.getState();
+    const currentProject = useProjectStore.getState();
+    try {
+      const saved = await backendClient.saveProjectState({
+        project_graph: {
+          nodes: state.nodes,
+          edges: state.edges,
+          viewport: state.viewport,
+          memoryMode: state.memoryMode,
+        },
+        project_metadata: {
+          projectId: currentProject.projectId,
+          title: currentProject.title,
+          author: currentProject.author,
+          createdAt: currentProject.createdAt,
+          updatedAt: new Date().toISOString(),
+          assetManifest: currentProject.assetManifest,
+          settings: { ...currentProject.settings },
+        },
+      });
+      if (requestId === saveRequestIdRef.current) {
+        applyPersistedProjectMetadata(saved, currentProject, state.projectLoadGeneration);
+        const latest = useEditorStore.getState();
+        if (
+          latest.projectLoadGeneration === state.projectLoadGeneration &&
+          useProjectStore.getState().projectId === currentProject.projectId &&
+          latest.nodes === state.nodes &&
+          latest.edges === state.edges &&
+          latest.viewport === state.viewport &&
+          latest.memoryMode === state.memoryMode
+        ) {
+          useEditorStore.setState({ dirty: false });
+        }
+      }
+      return { ok: true, message: "已保存。" };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : "保存失败。" };
+    }
+  }, []);
+
+  const workspaceController = useMemo<WorkspaceController>(() => ({
+    openSurface: openWorkspaceSurface,
+    requestBack,
+    requestSave,
+    requestGeneration,
+  }), [requestSave]);
 
   useEffect(() => {
     let timeoutId: number | undefined;
@@ -794,7 +477,9 @@ export function VisualNovelEditor({ onReturnHome }: { onReturnHome: () => void }
         return;
       }
       showMiniMap();
-    }, 900);
+    // Do not compete with the route import's first render. The minimap is
+    // auxiliary UI and can appear after the graph has settled.
+    }, 1800);
     return () => {
       if (timeoutId !== undefined) window.clearTimeout(timeoutId);
       if (idleId !== undefined) {
@@ -804,76 +489,46 @@ export function VisualNovelEditor({ onReturnHome }: { onReturnHome: () => void }
     };
   }, [nodes.length]);
 
-  const nodeColor = (node: { data?: { nodeKind?: string } }) => {
-    switch (node.data?.nodeKind) {
-      case "scene":
-        return "var(--scene)";
-      case "choice":
-        return "var(--choice)";
-      case "modifier":
-        return "var(--modifier)";
-      case "condition":
-        return "var(--condition)";
-      case "loop":
-        return "var(--loop)";
-      case "animation":
-        return "var(--animation)";
-      case "start":
-        return "var(--start)";
-      case "end":
-        return "var(--end)";
-      default:
-        return "var(--surface-3)";
-    }
-  };
-
-  const focusMiniMapNode = useCallback((event: ReactMouseEvent, miniMapNode: EditorNode) => {
-    event.preventDefault();
-    event.stopPropagation();
-    const target = useEditorStore.getState().nodes.find((item) => item.id === miniMapNode.id);
-    if (!target) return;
-    selectNode(target.id);
-    const measured = target.measured as { width?: number; height?: number } | undefined;
-    const centerX = target.position.x + (measured?.width ?? 300) / 2;
-    const centerY = target.position.y + (measured?.height ?? 180) / 2;
-    window.requestAnimationFrame(() => {
-      void reactFlowInstanceRef.current?.setCenter(centerX, centerY, {
-        zoom: 0.82,
-        duration: 180,
-      });
-    });
-  }, [selectNode]);
-
-  const navigateMiniMapPosition = useCallback((x: number, y: number) => {
-    window.requestAnimationFrame(() => {
-      void reactFlowInstanceRef.current?.setCenter(x, y, {
-        zoom: Math.max(0.28, Math.min(0.82, viewport.zoom || 0.62)),
-        duration: 180,
-      });
-    });
-  }, [viewport.zoom]);
-
   const resizeInspector = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
+    const handle = event.currentTarget;
+    const pointerId = event.pointerId;
+    handle.setPointerCapture(pointerId);
     const startX = event.clientX;
-    const startWidth = inspectorWidth;
+    const startWidth = previewStackRef.current?.getBoundingClientRect().width ?? inspectorWidth;
+    const maxWidth = Math.min(1120, (handle.parentElement?.clientWidth ?? window.innerWidth) * 0.6);
     const onMove = (moveEvent: PointerEvent) => {
-      const nextWidth = Math.min(1120, Math.max(360, startWidth + startX - moveEvent.clientX));
+      if (moveEvent.pointerId !== pointerId) return;
+      const nextWidth = Math.min(maxWidth, Math.max(320, startWidth + startX - moveEvent.clientX));
       setInspectorWidth(nextWidth);
       window.localStorage.setItem("agentvn.inspectorWidth", String(nextWidth));
     };
-    const onUp = () => {
+    const cleanup = () => {
       document.removeEventListener("pointermove", onMove);
       document.removeEventListener("pointerup", onUp);
+      document.removeEventListener("pointercancel", onUp);
+      handle.removeEventListener("lostpointercapture", onLostPointerCapture);
       document.body.classList.remove("is-resizing-panel");
+      setPreviewResizing(false);
+    };
+    const onUp = (upEvent: PointerEvent) => {
+      if (upEvent.pointerId !== pointerId) return;
+      cleanup();
+    };
+    const onLostPointerCapture = (lostEvent: PointerEvent) => {
+      if (lostEvent.pointerId !== pointerId) return;
+      cleanup();
     };
     document.body.classList.add("is-resizing-panel");
+    setPreviewResizing(true);
     document.addEventListener("pointermove", onMove);
     document.addEventListener("pointerup", onUp);
+    document.addEventListener("pointercancel", onUp);
+    handle.addEventListener("lostpointercapture", onLostPointerCapture);
   }, [inspectorWidth]);
 
   const resizePreview = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    if (previewCollapsed) return;
+    if (previewCollapsed || event.button !== 0 || !event.isPrimary || previewDragCleanupRef.current) return;
     event.preventDefault();
     const splitter = event.currentTarget;
     const pointerId = event.pointerId;
@@ -885,14 +540,18 @@ export function VisualNovelEditor({ onReturnHome }: { onReturnHome: () => void }
       // error-log-ignore: 部分 WebView 不支持 Pointer Capture，文档级事件监听会继续完成拖动。
       // Some WebViews do not expose pointer capture; document listeners remain the fallback.
     }
-    const rect = workspace.getBoundingClientRect();
-    const availableHeight = Math.max(1, rect.height - previewSplitterSizePx);
-    let latestRatio = previewSplitRatio;
+    splitter.focus({ preventScroll: true });
+    const grabOffset = event.clientY - splitter.getBoundingClientRect().top;
+    let latestRatio: number | undefined;
     const update = (clientY: number) => {
-      latestRatio = clampPreviewSplitRatio((clientY - rect.top) / availableHeight, rect.height);
+      const height = Math.max(1, workspace.clientHeight);
+      const { minimum, maximum } = previewSplitBounds(height);
+      latestRatio = Math.min(maximum, Math.max(minimum, (clientY - workspace.getBoundingClientRect().top - grabOffset) / height));
       setPreviewSplitRatio(latestRatio);
     };
-    const cleanup = () => {
+    const cleanup = (persist = true) => {
+      if (!previewDragCleanupRef.current) return;
+      previewDragCleanupRef.current = undefined;
       document.removeEventListener("pointermove", onMove);
       document.removeEventListener("pointerup", onUp);
       document.removeEventListener("pointercancel", onUp);
@@ -900,7 +559,7 @@ export function VisualNovelEditor({ onReturnHome }: { onReturnHome: () => void }
       window.removeEventListener("blur", onUp);
       document.body.classList.remove("is-resizing-preview");
       setPreviewResizing(false);
-      window.localStorage.setItem(previewSplitStorageKey, String(latestRatio));
+      if (persist && latestRatio !== undefined) window.localStorage.setItem(previewSplitStorageKey, String(latestRatio));
     };
     const onMove = (moveEvent: PointerEvent) => {
       if (moveEvent.pointerId === pointerId) update(moveEvent.clientY);
@@ -910,6 +569,11 @@ export function VisualNovelEditor({ onReturnHome }: { onReturnHome: () => void }
       cleanup();
     };
     const onLostPointerCapture = () => cleanup();
+    if (previewKeyboardResizeTimerRef.current !== undefined) {
+      window.clearTimeout(previewKeyboardResizeTimerRef.current);
+      previewKeyboardResizeTimerRef.current = undefined;
+    }
+    previewDragCleanupRef.current = () => cleanup(false);
     document.body.classList.add("is-resizing-preview");
     setPreviewResizing(true);
     document.addEventListener("pointermove", onMove);
@@ -917,39 +581,87 @@ export function VisualNovelEditor({ onReturnHome }: { onReturnHome: () => void }
     document.addEventListener("pointercancel", onUp);
     splitter.addEventListener("lostpointercapture", onLostPointerCapture);
     window.addEventListener("blur", onUp);
-    update(event.clientY);
-  }, [previewCollapsed, previewSplitRatio]);
+  }, [previewCollapsed]);
 
   const resizePreviewWithKeyboard = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (previewCollapsed || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+    if (previewCollapsed || previewDragCleanupRef.current || !["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
+    const { minimum, maximum } = previewBounds;
+    const next = event.key === "Home" ? minimum : event.key === "End" ? maximum
+      : Math.min(maximum, Math.max(minimum, displayedPreviewRatio + (event.key === "ArrowUp" ? -0.02 : 0.02)));
+    if (next === displayedPreviewRatio) return;
     setPreviewResizing(true);
     if (previewKeyboardResizeTimerRef.current) window.clearTimeout(previewKeyboardResizeTimerRef.current);
     previewKeyboardResizeTimerRef.current = window.setTimeout(() => {
       previewKeyboardResizeTimerRef.current = undefined;
       setPreviewResizing(false);
     }, 120);
-    const direction = event.key === "ArrowUp" ? -1 : 1;
-    const workspaceHeight = previewStackRef.current?.getBoundingClientRect().height;
-    setPreviewSplitRatio((current) => {
-      const next = clampPreviewSplitRatio(current + direction * 0.02, workspaceHeight);
-      window.localStorage.setItem(previewSplitStorageKey, String(next));
-      return next;
-    });
-  }, [previewCollapsed]);
+    setPreviewSplitRatio(next);
+    window.localStorage.setItem(previewSplitStorageKey, String(next));
+  }, [displayedPreviewRatio, previewBounds.minimum, previewBounds.maximum, previewCollapsed]);
+
+  useEffect(() => {
+    if (!workspaceActive || previewCollapsed) previewDragCleanupRef.current?.();
+  }, [previewCollapsed, workspaceActive]);
+  useEffect(() => () => {
+    previewDragCleanupRef.current?.();
+    window.clearTimeout(previewKeyboardResizeTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    let frameId: number | undefined;
+    let timeoutId: number | undefined;
+    let active = true;
+    const recoverViewport = () => {
+      if (!active || document.visibilityState === "hidden") return;
+      if (frameId !== undefined) window.cancelAnimationFrame(frameId);
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+      frameId = window.requestAnimationFrame(() => {
+        frameId = window.requestAnimationFrame(() => {
+          if (!active) return;
+          setViewportRevision((current) => current + 1);
+          frameId = undefined;
+          const surface = flowSurfaceRef.current;
+          const rect = surface?.getBoundingClientRect();
+          if (!rect || rect.width <= 0 || rect.height <= 0) {
+            timeoutId = window.setTimeout(() => {
+              if (!active) return;
+              setViewportRevision((current) => current + 1);
+              timeoutId = undefined;
+            }, 180);
+          }
+        });
+      });
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") recoverViewport();
+    };
+    const onPageShow = () => recoverViewport();
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", recoverViewport);
+    window.addEventListener("pageshow", onPageShow);
+    window.addEventListener("resize", recoverViewport);
+    recoverViewport();
+    return () => {
+      active = false;
+      if (frameId !== undefined) window.cancelAnimationFrame(frameId);
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", recoverViewport);
+      window.removeEventListener("pageshow", onPageShow);
+      window.removeEventListener("resize", recoverViewport);
+    };
+  }, []);
 
   useEffect(() => {
     const workspace = previewStackRef.current;
     if (!workspace) return;
-    const clampToWorkspace = () => {
-      const height = workspace.getBoundingClientRect().height;
-      setPreviewSplitRatio((current) => clampPreviewSplitRatio(current, height));
-    };
-    clampToWorkspace();
-    const observer = new ResizeObserver(clampToWorkspace);
+    const measureWorkspace = () => setPreviewStackHeight(workspace.clientHeight);
+    measureWorkspace();
+    const observer = new ResizeObserver(measureWorkspace);
     observer.observe(workspace);
     return () => observer.disconnect();
-  }, []);
+  }, [viewportRevision]);
 
   useEffect(() => {
     return;
@@ -987,107 +699,50 @@ export function VisualNovelEditor({ onReturnHome }: { onReturnHome: () => void }
     const surface = flowSurfaceRef.current;
     if (!surface) return;
     const syncActualViewport = () => {
+      if (viewportMovingRef.current) return false;
       const viewportNode = surface.querySelector<HTMLElement>(".react-flow__viewport");
       const transform = viewportNode ? window.getComputedStyle(viewportNode).transform : "";
-      if (!transform || transform === "none") return;
+      if (!transform || transform === "none") return false;
       const matrix = new DOMMatrixReadOnly(transform);
-      if (!Number.isFinite(matrix.a) || matrix.a <= 0) return;
-      setViewport({ x: matrix.e, y: matrix.f, zoom: matrix.a });
+      if (!Number.isFinite(matrix.a) || matrix.a <= 0) return false;
+      const current = useEditorStore.getState().viewport;
+      const changed = Math.abs(current.x - matrix.e) > 0.001
+        || Math.abs(current.y - matrix.f) > 0.001
+        || Math.abs(current.zoom - matrix.a) > 0.001;
+      if (changed) setViewport({ x: matrix.e, y: matrix.f, zoom: matrix.a }, false);
+      return changed;
     };
     const measure = () => {
       const rect = surface.getBoundingClientRect();
-      setFlowSurfaceSize({ width: Math.round(rect.width), height: Math.round(rect.height) });
-      syncActualViewport();
+      const width = Math.round(rect.width);
+      const height = Math.round(rect.height);
+      const currentSize = useEditorStore.getState().flowSurfaceSize;
+      if (currentSize.width !== width || currentSize.height !== height) {
+        setFlowSurfaceSize({ width, height });
+      }
+      if (width > 0 && height > 0) {
+        syncActualViewport();
+      }
+      return width > 0 && height > 0;
     };
-    measure();
-    const timeoutId = window.setTimeout(measure, 250);
-    const observer = new ResizeObserver(measure);
+    const scheduleMeasure = () => {
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(measure);
+      });
+    };
+    const hasInitialMeasurement = measure();
+    const timeoutId = hasInitialMeasurement ? undefined : window.setTimeout(measure, 250);
+    const observer = new ResizeObserver(scheduleMeasure);
     observer.observe(surface);
-    window.addEventListener("resize", measure);
+    window.addEventListener("resize", scheduleMeasure);
     return () => {
-      window.clearTimeout(timeoutId);
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
       observer.disconnect();
-      window.removeEventListener("resize", measure);
+      window.removeEventListener("resize", scheduleMeasure);
     };
-  }, [setFlowSurfaceSize, setViewport]);
+  }, [setFlowSurfaceSize, setViewport, viewportRevision]);
 
-  useEffect(() => {
-    const current = useEditorStore.getState();
-    if (!current.dirty) return;
-    const saveTimer = window.setTimeout(() => {
-      const next = useEditorStore.getState();
-      if (!next.dirty) return;
-      void backendClient.saveProjectState({
-        project_graph: {
-          nodes: next.nodes,
-          edges: next.edges,
-          viewport: next.viewport,
-          memoryMode: next.memoryMode,
-        },
-        project_metadata: {
-          projectId: project.projectId,
-          title: project.title,
-          author: project.author,
-          createdAt: project.createdAt,
-          updatedAt: new Date().toISOString(),
-          assetManifest: project.assetManifest,
-          settings: { ...project.settings },
-        },
-      }).then((state) => {
-        applyPersistedProjectMetadata(state);
-        useEditorStore.setState({ dirty: false });
-      }).catch((error) => {
-        reportFrontendError("editor.project", error, {
-          operation: "autosave-graph",
-          projectId: project.projectId,
-        });
-      });
-    }, 800);
-    return () => window.clearTimeout(saveTimer);
-  }, [nodes, edges, viewport, memoryMode, project.assetManifest, project.author, project.createdAt, project.projectId, project.settings, project.title]);
-
-  useEffect(() => {
-    const saveTimer = window.setTimeout(() => {
-      void backendClient.saveProjectState({
-        project_metadata: {
-          projectId: project.projectId,
-          title: project.title,
-          author: project.author,
-          createdAt: project.createdAt,
-          updatedAt: new Date().toISOString(),
-          assetManifest: project.assetManifest,
-          settings: { ...project.settings },
-        },
-      }).then((state) => {
-        applyPersistedProjectMetadata(state);
-      }).catch((error) => {
-        reportFrontendError("editor.project", error, {
-          operation: "autosave-metadata",
-          projectId: project.projectId,
-        });
-      });
-    }, 500);
-    return () => window.clearTimeout(saveTimer);
-  }, [project.assetManifest, project.author, project.createdAt, project.projectId, project.settings, project.title]);
-
-  useEffect(() => {
-    function handleGraphHistoryShortcut(event: KeyboardEvent) {
-      if (event.defaultPrevented || shouldPreserveNativeUndo(event.target)) return;
-      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
-      const key = event.key.toLowerCase();
-      const wantsUndo = key === "z" && !event.shiftKey;
-      const wantsRedo = key === "y" || (key === "z" && event.shiftKey);
-      if (!wantsUndo && !wantsRedo) return;
-
-      const handled = wantsUndo
-        ? useEditorStore.getState().undoGraphChange()
-        : useEditorStore.getState().redoGraphChange();
-      if (handled) event.preventDefault();
-    }
-
-    window.addEventListener("keydown", handleGraphHistoryShortcut);
-    return () => window.removeEventListener("keydown", handleGraphHistoryShortcut);
-  }, []);
+  useEditorProjectAutosave();
 
   useEffect(() => {
     const labels: Record<string, string> = {
@@ -1153,24 +808,40 @@ export function VisualNovelEditor({ onReturnHome }: { onReturnHome: () => void }
     };
   }, [nodes.length]);
 
+
   return (
     <ReactFlowProvider>
-      <div className={`editor-shell${shellBackgroundLayerStyle ? " has-editor-canvas-background" : ""}`}>
-        {shellBackgroundLayerStyle && (
-          <div
-            className="editor-canvas-background-layer is-shell"
-            aria-hidden="true"
-            style={shellBackgroundLayerStyle}
-          />
-        )}
-        <EditorToolbar onReturnHome={onReturnHome} />
-        <main
-          className="editor-workspace"
-          style={{
-            "--inspector-width": `${inspectorWidth}px`,
-            "--preview-split-ratio": `${previewSplitRatio * 100}%`,
-          } as CSSProperties}
+      <EditorPrerenderReadiness />
+      <GraphHistoryShortcuts active={workspaceActive} />
+      <AssistantProjectCreationLockGate
+        projectId={project.projectId}
+        projectTitle={project.title}
+        onReturnHome={onReturnHome}
+      >
+        <div
+          ref={shellRef}
+          className={`editor-shell${shellBackgroundLayerStyle ? " has-editor-canvas-background" : ""}`}
+          data-viewport-revision={viewportRevision}
         >
+          {shellBackgroundLayerStyle && (
+            <div
+              className="editor-canvas-background-layer is-shell"
+              aria-hidden="true"
+              style={shellBackgroundLayerStyle}
+            />
+          )}
+          <EditorWorkspace
+            toolbar={<EditorToolbar onReturnHome={onReturnHome} onWorkspaceActiveChange={setWorkspaceActive} />}
+            statusBar={<WorkspaceStatusBar />}
+            controller={workspaceController}
+          >
+            <main
+              className="editor-workspace"
+              style={{
+                "--inspector-width": `${inspectorWidth}px`,
+                "--preview-split-ratio": `${displayedPreviewRatio * 100}%`,
+              } as CSSProperties}
+            >
           <NodePalette />
           <section
             className={`flow-surface${isDeclutteringNodes ? " is-decluttering-nodes" : ""}`}
@@ -1194,11 +865,14 @@ export function VisualNovelEditor({ onReturnHome }: { onReturnHome: () => void }
               defaultViewport={viewport}
               onNodesChange={onNodesChange}
               onEdgesChange={onEdgesChange}
-              onConnect={connectNodes}
-              onInit={(instance) => {
-                reactFlowInstanceRef.current = instance;
+              onBeforeDelete={async ({ nodes: removedNodes, edges: removedEdges }) => {
+                if (removedNodes.length || removedEdges.length) useEditorStore.getState().beginGraphHistoryBatch("graph-delete");
+                return true;
               }}
-              onMoveEnd={(_, viewport) => setViewport(viewport)}
+              onDelete={() => useEditorStore.getState().endGraphHistoryBatch("graph-delete")}
+              onConnect={connectNodes}
+              onMoveStart={() => { viewportMovingRef.current = true; }}
+              onMoveEnd={(_, viewport) => { viewportMovingRef.current = false; setViewport(viewport); }}
               onNodeDragStart={() => {
                 useEditorStore.getState().beginGraphHistoryBatch("node-drag");
                 nodeDragRef.current = { dragging: true, endedAt: 0 };
@@ -1211,6 +885,7 @@ export function VisualNovelEditor({ onReturnHome }: { onReturnHome: () => void }
                 selectNode(node.id);
                 const drag = nodeDragRef.current;
                 if (drag.dragging || Date.now() - drag.endedAt < 220) return;
+                if (node.data.nodeKind === "scene") setPreviewCollapsed(false);
                 window.dispatchEvent(new CustomEvent("agentvn:node-card-click", { detail: { nodeId: node.id } }));
               }}
               onPaneClick={() => {
@@ -1235,11 +910,7 @@ export function VisualNovelEditor({ onReturnHome }: { onReturnHome: () => void }
             >
               <Background color="var(--canvas-grid)" gap={24} />
               {miniMapReady && (
-                <DistributionMiniMap
-                  nodes={nodes}
-                  viewport={viewport}
-                  surfaceSize={flowSurfaceSize}
-                />
+                <StoryMiniMap cards={cards} routes={edgeRoutes} selectedNodeId={selectedNodeId} />
               )}
               <Controls />
             </ReactFlow>
@@ -1259,27 +930,31 @@ export function VisualNovelEditor({ onReturnHome }: { onReturnHome: () => void }
           >
             <PreviewPanel
               collapsed={previewCollapsed}
+              workspaceActive={workspaceActive}
               resizing={previewResizing}
+              deferRuntimeMount={deferRuntimePreview}
               onCollapsedChange={setPreviewCollapsed}
             />
             <div
               className="preview-splitter"
               role="separator"
               tabIndex={previewCollapsed ? -1 : 0}
-              aria-label="调整场景预览区和场景编辑区高度"
+              aria-label="调整实时预览高度"
               aria-orientation="horizontal"
-              aria-valuemin={35}
-              aria-valuemax={65}
-              aria-valuenow={Math.round(previewSplitRatio * 100)}
-              title="拖动或使用 ArrowUp / ArrowDown 调整场景预览区高度"
-              data-testid="preview-splitter"
+              aria-controls="editor-live-preview"
+              aria-valuemin={Math.round(previewBounds.minimum * 100)}
+              aria-valuemax={Math.round(previewBounds.maximum * 100)}
+              aria-valuenow={Math.round(displayedPreviewRatio * 100)}
+              data-help-key="preview.resize"
               onPointerDown={resizePreview}
               onKeyDown={resizePreviewWithKeyboard}
             />
             <InspectorPanel />
           </section>
-        </main>
-      </div>
+            </main>
+          </EditorWorkspace>
+        </div>
+      </AssistantProjectCreationLockGate>
     </ReactFlowProvider>
   );
 }

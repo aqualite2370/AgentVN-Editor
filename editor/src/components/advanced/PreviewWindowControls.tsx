@@ -1,14 +1,17 @@
-import { useState } from "react";
+import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { backendClient } from "../../api/backendClient";
-import { hydrateEditorFromSharedState } from "../../app/projectHydration";
+import { hydrateEditorFromProject } from "../../app/projectHydration";
 import { exportEditorCartridge, exportEditorPreviewDirectory } from "../../cartridge/exportCartridge";
-import { closeGameCliPreview, isMissingDirectoryPreviewSupport, isTauriRuntime, openGameCliPreview, openGameCliPreviewDirectory } from "../../preview/previewWindow";
+import { closeGameCliPreview, getGameCliPreviewRunning, isMissingDirectoryPreviewSupport, isTauriRuntime, openGameCliPreview, openGameCliPreviewDirectory } from "../../preview/previewWindow";
 import { useEditorStore } from "../../store/editorStore";
 import { useProjectStore } from "../../store/projectStore";
 import { applyProjectRuntimeSettingsToScript, validateExportScript } from "../../utils/exportScript";
 import { manifestAssetsFromProjectAssets } from "../../utils/projectAssets";
+import { parseProjectJson } from "../../utils/projectImport";
 import type { RuntimeScript } from "../../../../shared/cartridge/types";
 import { reportFrontendError } from "../../../../shared/logging/frontendErrorLogger";
+import { CartridgeValidationError } from "../../../../shared/cartridge/validationError";
+import { sha256String } from "../../../../shared/cartridge/checksum";
 
 type PreviewProgressTone = "idle" | "running" | "success" | "error";
 
@@ -53,7 +56,18 @@ function formatBytes(bytes: number): string {
 
 const LEGACY_GAMECLI_PREVIEW_MAX_BYTES = 8 * 1024 * 1024;
 
-export function PreviewWindowControls() {
+export interface PreviewWindowSession {
+  message?: string;
+  diagnostics?: Array<{ code: string; message: string }>;
+  progress: PreviewProgressState;
+  logs: PreviewLogEntry[];
+}
+
+export function PreviewWindowControls({ sessionRef, onBusyChange, onBack }: {
+  sessionRef?: MutableRefObject<PreviewWindowSession | undefined>;
+  onBusyChange?: (busy: boolean) => void;
+  onBack?: () => void;
+} = {}) {
   const exportScript = useEditorStore((state) => state.exportScript);
   const nodes = useEditorStore((state) => state.nodes);
   const edges = useEditorStore((state) => state.edges);
@@ -61,23 +75,71 @@ export function PreviewWindowControls() {
   const setNotice = useEditorStore((state) => state.setNotice);
   const project = useProjectStore();
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<string>();
-  const [progress, setProgress] = useState<PreviewProgressState>({
+  const [unlockAllGallery, setUnlockAllGallery] = useState(false);
+  const [windowStatus, setWindowStatus] = useState<"checking" | "running" | "closed" | "unknown">("checking");
+  const inFlightRef = useRef(false);
+  const lifetimeRef = useRef<object | null>(null);
+  const [message, setMessage] = useState<string | undefined>(sessionRef?.current?.message);
+  const [diagnostics, setDiagnostics] = useState(sessionRef?.current?.diagnostics ?? []);
+  const [progress, setProgress] = useState<PreviewProgressState>(sessionRef?.current?.progress ?? {
     percent: 0,
     label: "等待预览",
     detail: "",
     tone: "idle",
   });
-  const [logs, setLogs] = useState<PreviewLogEntry[]>([]);
+  const [logs, setLogs] = useState<PreviewLogEntry[]>(sessionRef?.current?.logs ?? []);
+
+  useEffect(() => { setUnlockAllGallery(false); }, [project.projectId]);
+
+  useEffect(() => {
+    const lifetime = {};
+    lifetimeRef.current = lifetime;
+    return () => { lifetimeRef.current = null; };
+  }, []);
+
+  useEffect(() => {
+    if (sessionRef) sessionRef.current = { message, progress, logs, diagnostics };
+  }, [message, progress, logs, diagnostics, sessionRef]);
+
+  // Query only while this task is mounted. Cancel stale reads across operations
+  // and remounts; process status must never overwrite the operation's error/log.
+  useEffect(() => {
+    if (busy) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    async function refresh() {
+      try {
+        const running = await getGameCliPreviewRunning();
+        if (!cancelled && !inFlightRef.current) setWindowStatus(running ? "running" : "closed");
+      } catch {
+        if (!cancelled && !inFlightRef.current) setWindowStatus("unknown");
+      }
+      if (!cancelled) timer = setTimeout(() => void refresh(), 1000);
+    }
+    void refresh();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [busy]);
+
+  function beginOperation() {
+    if (inFlightRef.current) return false;
+    inFlightRef.current = true;
+    setBusy(true);
+    onBusyChange?.(true);
+    return true;
+  }
+
+  function endOperation() {
+    inFlightRef.current = false;
+    setBusy(false);
+    onBusyChange?.(false);
+  }
 
   const script = {
     ...applyProjectRuntimeSettingsToScript(exportScript() as RuntimeScript, project.settings),
     game_id: project.projectId,
     title: project.title,
   };
-  const previewScript: RuntimeScript = selectedNode?.data.scene?.scene_id
-    ? { ...script, entry_scene_id: selectedNode.data.scene.scene_id }
-    : script;
+  const previewScript: RuntimeScript = script;
 
   function addLog(nextMessage: string, tone: PreviewLogEntry["tone"] = "info") {
     setLogs((current) => [
@@ -96,19 +158,51 @@ export function PreviewWindowControls() {
   }
 
   async function reloadProjectFromBackend() {
-    setBusy(true);
+    if (!beginOperation()) return;
+    const projectId = useProjectStore.getState().projectId;
+    const generation = useEditorStore.getState().projectLoadGeneration;
+    const graphHistory = useEditorStore.getState().graphHistory;
+    const lifetime = lifetimeRef.current;
+    const isMountedOwner = () => lifetime !== null && lifetimeRef.current === lifetime;
+    const isCurrentOwner = () => isMountedOwner()
+      && useProjectStore.getState().projectId === projectId
+      && useEditorStore.getState().projectLoadGeneration === generation
+      && useEditorStore.getState().graphHistory === graphHistory;
+    const discardStale = () => {
+      // Only this abandoned operation's local presentation can be cleared.
+      // Never publish its success/error notice into the newer project session.
+      if (!isMountedOwner()) return;
+      setMessage("工程会话已变化，本次旧重载未应用。");
+      updateProgress(0, "重载已忽略", "请在当前工程中重新发起重载。", "idle");
+      setLogs([]);
+    };
     setMessage("正在从后端重新加载当前工程...");
+    setDiagnostics([]);
     setLogs([]);
-    updateProgress(12, "重新加载工程", "正在请求 /api/project/state。");
+    updateProgress(12, "重新加载工程", `正在读取工程 ${projectId} 的已保存详情。`);
     addLog("开始从后端重新加载当前工程。");
     try {
-      const sharedState = await backendClient.loadProjectState();
-      if (!sharedState) throw new Error("后端没有可加载的工程状态。");
-      updateProgress(58, "解析工程", "后端已返回工程状态，正在应用到编辑器。");
-      addLog("后端工程状态已返回。");
-
-      const draft = hydrateEditorFromSharedState(sharedState);
-      if (!draft) throw new Error("后端工程状态没有可导入的节点。");
+      if (!projectId.trim()) throw new Error("PROJECT_RELOAD_ID_MISSING：当前工程没有有效编号。");
+      const response = await backendClient.loadProject(projectId);
+      if (!isCurrentOwner()) {
+        reportFrontendError("editor.preview", new Error("PROJECT_RELOAD_STALE：已忽略旧会话响应。"),
+          { operation: "reload-project", projectId, generation, stale: true });
+        discardStale();
+        return;
+      }
+      if (response?.project_id !== projectId) {
+        throw new Error("PROJECT_RELOAD_ID_MISMATCH：后端返回了其它工程，当前草稿保持不变。");
+      }
+      const parsed = parseProjectJson(response);
+      if (!parsed.project || parsed.project.nodes.length === 0) {
+        throw new Error(`PROJECT_RELOAD_INVALID：${parsed.error ?? "工程没有可导入的节点。"}`);
+      }
+      const draft = parsed.project;
+      // No await between the ownership check and this synchronous commit.
+      // importProject advances the generation so earlier requests cannot commit.
+      updateProgress(58, "解析工程", "已校验当前工程详情，正在应用到编辑器。");
+      addLog("当前工程详情已返回，工程编号和图结构校验通过。");
+      hydrateEditorFromProject(draft);
       const text = `已从后端重载工程：${draft.title}`;
       setMessage(text);
       updateProgress(100, "重载完成", `已加载 ${draft.nodes.length} 个节点、${draft.edges.length} 条连线。`, "success");
@@ -121,7 +215,10 @@ export function PreviewWindowControls() {
         context: { projectId: draft.project_id, nodeCount: draft.nodes.length, edgeCount: draft.edges.length },
       });
     } catch (error) {
-      reportFrontendError("editor.preview", error, { operation: "reload-project" });
+      reportFrontendError("editor.preview", error, {
+        operation: "reload-project", projectId, generation, stale: !isCurrentOwner(),
+      });
+      if (!isCurrentOwner()) { discardStale(); return; }
       const detail = errorText(error, "从后端重载工程失败。");
       setMessage(detail);
       updateProgress(progress.percent, "重载失败", detail, "error");
@@ -132,16 +229,20 @@ export function PreviewWindowControls() {
         source: "GameCLI Preview",
         detail,
         error,
-        action: "确认后端服务正在运行，并且 /api/project/state 已写入目标工程。",
+        action: "确认后端服务正在运行、当前工程已保存；核对工程编号后重试，不会回退读取共享旧图。",
+        context: { projectId, generation },
       });
     } finally {
-      setBusy(false);
+      // An unmounted panel must not release a replacement panel's busy owner.
+      if (isMountedOwner()) endOperation();
     }
   }
 
   async function syncPreview() {
-    setBusy(true);
+    if (!beginOperation()) return;
+    const previewOptions = { unlockAllGallery };
     setMessage("正在生成临时预览卡带...");
+    setDiagnostics([]);
     setLogs([]);
     updateProgress(4, "准备预览", "正在读取当前编辑器内存状态。");
     addLog("开始生成 GameCLI 预览。");
@@ -152,11 +253,11 @@ export function PreviewWindowControls() {
       const errors = issues.filter((issue) => issue.severity !== "warning");
       const warnings = issues.filter((issue) => issue.severity === "warning").map((issue) => issue.message);
       if (errors.length > 0) {
-        const detail = errors.map((issue) => issue.message).join("\n");
-        const text = `预览失败：${detail}`;
-        setMessage(text);
+        const detail = `发现 ${errors.length} 项校验问题，请按下方编号查看位置。`;
+        setDiagnostics(errors.map(({ code, message }) => ({ code, message })));
+        setMessage(detail);
         updateProgress(10, "校验失败", detail, "error");
-        addLog(`校验失败：${detail}`, "error");
+        addLog(`校验未通过（${errors.length} 项）。`, "error");
         setNotice({
           tone: "error",
           message: "GameCLI 预览前校验失败",
@@ -176,6 +277,9 @@ export function PreviewWindowControls() {
 
       const exportInput = {
         script: previewScript,
+        // Do not let slug normalization collapse distinct project IDs into a
+        // single external preview save identity.
+        gameId: `editorpreview_${await sha256String(project.projectId)}`,
         title: project.title,
         author: project.author,
         version: "0.1.0-preview",
@@ -186,6 +290,7 @@ export function PreviewWindowControls() {
         projectAssets: manifestAssets,
         projectAssetRefs: project.assetManifest,
         uiSkin: project.settings.runtimeUILayout,
+        uiLayoutProfiles: project.settings.runtimeUILayoutProfiles,
         packageAppearance: project.settings.packageAppearance,
         characterDialogStyles: project.settings.characterDialogStyles,
       };
@@ -201,6 +306,7 @@ export function PreviewWindowControls() {
             fileName: previewDirectory.fileName,
             textFiles: previewDirectory.textFiles,
             assets: previewDirectory.assets,
+            previewOptions,
             onProgress: (event) => {
               const mappedPercent = event.phase === "launch"
                 ? 94 + (((event.percent ?? 0) / 100) * 6)
@@ -237,6 +343,7 @@ export function PreviewWindowControls() {
       const result = await openGameCliPreview({
         cartridge: cartridge.blob,
         fileName: cartridge.fileName,
+        previewOptions,
         onProgress: (event) => {
           const mappedPercent = event.phase === "upload" || event.phase === "legacy"
             ? 66 + ((event.percent ?? 0) * 0.24)
@@ -252,7 +359,11 @@ export function PreviewWindowControls() {
       addLog(result.message, "success");
     } catch (error) {
       reportFrontendError("editor.preview", error, { operation: "open" });
-      const detail = errorText(error, "GameCLI 预览启动失败。");
+      const validationFailure = error instanceof CartridgeValidationError;
+      const detail = validationFailure
+        ? `发现 ${error.issues.length} 项校验问题，请按下方编号查看位置。`
+        : errorText(error, "GameCLI 预览启动失败。");
+      if (validationFailure) setDiagnostics(error.issues);
       setMessage(detail);
       updateProgress(progress.percent, "预览失败", detail, "error");
       addLog(detail, "error");
@@ -262,7 +373,9 @@ export function PreviewWindowControls() {
         source: "GameCLI Preview",
         detail,
         error,
-        action: "确认正在使用 AgentVN 桌面版；检查 GameCLI 是否已构建，或设置 AGENTVN_GAMECLI_EXE 指向可执行文件。",
+        action: validationFailure
+          ? "按预览详情中的场景和事件序号修正素材，再重试。"
+          : "确认正在使用 AgentVN 桌面版；检查 GameCLI 是否已构建，或设置 AGENTVN_GAMECLI_EXE 指向可执行文件。",
         context: {
           selectedNodeId: selectedNode?.id,
           entrySceneId: previewScript.entry_scene_id,
@@ -270,11 +383,12 @@ export function PreviewWindowControls() {
         },
       });
     } finally {
-      setBusy(false);
+      endOperation();
     }
   }
 
   async function closePreview() {
+    if (!beginOperation()) return;
     try {
       await closeGameCliPreview();
       setMessage("已关闭 GameCLI 预览。");
@@ -295,31 +409,32 @@ export function PreviewWindowControls() {
         action: "如果当前不是桌面版，请手动关闭 GameCLI；如果是桌面版，检查预览进程是否已经退出。",
         context: { selectedNodeId: selectedNode?.id },
       });
+    } finally {
+      endOperation();
     }
   }
 
   return (
-    <section className="advanced-card gamecli-preview-card">
-      <h3>GameCLI 完整预览</h3>
-      <p>将当前编辑器内存中的工程导出为临时卡带，并交给 GameCLI 容器播放。</p>
-      <div className="gamecli-preview-launch">
-        <button className="gamecli-preview-launch-button" type="button" data-help-key="preview.open" onClick={() => void syncPreview()} disabled={busy}>
-          <span className="gamecli-preview-launch-status">{busy ? "同步中" : "就绪"}</span>
-          <span className="gamecli-preview-launch-copy">
-            <strong>{busy ? "正在生成预览卡带" : "启动 GameCLI 预览"}</strong>
-            <small>{busy ? "正在校验、打包并传输当前工程。" : "使用当前编辑器内存状态立即导出并播放。"}</small>
-          </span>
-          <span className="gamecli-preview-launch-arrow" aria-hidden="true">→</span>
-        </button>
-      </div>
-      <div className="gamecli-preview-secondary-actions">
-        <button type="button" data-help-key="preview.reload-project" onClick={() => void reloadProjectFromBackend()} disabled={busy}>
-          从后端重载工程
-        </button>
-        <button type="button" data-help-key="preview.close" onClick={() => void closePreview()}>
-          关闭预览
-        </button>
-      </div>
+    <section className="advanced-card gamecli-preview-card preview-launch-panel" data-testid="preview-launch-panel" aria-busy={busy}>
+      <header className="preview-launch-header">
+        <div><h3>独立游戏预览</h3><p>从工程入口试玩完整流程；检查单个场景请使用编辑区的实时预览。</p></div>
+        {onBack && <button type="button" data-help-key="preview.back" disabled={busy} onClick={onBack}>返回编辑</button>}
+      </header>
+      <div className="preview-launch-body">
+      <dl className="preview-launch-summary">
+        <div><dt>工程</dt><dd>{project.title}</dd></div>
+        <div><dt>入口场景</dt><dd>{script.scenes.find((scene) => scene.scene_id === script.entry_scene_id)?.title ?? script.entry_scene_id ?? "未设置"}</dd></div>
+        <div><dt>素材</dt><dd>{project.assetManifest.length} 个</dd></div>
+      </dl>
+      <p className="preview-launch-hint">使用当前编辑草稿生成临时预览，不修改已保存的工程；启动前会检查场景连线与素材。</p>
+      <label className="preview-gallery-option" title="仅影响本次预览，不改变正式游戏的画廊进度。">
+        <input type="checkbox" checked={unlockAllGallery} disabled={busy}
+          onChange={(event) => setUnlockAllGallery(event.target.checked)} />
+        <span>直接解锁全部画廊</span>
+      </label>
+      <p className="preview-launch-hint" data-testid="preview-window-status" role="status">
+        外部窗口：{windowStatus === "running" ? "运行中" : windowStatus === "closed" ? "已关闭" : windowStatus === "unknown" ? "状态未知，正在重新检查" : "正在检查"}
+      </p>
       <section className={`gamecli-preview-progress is-${progress.tone}`} aria-live="polite" aria-label="GameCLI 预览生成进度">
         <div className="gamecli-preview-progress-header">
           <strong>{progress.label}</strong>
@@ -339,7 +454,7 @@ export function PreviewWindowControls() {
         </header>
         <ol>
           {logs.length === 0 ? (
-            <li className="is-empty">暂无日志捏</li>
+            <li className="is-empty">确认启动后，这里会显示校验、素材同步与启动日志。</li>
           ) : (
             logs.map((item) => (
               <li key={item.id} className={`is-${item.tone}`}>
@@ -354,8 +469,31 @@ export function PreviewWindowControls() {
         <section className="gamecli-preview-detail" aria-label="GameCLI 预览详情">
           <strong>预览详情</strong>
           <p>{message}</p>
+          {diagnostics.length > 0 && (
+            <ol className="gamecli-preview-issues" aria-label="预览校验问题">
+              {diagnostics.map((issue, index) => (
+                <li key={`${issue.code}-${index}`}>{issue.message}</li>
+              ))}
+            </ol>
+          )}
         </section>
       )}
+      <details className="preview-launch-maintenance">
+        <summary>工程重载</summary>
+        <p>将以已保存的后端状态替换当前编辑草稿，请先保存改动。</p>
+        <button type="button" data-help-key="preview.reload-project" onClick={() => void reloadProjectFromBackend()} disabled={busy}>
+          从后端重载工程
+        </button>
+      </details>
+      </div>
+      <footer className="preview-launch-actions">
+        <button className="preview-launch-primary" type="button" data-help-key="preview.open" onClick={() => void syncPreview()} disabled={busy}>
+          {busy ? "正在准备预览…" : progress.tone === "error" ? "重试 GameCLI 预览" : "启动 GameCLI 预览"}
+        </button>
+        <button type="button" data-help-key="preview.close" onClick={() => void closePreview()} disabled={busy || windowStatus === "closed" || windowStatus === "checking"}>
+          关闭游戏窗口
+        </button>
+      </footer>
     </section>
   );
 }

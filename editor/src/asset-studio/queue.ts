@@ -16,6 +16,7 @@ import type {
 } from "../providers/types";
 import { validateAssetStudioRecipe } from "./defaults";
 import { useAssetStudioStore } from "./store";
+import { reportFrontendError } from "../../../shared/logging/frontendErrorLogger";
 import type {
   ImageGenerationJob,
   ImageGenerationJobError,
@@ -213,6 +214,11 @@ async function executeJob(job: ImageGenerationJob): Promise<void> {
       warnings.push(...result.warnings);
     } catch (error) {
       if (controller.signal.aborted) break;
+      reportFrontendError("editor.asset-studio-queue", error, {
+        operation: "process-chunk",
+        jobId: job.jobId,
+        chunkIndex: index,
+      });
       failures.push(toJobError(error));
       failedOutputCount += chunks[index];
     }

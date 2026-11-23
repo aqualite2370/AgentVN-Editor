@@ -1,0 +1,20 @@
+:root {
+  --editor-shell-padding: clamp(8px, 0.8vw, 16px);
+  --editor-gap: clamp(8px, 0.75vw, 16px);
+  --editor-control-height: 44px;
+  --editor-toolbar-height: 76px;
+  --editor-panel-radius: 12px;
+  --editor-control-radius: 9px;
+  --editor-focus-ring: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent);
+  --editor-panel-surface:
+    linear-gradient(145deg, color-mix(in srgb, var(--panel-bg-strong) 94%, transparent), color-mix(in srgb, var(--panel-bg) 94%, transparent));
+  --editor-glass-surface:
+    linear-gradient(135deg, color-mix(in srgb, var(--tint-tools) 22%, transparent), transparent 46%),
+    linear-gradient(180deg, color-mix(in srgb, var(--panel-bg-strong) 82%, transparent), color-mix(in srgb, var(--panel-bg) 76%, transparent));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-scale: 0;
+  }
+}

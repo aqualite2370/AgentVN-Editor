@@ -1,3 +1,4 @@
+import { NumberInput } from "../common/NumberInput";
 import type { ShowImageCommand } from "../../types/commands";
 import { backgroundFitOptions } from "../../utils/localizedOptions";
 import { AssetPicker } from "../common/AssetPicker";
@@ -65,7 +66,7 @@ export function ShowImageCommandEditor({
       </label>
       <label>
         背景暗度
-        <input
+        <NumberInput
           type="number"
           min="0"
           max="0.9"
@@ -77,7 +78,7 @@ export function ShowImageCommandEditor({
       </label>
       <label>
         背景模糊（px）
-        <input
+        <NumberInput
           type="number"
           min="0"
           max="24"

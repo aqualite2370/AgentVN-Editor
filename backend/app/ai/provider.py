@@ -24,8 +24,10 @@ from app.mcp.tools import agentvn_tool_registry, generation_schema_for_model
 from app.models.memory import MemoryUpdate
 from app.models.novel_import import NovelAiChapterScenePlan
 from app.models.scene import SceneBeat
+from app.models.assistant_creation import AssistantComponentDraftBatch
 from app.schemas.requests import ProviderSelectionParameters, ProviderSelectionRequest
 from app.schemas.responses import DiscoveredProviderModel, TestProviderConnectionResponse, TestProviderGenerationResponse
+from app.services.novel_retry import retry_scope_active
 
 T = TypeVar("T", bound=BaseModel)
 logger = logging.getLogger("agentvn.backend.ai_provider")
@@ -35,6 +37,24 @@ DEFAULT_EMBEDDING_TIMEOUT_SECONDS = 12.0
 STRUCTURED_TRANSPORT_MAX_ATTEMPTS = 2
 STRUCTURED_TRANSPORT_RETRY_DELAY_SECONDS = 0.2
 TransportRetryCallback = Callable[[dict[str, object]], None]
+
+def _has_novel_retry_owner(response_model: type[BaseModel]) -> bool:
+    # SceneBeat also serves interactive scene generation. Its model class
+    # alone cannot tell us whether the novel task owns retry and cancellation.
+    return retry_scope_active.get() or response_model.__module__ == "app.models.novel_import"
+
+def _structured_json_instructions(response_model: type[BaseModel]) -> str:
+    schema = generation_schema_for_model(response_model)
+    # Keep the root contract first without losing definitions or cutting JSON.
+    ordered_schema = {key: value for key, value in schema.items() if key != "$defs"}
+    if "$defs" in schema:
+        ordered_schema["$defs"] = schema["$defs"]
+    return (
+        "Return only a valid JSON object that matches the following JSON schema. "
+        "Include every required field and use only supported command types and fields. "
+        "Do not wrap the JSON in Markdown fences and do not include explanatory text.\n"
+        f"Target JSON schema:\n{json.dumps(ordered_schema, ensure_ascii=False, separators=(',', ':'))}"
+    )
 
 
 class AIProvider:
@@ -189,6 +209,8 @@ class AIProvider:
         on_retry: TransportRetryCallback | None = None,
         maximum_attempts: int = STRUCTURED_TRANSPORT_MAX_ATTEMPTS,
     ) -> T:
+        if _has_novel_retry_owner(response_model):
+            maximum_attempts = 1
         maximum_attempts = max(1, min(STRUCTURED_TRANSPORT_MAX_ATTEMPTS, maximum_attempts))
         for attempt in range(1, maximum_attempts + 1):
             try:
@@ -322,6 +344,7 @@ class AIProvider:
                 try:
                     return json.loads(block.strip())
                 except json.JSONDecodeError:
+                    # error-log-ignore: Truncated structured output is handled by the outer parser.
                     # error-log-ignore: 这是从模型文本中逐个尝试提取 JSON 代码块，失败后还会继续尝试其他候选。
                     continue
             decoder = json.JSONDecoder()
@@ -332,6 +355,7 @@ class AIProvider:
                     payload, _ = decoder.raw_decode(stripped[first_index:])
                     return payload
                 except json.JSONDecodeError:
+                    # error-log-ignore: Truncated structured output is handled by the outer parser.
                     # Do not keep scanning nested values. A truncated outer object can contain a
                     # complete command object or tags array; accepting that child as the whole
                     # response hides output truncation and can silently discard story content.
@@ -429,7 +453,8 @@ class AIProvider:
                     model_name,
                 )
             except Exception as exc:
-                if allow_json_fallback and self._is_explicit_tool_unsupported(exc):
+                if (not _has_novel_retry_owner(response_model)
+                    and allow_json_fallback and self._is_explicit_tool_unsupported(exc)):
                     logger.warning(
                         "Provider explicitly rejected tool calling; using one JSON compatibility request: "
                         "model=%s response_model=%s error_type=%s error=%s",
@@ -463,6 +488,91 @@ class AIProvider:
             selection=selection,
             allow_json_fallback=allow_json_fallback,
         )
+
+    def create_agent_tools(self, system_prompt, user_prompt, tools, execute, *, selection=None,
+                           cancelled=None, max_steps=12, validate=None, terminal_tool=None):
+        """Serial native calls with whole-batch preflight and a total execution budget."""
+        api_key, base_url, model_name, parameters = self._resolve_llm_config(selection)
+        if not api_key: raise AIProviderError("LLM API key is required for generation.")
+        self._apply_deepseek_generation_defaults(parameters, model_name)
+        client = OpenAI(api_key=api_key, base_url=base_url, timeout=self._client_timeout(parameters), max_retries=0)
+        messages = [{"role": "system", "content": self._merge_system_prompt(system_prompt, parameters)},
+                    {"role": "user", "content": user_prompt}]
+        # This agent accepts only native calls, not a textual final answer.
+        # "auto" permits a perfectly valid text-only reply and contradicts the
+        # executor contract. Require a call, but leave the choice of allowed
+        # tool to the model (no fixed read/build/validate/submit choreography).
+        kwargs = {"model": model_name, "temperature": parameters.get("temperature", 0.4),
+                  "tools": tools, "tool_choice": "required", "parallel_tool_calls": False}
+        for key in ("top_p", "max_tokens"):
+            if key in parameters: kwargs[key] = parameters[key]
+        self._apply_structured_token_floor(AssistantComponentDraftBatch, kwargs)
+        self._apply_provider_extra_body(kwargs, base_url, model_name, parameters)
+        self._force_disable_deepseek_thinking_for_tools(kwargs, base_url, model_name)
+        call_limit = max(1, min(max_steps, 12))
+        executed = 0
+        seen_ids = set()
+        allowed_names = {tool["function"]["name"] for tool in tools}
+        for _step in range(call_limit):
+            if cancelled and cancelled(): raise AIProviderError("创造任务已取消；没有继续模型调用。")
+            try:
+                response = client.chat.completions.create(**kwargs, messages=messages)
+            except Exception as exc:
+                raise AIProviderError(self._format_provider_error(exc, base_url, model_name)) from exc
+            if not response.choices: raise AIProviderError("模型没有返回创造工具调用。")
+            choice = response.choices[0]
+            if choice.finish_reason == "length": raise AIProviderError("创造工具参数被模型输出上限截断；未自动重复调用。")
+            message = choice.message
+            calls = list(message.tool_calls or [])
+            # Providers may return several native calls even when parallel
+            # calling is disabled. Validate the complete batch before executing
+            # any of it, then run in order against the same isolated draft.
+            # Diagnostics contain bounded protocol metadata, never arguments.
+            finish_reason = choice.finish_reason if choice.finish_reason in {
+                "stop", "tool_calls", "length", "content_filter", "function_call",
+            } else "unknown"
+            metadata = f"step={_step + 1}, tool_calls={len(calls)}, finish_reason={finish_reason}"
+            if not calls:
+                raise AIProviderError(
+                    f"模型没有返回受限创造工具调用。（{metadata}；未执行本批工具，未自动重试。）"
+                )
+            if len(calls) > call_limit - executed:
+                raise AIProviderError(
+                    f"创造工具批次超过剩余调用额度。（{metadata}；总上限{call_limit}次，未执行本批工具，未自动重试。）"
+                )
+            batch_ids = set()
+            for index, call in enumerate(calls):
+                if (call.type != "function" or call.function.name not in allowed_names
+                        or not isinstance(call.id, str) or not call.id.strip() or len(call.id) > 256
+                        or call.id in seen_ids or call.id in batch_ids):
+                    raise AIProviderError(
+                        f"创造工具类型、名称或调用标识无效。（{metadata}；未执行本批工具，未自动重试。）"
+                    )
+                batch_ids.add(call.id)
+                if terminal_tool and call.function.name == terminal_tool and index != len(calls) - 1:
+                    raise AIProviderError(
+                        f"最终提交必须是批次最后一个调用且只能出现一次。（{metadata}；未执行本批工具，未自动重试。）"
+                    )
+                if validate:
+                    validate(call.function.name, call.function.arguments)
+                elif len(calls) > 1:
+                    raise AIProviderError("创造工具缺少批次参数校验；未执行本批工具，未自动重试。")
+            seen_ids.update(batch_ids)
+            messages.append({"role": "assistant", "content": None, "tool_calls": [{
+                "id": call.id, "type": "function",
+                "function": {"name": call.function.name, "arguments": call.function.arguments},
+            } for call in calls]})
+            for call in calls:
+                if cancelled and cancelled():
+                    raise AIProviderError("创造任务已取消；没有继续执行批次工具或模型调用。")
+                output, final = execute(call.function.name, call.function.arguments)
+                executed += 1
+                if final: return output
+                messages.append({"role": "tool", "tool_call_id": call.id,
+                    "content": json.dumps(output, ensure_ascii=False)})
+            if executed >= call_limit:
+                break
+        raise AIProviderError(f"创造工具达到{call_limit}次调用上限，未生成最终提案；工程未修改。")
 
     def stream_with_tools(
         self,
@@ -539,7 +649,7 @@ class AIProvider:
             max_retries=0,
         )
 
-        if response_model is SceneBeat:
+        if response_model is SceneBeat and not retry_scope_active.get():
             yield from self._status_trace("public_decision", "info", "正在整理公开创作过程", "模型将先输出可公开的续写判断、候选方向和写入准备。")
             yield from self._stream_public_generation_notes(llm_client, request_kwargs, user_prompt)
             yield from self._status_trace("structured_write", "info", "公开创作过程已完成", "正在进入 AgentVN 结构化写入阶段。")
@@ -586,7 +696,7 @@ class AIProvider:
                     "结构化模型请求的响应传输提前中断；后端已使用相同输入重新请求。",
                     details,
                 )
-            if self._is_explicit_tool_unsupported(exc):
+            if not _has_novel_retry_owner(response_model) and self._is_explicit_tool_unsupported(exc):
                 logger.warning(
                     "Provider explicitly rejected streamed tool calling; using one JSON compatibility request: "
                     "model=%s response_model=%s error_type=%s error=%s",
@@ -661,6 +771,9 @@ class AIProvider:
     ) -> Iterator[tuple[str, object]]:
         """Stream JSON-mode model text, then yield the parsed Pydantic object."""
 
+        # Novel stages persist successful batches and expose a manual resume.
+        # An implicit fallback would spend again before that decision is made.
+        manual_recovery = _has_novel_retry_owner(response_model)
         api_key, base_url, model_name, parameter_overrides = self._resolve_llm_config(selection)
         self._apply_deepseek_generation_defaults(parameter_overrides, model_name)
         system_prompt = self._merge_system_prompt(system_prompt, parameter_overrides)
@@ -673,11 +786,7 @@ class AIProvider:
             "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        f"{system_prompt}\n\n"
-                        "Return only a valid JSON object that matches the requested schema. "
-                        "Do not wrap the JSON in Markdown fences and do not include explanatory text."
-                    ),
+                    "content": f"{system_prompt}\n\n{_structured_json_instructions(response_model)}",
                 },
                 {"role": "user", "content": user_prompt},
             ],
@@ -700,7 +809,7 @@ class AIProvider:
         chunks: list[str] = []
         expose_model_delta = response_model is not SceneBeat
         try:
-            if response_model is SceneBeat:
+            if response_model is SceneBeat and not retry_scope_active.get():
                 yield from self._status_trace("public_decision", "info", "正在整理公开创作过程", "模型将先输出可公开的续写判断、候选方向和写入准备。")
                 yield from self._stream_public_generation_notes(llm_client, request_kwargs, user_prompt)
                 yield from self._status_trace("structured_write", "info", "公开创作过程已完成", "正在进入 JSON 兼容结构化生成阶段。")
@@ -720,6 +829,8 @@ class AIProvider:
             except Exception as stream_exc:
                 if not self._is_transient_transport_error(stream_exc):
                     raise
+                if manual_recovery:
+                    raise AIProviderError("小说模型连接中断；成功断点已保留，未自动重试。") from stream_exc
                 retry_kwargs = {key: value for key, value in request_kwargs.items() if key != "stream"}
                 details = self._structured_transport_retry_details(
                     stream_exc,
@@ -757,6 +868,16 @@ class AIProvider:
                 try:
                     result = self._validate_structured_content(response_model, content)
                 except Exception as validation_exc:
+                    if manual_recovery:
+                        if self._is_structured_output_truncation(validation_exc):
+                            raise AIProviderError(
+                                "Structured output truncated before the JSON object completed; "
+                                "小说输出超限或不完整，成功断点已保留，未自动重试。"
+                            ) from validation_exc
+                        raise AIProviderError(
+                            "小说模型结果未通过结构校验，成功断点已保留，未自动重试。"
+                            + self._novel_validation_summary(validation_exc)
+                        ) from validation_exc
                     if self._is_structured_output_truncation(validation_exc):
                         raise AIProviderError(
                             "Structured output truncated before the JSON object completed "
@@ -997,7 +1118,8 @@ class AIProvider:
         )
 
         last_error: Exception | None = None
-        max_attempts = max(1, min(3, max_attempts))
+        max_attempts = (1 if _has_novel_retry_owner(response_model)
+                        else max(1, min(3, max_attempts)))
         for attempt in range(max_attempts):
             response = self._create_with_transport_retry(
                 lambda: llm_client.chat.completions.create(**tool_kwargs),
@@ -1122,6 +1244,7 @@ class AIProvider:
             "NovelAiOutlineIndex": 2400,
             "NovelAiOutlineResponse": 9000,
             "NovelAiChapterScenePlan": 5200,
+            "NovelAiChapterSceneBatch": 4096,
             "NovelAiScenePlanResponse": 6500,
             "AdaptSceneResponse": 5200,
             "SubagentModelOutput": 6500,
@@ -1149,11 +1272,7 @@ class AIProvider:
             "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        f"{system_prompt}\n\n"
-                        "Return only a valid JSON object that matches the requested schema. "
-                        "Do not wrap the JSON in Markdown fences and do not include explanatory text."
-                    ),
+                    "content": f"{system_prompt}\n\n{_structured_json_instructions(response_model)}",
                 },
                 {"role": "user", "content": user_prompt},
             ],
@@ -1172,6 +1291,11 @@ class AIProvider:
         try:
             return self._validate_structured_content(response_model, content)
         except Exception as exc:
+            if _has_novel_retry_owner(response_model):
+                raise AIProviderError(
+                    "小说模型结果未通过结构校验，成功断点已保留，未自动重试。"
+                    + self._novel_validation_summary(exc)
+                ) from exc
             if response_model is not MemoryUpdate and self._is_structured_output_truncation(exc):
                 raise AIProviderError(
                     "Structured output truncated before the JSON object completed "
@@ -1223,14 +1347,14 @@ class AIProvider:
                         "You are repairing a previous structured output for AgentVN. "
                         "Return only one valid JSON object. Do not include Markdown or explanations. "
                         "The corrected JSON must validate against the provided schema exactly; remove unknown fields, "
-                        "rename obvious aliases to schema fields, and preserve user-visible story meaning."
+                        "rename obvious aliases to schema fields, and preserve user-visible story meaning.\n\n"
+                        f"{_structured_json_instructions(response_model)}"
                     ),
                 },
                 {
                     "role": "user",
                     "content": (
                         f"Original user request:\n{user_prompt}\n\n"
-                        f"Target Pydantic schema:\n{json.dumps(generation_schema_for_model(response_model), ensure_ascii=False)[:12000]}\n\n"
                         f"Validation errors:\n{self._validation_error_text(validation_error)}\n\n"
                         f"Invalid JSON/content to repair:\n{invalid_content[:12000]}"
                     ),
@@ -1304,6 +1428,26 @@ class AIProvider:
             return title_match.group(1)[:100]
         return "Memory extraction completed partially; no unsafe relation changes were applied."
 
+    @staticmethod
+    def _novel_validation_summary(exc: Exception) -> str:
+        """Expose bounded field diagnostics, never Pydantic's raw source input."""
+        if not isinstance(exc, ValidationError):
+            return ""
+        rows = []
+        for error in exc.errors(include_input=False, include_context=False, include_url=False)[:4]:
+            location = list(error.get("loc", ()))
+            if len(location) > 1 and location[0] == "scenes" and isinstance(location[1], int):
+                label = f"场景 {location[1] + 1}"
+                field = ".".join(str(x) for x in location[2:])
+                if field:
+                    label += f"（{field}）"
+            else:
+                label = ".".join(str(x) for x in location) or "场景规划"
+            # Custom model errors contain controlled messages; input/ctx are excluded.
+            message = sanitize_log_text(str(error.get("msg", "字段无效")))[:320]
+            rows.append(f"{label}：{message}")
+        return " 校验明细：" + "；".join(rows) if rows else ""
+
     def _format_provider_error(self, exc: Exception, base_url: str, model_name: str) -> str:
         sanitized = str(exc)
         status_code = getattr(exc, "status_code", None)
@@ -1317,7 +1461,14 @@ class AIProvider:
         prefix = f"模型服务返回 {code}" if code else "模型服务请求失败"
         hint = "请检查 Base URL、模型 ID、Token、结构化输出模式或服务状态。"
         lower = sanitized.lower()
-        if any(marker in lower for marker in ("not valid json", "jsondecodeerror", "expecting", "invalid json", "structured json")):
+        if any(marker in lower for marker in ("finish_reason=length", "output limit", "output length",
+                                              "output was truncated", "structured output truncated", "输出超限")):
+            prefix = "模型输出达到上限"
+            hint = "本次输出未完成；请检查单批输出规模与最大输出预算。这不是输入上下文超限或密钥错误。"
+        elif "模型结果未通过结构校验" in sanitized:
+            prefix = "模型输出校验失败"
+            hint = "请查看具体场景及字段；已完成断点保留，此错误不表示密钥或服务地址无效。"
+        elif any(marker in lower for marker in ("not valid json", "jsondecodeerror", "expecting", "invalid json", "structured json")):
             hint = (
                 "模型返回的 Tool Call 参数或 JSON 兼容内容不完整，AgentVN 已拒绝写入项目。"
                 "请关闭思考模式、检查最大输出长度并在模型设置页运行 Tool Call 适配测试；"
@@ -1464,6 +1615,7 @@ class AIProvider:
             scene_schema_ok = True
             diagnostics.append(f"SceneBeat Tool Call ok: {result.title}")
         except Exception as exc:
+            # error-log-ignore: Tool capability probes record diagnostics and continue to the fallback mode.
             tool_unsupported = self._is_explicit_tool_unsupported(exc)
             fallback_reason = str(exc)[:500] if tool_unsupported else None
             first_error = first_error or str(exc)
@@ -1486,6 +1638,7 @@ class AIProvider:
                 memory_schema_ok = True
                 diagnostics.append(f"MemoryUpdate Tool Call ok: {result.summary_100}")
             except Exception as exc:
+                # error-log-ignore: Tool capability probes record diagnostics and continue to the fallback mode.
                 tool_unsupported = self._is_explicit_tool_unsupported(exc)
                 fallback_reason = str(exc)[:500] if tool_unsupported else fallback_reason
                 first_error = first_error or str(exc)
@@ -1511,6 +1664,7 @@ class AIProvider:
                 complex_schema_ok = True
                 diagnostics.append(f"Complex Tool Call ok: {result.chapter_id}")
             except Exception as exc:
+                # error-log-ignore: Tool capability probes record diagnostics and continue to the fallback mode.
                 tool_unsupported = self._is_explicit_tool_unsupported(exc)
                 fallback_reason = str(exc)[:500] if tool_unsupported else fallback_reason
                 first_error = first_error or str(exc)
@@ -1535,6 +1689,7 @@ class AIProvider:
                 json_mode_ok = True
                 diagnostics.append(f"JSON compatibility ok: {result.title}")
             except Exception as exc:
+                # error-log-ignore: JSON compatibility probing records diagnostics and returns a structured failure.
                 json_mode_ok = False
                 first_error = first_error or str(exc)
                 diagnostics.append(f"JSON compatibility failed: {str(exc)[:500]}")

@@ -1,13 +1,13 @@
-@media (max-width: 900px), (pointer: coarse) {
-  .main-menu,
+/*
+ * Handheld playback intentionally reuses the PC composition.  Keep this
+ * legacy responsive block unreachable so a phone does not silently switch to
+ * a second shell layout (stacked menus, mobile grids, or alternate spacing).
+ * The Android interaction policy below remains active for touch feedback.
+ */
+@media (min-width: 100000px) {
   .screen-panel,
   .library-shell {
     overflow: auto;
-  }
-
-  .menu-hero h1 {
-    font-size: clamp(34px, 12vw, 56px);
-    overflow-wrap: anywhere;
   }
 
   .library-workbench {
@@ -47,25 +47,27 @@
     grid-template-rows: 180px auto auto auto;
   }
 
-  .menu-actions {
-    grid-template-columns: 1fr 1fr;
+  .menu-actions.menu-actions-individual .menu-action-button {
+    gap: 6px;
+    padding-inline: 8px;
+    white-space: nowrap;
   }
 
-  .playback-controls .ui-button {
-    padding: 0 calc(10px * var(--runtime-ui-scale, 1));
+  .menu-actions.menu-actions-individual .menu-action-label {
+    font-size: min(1em, 13cqi);
+    white-space: nowrap;
   }
 
-  .playback-controls .ui-button.icon-button {
-    padding: 0;
+  .menu-actions.menu-actions-individual .menu-action-button > .precision-icon {
+    width: min(1em, 18cqi);
+    height: min(1em, 18cqi);
+    flex-basis: min(1em, 18cqi);
   }
 
-  .playback-controls {
-    opacity: 1;
-    border-radius: 14px;
-    justify-content: center;
-    background:
-      linear-gradient(135deg, rgba(255, 255, 255, 0.92), rgba(236, 246, 255, 0.66)),
-      rgba(255, 255, 255, 0.56);
+  .menu-actions.menu-actions-individual .settings-entry-image {
+    width: min(1em, 18cqi);
+    height: min(1em, 18cqi);
+    flex-basis: min(1em, 18cqi);
   }
 
   .choice-panel .choice-option {
@@ -127,7 +129,7 @@
   }
 }
 
-@media (max-width: 700px) {
+@media (min-width: 100000px) {
   .save-load-screen .save-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
   }
@@ -137,7 +139,7 @@
   }
 }
 
-@media (max-height: 520px) and (orientation: landscape) {
+@media (min-width: 100000px) {
   .save-load-screen {
     padding: 16px 22px;
   }
@@ -184,12 +186,17 @@
   --runtime-skin-motion-scale: 0;
 }
 
+.ui-skin-scope[data-runtime-platform="android"],
+.ui-skin-scope[data-runtime-platform="android"] *,
+.ui-skin-scope[data-runtime-platform="android"] *::before,
+.ui-skin-scope[data-runtime-platform="android"] *::after {
+  -webkit-tap-highlight-color: transparent;
+}
+
 .ui-skin-scope[data-runtime-platform="android"] .ui-button,
 .ui-skin-scope[data-runtime-platform="android"] .menu-action-button,
 .ui-skin-scope[data-runtime-platform="android"] .choice-panel .choice-option,
-.ui-skin-scope[data-runtime-platform="android"] .settings-tabs button,
-.ui-skin-scope[data-runtime-platform="android"] .playback-controls button,
-.ui-skin-scope[data-runtime-platform="android"] .quick-menu button {
+.ui-skin-scope[data-runtime-platform="android"] .settings-tabs button {
   transition-property: background-color, border-color, color, opacity, box-shadow;
   transition-duration: 90ms;
   will-change: background-color, border-color, opacity;
@@ -207,12 +214,10 @@
 
 .ui-skin-scope[data-runtime-platform="android"] .ui-button:active:not(:disabled),
 .ui-skin-scope[data-runtime-platform="android"] .choice-panel .ui-button.choice-option:active:not(:disabled),
-.ui-skin-scope[data-runtime-platform="android"] .settings-tabs button:active:not(:disabled),
-.ui-skin-scope[data-runtime-platform="android"] .playback-controls button:active:not(:disabled),
-.ui-skin-scope[data-runtime-platform="android"] .quick-menu button:active:not(:disabled) {
-  background: color-mix(in srgb, currentColor 10%, var(--runtime-control, var(--surface-2)));
+.ui-skin-scope[data-runtime-platform="android"] .settings-tabs button:active:not(:disabled) {
+  background-color: color-mix(in srgb, currentColor 10%, var(--runtime-control-solid, var(--runtime-control, var(--surface-2))));
   border-color: var(--line-strong);
-  opacity: 0.86;
+  opacity: 1;
   box-shadow: none;
 }
 

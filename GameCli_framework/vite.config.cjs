@@ -19,6 +19,10 @@ module.exports = defineConfig({
   base: "./",
   plugins: [react()],
   resolve: {
+    // Avoid Vite's Windows network-drive probe (`net use`) during packaged
+    // Tauri builds. The player bundle has no symlink-based dependency layout,
+    // so preserving the import paths is both safe and deterministic.
+    preserveSymlinks: true,
     alias: {
       jszip: path.resolve(__dirname, "node_modules/jszip/dist/jszip.min.js"),
     },

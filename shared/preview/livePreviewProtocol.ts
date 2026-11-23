@@ -3,7 +3,12 @@ import type { UISkinLayout } from "../cartridge/uiSkin";
 
 export const LIVE_PREVIEW_PROTOCOL_VERSION = 2;
 
-export type LivePreviewScreen = "title_menu" | "playing" | "settings" | "save_load" | "history" | "gallery" | "about";
+/** Session-only preview choices. Never serialized into a game or player progress. */
+export interface PreviewOptions {
+  unlockAllGallery?: boolean;
+}
+
+export type LivePreviewScreen = "title_menu" | "playing" | "settings" | "save_load" | "history" | "gallery" | "about" | "help";
 export type LivePreviewPlaybackRate = 0.5 | 1 | 2;
 
 export type PreviewPathStep =
@@ -58,6 +63,7 @@ export interface LivePreviewInitMessage extends LivePreviewMessageIdentity {
   assetUrls: Record<string, string>;
   start: PreviewStartSpec;
   screen?: LivePreviewScreen;
+  previewOptions?: PreviewOptions;
 }
 
 export interface LivePreviewStartMessage extends LivePreviewMessageIdentity {
@@ -67,6 +73,8 @@ export interface LivePreviewStartMessage extends LivePreviewMessageIdentity {
 
 export interface LivePreviewPatchMessage extends LivePreviewMessageIdentity {
   type: "agentvn.live-preview.patch";
+  /** Layout authoring only. Must not contain script/scenes/start or restart playback. */
+  presentationOnly?: boolean;
   script?: RuntimeScript;
   scenes?: Scene[];
   manifest?: GameManifest;
@@ -77,8 +85,9 @@ export interface LivePreviewPatchMessage extends LivePreviewMessageIdentity {
 
 export interface LivePreviewControlMessage extends LivePreviewMessageIdentity {
   type: "agentvn.live-preview.control";
-  action: "pause" | "resume" | "replay" | "finish" | "set_playback_rate";
+  action: "pause" | "resume" | "replay" | "finish" | "set_playback_rate" | "set_gallery_unlock_all";
   playbackRate?: LivePreviewPlaybackRate;
+  unlockAllGallery?: boolean;
 }
 
 export interface PreviewFreezeFrameRequest extends LivePreviewMessageIdentity {
@@ -91,6 +100,11 @@ export interface LivePreviewReadyMessage extends LivePreviewMessageIdentity {
   type: "agentvn.live-preview.ready";
   sceneId?: string;
   commandIndex?: number;
+}
+
+export interface LivePreviewScreenChangeMessage extends LivePreviewMessageIdentity {
+  type: "agentvn.live-preview.screen-change";
+  screen: LivePreviewScreen;
 }
 
 export interface LivePreviewErrorMessage extends LivePreviewMessageIdentity {
@@ -115,6 +129,7 @@ export type LivePreviewEditorMessage =
 
 export type LivePreviewRuntimeMessage =
   | LivePreviewReadyMessage
+  | LivePreviewScreenChangeMessage
   | LivePreviewErrorMessage
   | PreviewFreezeFrameResponse;
 

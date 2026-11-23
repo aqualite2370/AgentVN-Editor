@@ -7,6 +7,12 @@ import logging
 from app.ai.generator import AIGenerator
 from app.ai.context_budget import pack_text_context
 from app.ai.provider import AIProvider
+from app.ai.runtime_event_policy import (
+    AIOperationGuardResult,
+    RuntimeControlGuardResult,
+    guard_scene_ai_operations,
+    guard_scene_runtime_controls,
+)
 from app.memory.manager import MemoryManager
 from app.schemas.requests import ExtractMemoryRequest, GenerateSceneRequest
 from app.models.memory import GenerationMemoryContext, MemoryUpdate
@@ -50,7 +56,7 @@ class GenerationService:
             request.provider_selection,
             note="Backend packed editor blueprint context for non-streaming scene generation.",
         )
-        return self.generator.generate_scene(
+        generated = self.generator.generate_scene(
             current_scene=request.current_scene,
             target_scene_stub=request.target_scene_stub,
             previous_summary=request.previous_summary,
@@ -64,6 +70,87 @@ class GenerationService:
             chapter=request.chapter,
             provider_selection=request.provider_selection,
         )
+        operation_guard = self._guard_ai_operations(request, generated)
+        guarded = self._guard_runtime_controls(request, operation_guard.scene)
+        if operation_guard.changed:
+            logger.warning(
+                "Removed or restored AI-protected operations: removed=%s restored=%s stripped=%s scene_id=%s",
+                operation_guard.removed_commands,
+                operation_guard.restored_commands,
+                operation_guard.stripped_fields,
+                operation_guard.scene.scene_id,
+            )
+        if guarded.changed:
+            logger.warning(
+                "Removed or restored unauthorized rollback controls: removed=%s restored=%s scene_id=%s",
+                guarded.removed_commands,
+                guarded.restored_commands,
+                guarded.scene.scene_id,
+            )
+        return guarded.scene
+
+    @staticmethod
+    def _guard_ai_operations(
+        request: GenerateSceneRequest,
+        scene: SceneBeat,
+    ) -> AIOperationGuardResult:
+        return guard_scene_ai_operations(
+            scene,
+            baseline_scene_json=request.current_scene,
+        )
+
+    @staticmethod
+    def _guard_runtime_controls(
+        request: GenerateSceneRequest,
+        scene: SceneBeat,
+    ) -> RuntimeControlGuardResult:
+        return guard_scene_runtime_controls(
+            scene,
+            author_goal=request.author_goal,
+            generation_outline=request.generation_outline,
+            baseline_scene_json=request.current_scene,
+        )
+
+    @staticmethod
+    def _runtime_control_trace(result: RuntimeControlGuardResult) -> dict[str, object]:
+        return {
+            "id": "runtime_control_guard",
+            "time": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            "phase": "runtime_control_guard",
+            "level": "warning",
+            "title": "Runtime control guard applied",
+            "message": (
+                "Rollback controls require an explicit author instruction. "
+                "Unauthorized additions were removed and existing same-scene controls were preserved."
+            ),
+            "details": {
+                "scene_id": result.scene.scene_id,
+                "removed_commands": result.removed_commands,
+                "restored_commands": result.restored_commands,
+                "authorized": result.authorized,
+            },
+        }
+
+    @staticmethod
+    def _ai_operation_trace(result: AIOperationGuardResult) -> dict[str, object]:
+        return {
+            "id": "ai_operation_guard",
+            "time": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            "phase": "ai_operation_guard",
+            "level": "warning",
+            "title": "Protected editor operations preserved",
+            "message": (
+                "AI cannot create or modify asset-reference events, camera commands, or choice button styles. "
+                "Unauthorized changes were removed and existing same-scene author settings were restored."
+            ),
+            "details": {
+                "scene_id": result.scene.scene_id,
+                "removed_commands": result.removed_commands,
+                "restored_commands": result.restored_commands,
+                "stripped_fields": result.stripped_fields,
+                "restored_fields": result.restored_fields,
+            },
+        }
 
     def stream_generate_scene(self, request: GenerateSceneRequest) -> Iterator[tuple[str, object]]:
         context, embedding_error = self._build_context(request)
@@ -104,7 +191,7 @@ class GenerationService:
                     "embedding_error": embedding_error[:500] if embedding_error else None,
                 },
             })
-            yield from self.generator.stream_generate_scene(
+            for event, payload in self.generator.stream_generate_scene(
                 current_scene=request.current_scene,
                 target_scene_stub=request.target_scene_stub,
                 previous_summary=request.previous_summary,
@@ -117,7 +204,17 @@ class GenerationService:
                 character_profiles=context.character_profiles,
                 chapter=request.chapter,
                 provider_selection=request.provider_selection,
-            )
+            ):
+                if event != "final" or not isinstance(payload, SceneBeat):
+                    yield (event, payload)
+                    continue
+                operation_guard = self._guard_ai_operations(request, payload)
+                if operation_guard.changed:
+                    yield ("trace", self._ai_operation_trace(operation_guard))
+                guarded = self._guard_runtime_controls(request, operation_guard.scene)
+                if guarded.changed:
+                    yield ("trace", self._runtime_control_trace(guarded))
+                yield ("final", guarded.scene)
 
         return events()
 

@@ -1,8 +1,10 @@
 import type { AssetRef } from "./assets";
 import type { MemoryMode } from "./memory";
 import type { NovelPersistenceState } from "../novel-import/types";
-import type { AboutPanelCopy, BackgroundFit, DialogVisualStyle, SpeakerFocusConfig } from "../../../shared/cartridge/types";
+import type { AboutPanelCopy, BackgroundFit, DialogPresentationMode, DialogVisualStyle, SpeakerFocusConfig } from "../../../shared/cartridge/types";
 import type { UISkinLayout } from "../../../shared/cartridge/uiSkin";
+import type { RuntimeUILayoutProfiles } from "../../../shared/cartridge/uiLayoutProfiles";
+import type { SpriteAnimationDefaults } from "../utils/spriteAnimationDefaults";
 
 export interface AssetLibraryFolder {
   folder_id: string;
@@ -30,11 +32,21 @@ export interface PackageAppearanceSettings {
   titleBackgroundDimming?: number;
   iconAssetId?: string;
   standaloneIconAssetId?: string;
+  androidApplicationId?: string;
   settingsPanelBackgroundAssetId?: string;
   settingsPanelBackgroundFit?: BackgroundFit;
   settingsPanelBackgroundDimming?: number;
   settingsEntryImageAssetId?: string;
   about?: AboutPanelCopy;
+}
+
+export interface AndroidPackageSettings {
+  packageName?: string;
+  versionCode?: number;
+  publishTitle?: string;
+  iconAssetId?: string;
+  /** Fingerprint reference. The key itself is stored by the Android editor. */
+  signingKeyRef?: string;
 }
 
 export interface EditorCanvasBackgroundImage {
@@ -85,15 +97,37 @@ export interface ProjectMetadata {
   updatedAt: string;
 }
 
+export interface CharacterSpriteLayoutSettings {
+  position?: string | null;
+  offset_x: number;
+  offset_y: number;
+  scale: number;
+}
+
+export interface RollbackProjectSettings {
+  enabled: boolean;
+  hard_limit: number;
+  log_length: number;
+  pause_as_checkpoint: boolean;
+  fixed_choice_mode: "selected_only" | "selected_marked";
+}
+
 export interface ProjectSettings {
   defaultMemoryMode: MemoryMode;
   defaultSpriteScale: number;
+  spriteAnimationDefaults?: SpriteAnimationDefaults;
+  defaultDialogPresentation?: DialogPresentationMode;
+  characterDialogPresentations?: Record<string, DialogPresentationMode>;
   speakerFocus: SpeakerFocusConfig;
+  rollback: RollbackProjectSettings;
   packageAppearance: PackageAppearanceSettings;
+  androidPackage?: AndroidPackageSettings;
   editorAppearance: EditorAppearanceSettings;
   runtimeUILayout?: UISkinLayout;
+  runtimeUILayoutProfiles?: RuntimeUILayoutProfiles;
   characterDisplayNames: Record<string, string>;
   characterDialogStyles: Record<string, DialogVisualStyle>;
+  characterSpriteLayouts: Record<string, CharacterSpriteLayoutSettings>;
   assetLibrary: AssetLibrarySettings;
   assetStudio: AssetStudioProjectSettings;
   novelPersistence?: NovelPersistenceState;

@@ -2,10 +2,12 @@ import type { EditorProjectFile } from "../types/nodes";
 import { countEmbeddedAssetPayloads, embeddedProjectPayloadImportLimitBytes, embeddedProjectPayloadInlineLimitChars } from "./embeddedAssetPayloads";
 import { validateProject } from "./validation";
 import { reportFrontendError } from "../../../shared/logging/frontendErrorLogger";
+import { isProjectZipBytes, readProjectJsonFromBundle } from "./projectBundle";
 
 export interface ProjectImportResult {
   project?: EditorProjectFile;
   error?: string;
+  invalidProject?: boolean;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -17,6 +19,7 @@ function isEditorProjectFile(value: unknown): value is EditorProjectFile {
   return (
     typeof value.schema_version === "string" &&
     typeof value.project_id === "string" &&
+    Boolean(value.project_id.trim()) &&
     typeof value.title === "string" &&
     typeof value.author === "string" &&
     Array.isArray(value.nodes) &&
@@ -30,12 +33,29 @@ function isEditorProjectFile(value: unknown): value is EditorProjectFile {
 
 export function parseProjectJson(parsed: unknown): ProjectImportResult {
   if (!isEditorProjectFile(parsed)) {
-    return { error: "导入失败：这不是有效的 AgentVN 工程文件。" };
+    return { invalidProject: true, error: "导入失败：这不是有效的 AgentVN 工程文件。" };
   }
 
-  const issues = validateProject(parsed);
+  if (parsed.nodes.some((node) => !isObject(node) || typeof node.id !== "string"
+      || !isObject(node.data) || typeof node.data.nodeKind !== "string"
+      || (node.data.scene != null && (!isObject(node.data.scene) || !Array.isArray(node.data.scene.commands)
+        || node.data.scene.commands.some((command) => !isObject(command)))))
+    || parsed.edges.some((edge) => !isObject(edge) || typeof edge.id !== "string"
+      || typeof edge.source !== "string" || typeof edge.target !== "string"
+      || (edge.sourceHandle != null && typeof edge.sourceHandle !== "string")
+      || (edge.targetHandle != null && typeof edge.targetHandle !== "string"))
+    || parsed.asset_manifest.some((asset) => !isObject(asset) || !isObject(asset.metadata))) {
+    return { invalidProject: true, error: "导入失败：工程包含不完整的节点、连线或素材清单。" };
+  }
+
+  let issues: ReturnType<typeof validateProject>;
+  try {
+    issues = validateProject(parsed);
+  } catch {
+    return { invalidProject: true, error: "导入失败：工程中的场景或选项结构不完整。" };
+  }
   if (issues.length > 0) {
-    return { error: `导入失败：${issues.map((issue) => issue.message).join("；")}` };
+    return { invalidProject: true, error: `导入失败：${issues.map((issue) => issue.message).join("；")}` };
   }
 
   const embeddedPayloads = countEmbeddedAssetPayloads(parsed);
@@ -49,19 +69,35 @@ export function parseProjectJson(parsed: unknown): ProjectImportResult {
 }
 
 export async function parseProjectFile(file: File): Promise<ProjectImportResult> {
+  const header = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+  if (isProjectZipBytes(header)) {
+    try {
+      return parseProjectJson(await readProjectJsonFromBundle(file));
+    } catch (error) {
+      reportFrontendError("editor.project-import", error, {
+        operation: "parse-zip",
+        fileName: file.name,
+        fileSize: file.size,
+      });
+      const message = error instanceof Error ? error.message : "工程 ZIP 无法读取。";
+      return { error: message, invalidProject: /^PROJECT_(?:CONTAINER_INVALID|ZIP_PATH_UNSAFE|ASSET_MISSING|ASSET_HASH_MISMATCH)\b/.test(message) };
+    }
+  }
   if (file.size > embeddedProjectPayloadImportLimitBytes) {
     return {
-      error: `导入失败：工程文件约 ${Math.round(file.size / 1024 / 1024)}MB，超过安全上限。请先外置素材或运行修复脚本再导入。`,
+      error: `LEGACY_JSON_SIZE_LIMIT：旧 JSON 工程约 ${Math.round(file.size / 1024 / 1024)}MB，超过兼容导入安全上限。请使用桌面版先转换为 ZIP .vnproj。`,
     };
   }
   try {
-    return parseProjectJson(JSON.parse(await file.text()));
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes).replace(/^\uFEFF/, "");
+    return parseProjectJson(JSON.parse(text));
   } catch (error) {
     reportFrontendError("editor.project-import", error, {
       operation: "parse",
       fileName: file.name,
       fileSize: file.size,
     });
-    return { error: "导入失败：文件不是有效的 JSON。" };
+    return { error: "PROJECT_CONTAINER_INVALID：文件不是严格 UTF-8 JSON，也不是 AgentVN ZIP 工程。" };
   }
 }

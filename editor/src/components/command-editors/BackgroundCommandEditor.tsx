@@ -61,7 +61,7 @@ export function BackgroundCommandEditor({
           </label>
           <label>
             旧版过场动画代称 <FieldHelp field="transition_display_name" />
-            <input
+            <input data-help-key="editor.control"
               value={command.transition_display_name ?? ""}
               placeholder="例如：淡入过场、推镜过场"
               onChange={(event) => onChange({ ...command, transition_display_name: event.target.value || null })}

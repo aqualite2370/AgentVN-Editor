@@ -1,0 +1,37 @@
+# Android 16 KB page-size compatibility.
+#
+# Android devices configured with 16 KB pages require every native ELF LOAD
+# segment to be aligned for that page size. Keep this target-specific so
+# desktop builds retain their normal linker defaults.
+
+[target.aarch64-linux-android]
+rustflags = [
+  "-C",
+  "link-arg=-Wl,-z,max-page-size=16384",
+  "-C",
+  "link-arg=-Wl,-z,common-page-size=16384",
+]
+
+[target.armv7-linux-androideabi]
+rustflags = [
+  "-C",
+  "link-arg=-Wl,-z,max-page-size=16384",
+  "-C",
+  "link-arg=-Wl,-z,common-page-size=16384",
+]
+
+[target.i686-linux-android]
+rustflags = [
+  "-C",
+  "link-arg=-Wl,-z,max-page-size=16384",
+  "-C",
+  "link-arg=-Wl,-z,common-page-size=16384",
+]
+
+[target.x86_64-linux-android]
+rustflags = [
+  "-C",
+  "link-arg=-Wl,-z,max-page-size=16384",
+  "-C",
+  "link-arg=-Wl,-z,common-page-size=16384",
+]

@@ -6,6 +6,7 @@ import type { EditorEdge, EditorNode } from "../types/nodes";
 import { buildProjectAssetAudit } from "../utils/assetAudit";
 import { collectEditorAssetReferences, type EditorAssetReference } from "../utils/editorAssetReferences";
 import { scoreOpeningPerformance } from "../utils/openingPerformance";
+import { androidApplicationIdIssue, windowsReleasePathIssue } from "../packaging/releaseIdentifiers";
 
 export type PreflightCategory = "structure" | "assets" | "quality" | "metadata";
 export type PreflightStatus = "pass" | "warning" | "blocked";
@@ -18,6 +19,14 @@ export interface PreflightIssue {
   message: string;
   solution: string;
   subject?: string;
+  locations?: PreflightIssueLocation[];
+}
+
+export interface PreflightIssueLocation {
+  scene: string;
+  eventNumber?: number;
+  action: string;
+  field: string;
 }
 
 export interface PreflightCheck {
@@ -57,6 +66,8 @@ export interface ExportPreflightInput {
     title: string;
     author: string;
     description: string;
+    standalonePlatform?: "windows" | "android";
+    androidApplicationId?: string;
   };
 }
 
@@ -71,7 +82,7 @@ const nonStoryTags = new Set(["choice", "condition", "modifier", "animation", "e
 const defaultGameIds = new Set(["agentvn_game", "project_local", "verify_game", "agentvn_sample", "sample_game", "untitled"]);
 
 const issueSolutions: Record<string, string> = {
-  entry_scene_missing: "在流程图中把入口节点连接到一个存在的场景，或在项目入口设置中改为现有 scene_id。",
+  entry_scene_missing: "在流程图中把入口节点连接到一个现有场景。",
   scene_id_missing: "打开对应场景卡片，为场景填写稳定且唯一的 scene_id 后重新检查。",
   scene_id_duplicate: "保留其中一个 scene_id，给其余重复场景改成不同的稳定编号。",
   choice_target_missing: "从该选项的连线手柄连接到目标场景，或在选项编辑器里选择一个目标场景。",
@@ -95,10 +106,11 @@ const issueSolutions: Record<string, string> = {
   asset_reference_placeholder: "用最终素材替换该 placeholder，或在素材库中重新生成并确认不是占位资源。",
   loading_animation_video_missing: "为载入动画选择一个已导入的视频素材，或把载入动画模式改回默认模式。",
   loading_animation_images_missing: "为载入动画导入并选择至少一张图片帧，或把载入动画模式改回默认模式。",
+  opening_audio_asset_invalid: "请在素材库中重新选择有效的 BGM、SFX 或 Voice 音频；确认素材类型和 MIME 为 audio/*，并在导出前重新运行预检。",
   scene_background_missing_final: "为该场景补充最终背景素材，或把 background_id 改为素材库中已有的背景。",
   character_sprite_missing: "为该角色导入立绘素材，并在立绘命令中选择正确的 sprite_id。",
   character_portrait_missing: "为该角色导入头像素材，并在对白命令中选择正确的 portrait。",
-  optional_audio_performance_missing: "按演出需要补充对应音频；如果该音频确实不需要，可保留为警告但发布前应人工确认。",
+  optional_audio_performance_missing: "此项可选；按场景需要配置对应素材或演出，不需要时可保持未配置。",
   character_reference_missing: "在对白或立绘命令中选择具体角色，确保 character_id 不为空。",
   character_reference_invalid: "在角色列表中补齐该角色，或把事件里的 character_id 改为现有角色。",
   scene_background_missing: "在场景开头添加背景事件，避免玩家端沿用旧背景或显示默认背景。",
@@ -111,6 +123,8 @@ const issueSolutions: Record<string, string> = {
   game_id_required: "在发布设置中填写稳定的英文 game_id，例如作品拼音或英文名。",
   game_id_invalid: "把 game_id 改为 3 到 64 位，以小写字母开头，只包含小写字母、数字、下划线、点或短横线。",
   game_id_default: "把默认 game_id 改成当前作品专属编号，避免覆盖或混淆其他发布包。",
+  windows_game_id_unsafe: "修改游戏编号使其可作为 Windows 存档目录名。已发布作品不要随意改编号。",
+  android_application_id_required_or_invalid: "新作品填写独有包名；覆盖更新时填写旧 APK 的实际包名。",
   title_required: "填写玩家会看到的作品标题。",
   author_required: "填写作者名、团队名或发行署名。",
   description_required: "填写卡带简介，说明作品内容和版本用途。",
@@ -255,7 +269,7 @@ function validateEntryScene(script: RuntimeScript): PreflightIssue[] {
       "structure",
       "blocker",
       "entry_scene_missing",
-      `入口场景不存在：当前 entry_scene_id 为 ${script.entry_scene_id || "空值"}，导出后玩家端无法开始播放。请把入口节点连接到一个存在的场景。`,
+      "入口节点尚未连接到有效场景，玩家将无法开始剧情。请把入口节点连接到开场场景。",
       script.entry_scene_id || undefined,
     ),
   ];
@@ -467,19 +481,80 @@ function validateChoiceTargets(script: RuntimeScript, nodes: EditorNode[], edges
 
 function validateAssetReferences(script: RuntimeScript, assets: AssetRef[], nodes?: EditorNode[]): PreflightIssue[] {
   const assetsById = new Map(assets.map((asset) => [asset.asset_id, asset]));
-  const references = nodes?.length ? collectEditorAssetReferences(nodes) : collectAssetReferencesFromScript(script);
+  const references = nodes?.length ? collectEditorAssetReferences(nodes, assets) : collectAssetReferencesFromScript(script);
   const issues: PreflightIssue[] = [];
+  const missing = new Map<string, {
+    assetId: string;
+    assetType: string;
+    locations: PreflightIssueLocation[];
+    subject: string;
+  }>();
+  const actionLabels: Record<string, string> = {
+    background: "设置背景",
+    show_image: "显示图片",
+    video: "播放视频",
+    sprite: "显示立绘",
+    bgm: "播放音乐",
+    sfx: "播放音效",
+    animation: "播放动画",
+    dialog: "对白",
+    narration: "旁白",
+    gallery_anchor: "图鉴展示",
+    loading_animation: "开场动画",
+    loading_audio: "开场音频",
+  };
+  const fieldLabels: Record<string, string> = {
+    background_id: "背景素材",
+    image_id: "图片素材",
+    video_id: "视频素材",
+    sprite_id: "立绘素材",
+    bgm_id: "音乐素材",
+    sfx_id: "音效素材",
+    animation_id: "动画素材",
+    animation_asset_id: "动画素材",
+    portrait: "头像素材",
+    voice: "语音素材",
+    font_asset_id: "字体素材",
+    "dialog_style.background_asset_id": "对白框背景",
+    asset_id: "引用素材",
+    video_asset_id: "视频素材",
+  };
   for (const ref of references) {
     const assetId = ref.asset_id.trim();
     const asset = assetsById.get(assetId);
     if (!assetId || !asset) {
-      issues.push(issue(
-        "assets",
-        "warning",
-        "asset_reference_missing",
-        `素材引用缺失：${ref.asset_id || "空值"}（${ref.asset_type}）被 ${ref.source} 引用，但素材库中没有对应 asset_id。导出会写入 placeholder，占位发布前建议替换为最终素材。`,
-        assetId || ref.asset_id,
-      ));
+      const editorRef = ref as Partial<EditorAssetReference>;
+      const commandIndex = editorRef.command_index;
+      const commandType = editorRef.command_type;
+      const field = editorRef.field;
+      const sceneTitle = editorRef.scene_title?.trim();
+      const sceneIndex = script.scenes.findIndex((scene) => scene.scene_id === editorRef.scene_id);
+      const sceneLabel = sceneTitle
+        ? `场景「${sceneTitle}」`
+        : sceneIndex >= 0 ? `场景 #${sceneIndex + 1}` : "场景";
+      const action = commandType === "bgm" && editorRef.action === "stop"
+        ? "停止音乐"
+        : actionLabels[commandType ?? ""] ?? "工程设置";
+      const location: PreflightIssueLocation = {
+        scene: sceneLabel,
+        eventNumber: commandIndex !== undefined && commandIndex >= 0 ? commandIndex + 1 : undefined,
+        action,
+        field: fieldLabels[field ?? ""] ?? "素材",
+      };
+      const key = `${assetId || "(空编号)"}:${ref.asset_type}`;
+      const row = missing.get(key) ?? {
+        assetId,
+        assetType: ref.asset_type,
+        locations: [],
+        subject: assetId || ref.source,
+      };
+      if (!row.locations.some((current) => current.scene === location.scene
+        && current.eventNumber === location.eventNumber
+        && current.action === location.action
+        && current.field === location.field)) {
+        row.locations.push(location);
+      }
+      missing.set(key, row);
     } else if (asset.metadata.placeholder) {
       issues.push(issue(
         "assets",
@@ -490,6 +565,17 @@ function validateAssetReferences(script: RuntimeScript, assets: AssetRef[], node
       ));
     }
   }
+  for (const row of missing.values()) {
+    const missingIssue = issue(
+      "assets",
+      "warning",
+      "asset_reference_missing",
+      `素材「${row.assetId || "空编号"}」（${row.assetType}）未加入工程素材库。`,
+      row.subject,
+    );
+    missingIssue.locations = row.locations;
+    issues.push(missingIssue);
+  }
   const loadingAnimation = script.loading_animation;
   if (loadingAnimation?.kind === "video" && !loadingAnimation.video_asset_id.trim()) {
     issues.push(issue("assets", "blocker", "loading_animation_video_missing", "载入动画选择了视频模式，但还没有选择 video 资源。", "loading_animation"));
@@ -498,6 +584,24 @@ function validateAssetReferences(script: RuntimeScript, assets: AssetRef[], node
     const imageCount = loadingAnimation.image_asset_ids.filter((assetId) => assetId.trim()).length;
     if (imageCount === 0) {
       issues.push(issue("assets", "blocker", "loading_animation_images_missing", "载入动画选择了多图模式，但还没有导入图片帧。", "loading_animation"));
+    }
+  }
+  for (const [index, track] of (script.opening_audio ?? []).entries()) {
+    const asset = assetsById.get(track.asset_id.trim());
+    if (
+      !track.asset_id.trim()
+      || !["bgm", "sfx", "voice"].includes(track.asset_type)
+      || !asset
+      || asset.asset_type !== track.asset_type
+      || !asset.metadata.mime_type?.startsWith("audio/")
+    ) {
+      issues.push(issue(
+        "assets",
+        "blocker",
+        "opening_audio_asset_invalid",
+        `开屏音频第 ${index + 1} 项没有对应的可播放 ${track.asset_type || "audio"} 素材，请重新从素材库选择。`,
+        `opening_audio.${index}`,
+      ));
     }
   }
   return issues;
@@ -552,13 +656,26 @@ function validateVisualAssetReadiness(nodes: EditorNode[], assets: AssetRef[]): 
 
 function validateOptionalAudioPerformance(nodes: EditorNode[], assets: AssetRef[]): PreflightIssue[] {
   const audit = buildProjectAssetAudit(nodes, assets, { includeOptional: true });
-  return audit.optional_audio_performance.map((item) => issue(
-    "assets",
-    "warning",
-    "optional_audio_performance_missing",
-    pendingVisualAssetLocation(item) + " 可选项未配置：" + item.label + "。" + item.reason,
-    pendingVisualAssetSubject(item),
-  ));
+  const solutions: Partial<Record<NonNullable<PendingVisualAsset["asset_type"]>, string>> = {
+    background: "可选：在该场景的背景事件中选择背景图；需要沿用前一场景画面时无需添加。",
+    sprite: "可选：在该角色的立绘事件中选择角色图像；画外对白无需添加立绘。",
+    portrait: "可选：在对应对白中选择头像；需要无头像对白时可保持未配置。",
+    bgm: "可选：在该场景的背景音乐事件中选择音乐素材；需要安静场景时无需添加。",
+    voice: "可选：在对应对白中选择语音文件；不需要配音时可保持未配置。",
+    sfx: "可选：在该场景的音效事件中选择音效素材；不需要音效时可保持未配置。",
+  };
+  return audit.optional_audio_performance.map((item) => ({
+    ...issue(
+      "assets",
+      "warning",
+      "optional_audio_performance_missing",
+      pendingVisualAssetLocation(item) + " 可选项未配置：" + item.label + "。" + item.reason,
+      pendingVisualAssetSubject(item),
+    ),
+    solution: item.kind === "performance"
+      ? "可选：在该场景的事件工作台添加镜头、转场或角色入场演出；不需要时可保持未配置。"
+      : (item.asset_type && solutions[item.asset_type]) || issueSolutions.optional_audio_performance_missing,
+  }));
 }
 
 function validateCharacterReferences(script: RuntimeScript): PreflightIssue[] {
@@ -700,6 +817,12 @@ function validateMetadata(input: ExportPreflightInput["metadata"]): PreflightIss
     issues.push(issue("metadata", "blocker", "game_id_invalid", "game_id 不合法。请使用 3-64 位小写字母开头的英文、数字、下划线、点或短横线。", rawGameId));
   } else if (defaultGameIds.has(rawGameId)) {
     issues.push(issue("metadata", "blocker", "game_id_default", `game_id 仍是默认值 ${rawGameId}。请改成这个作品专属的发布编号。`, rawGameId));
+  } else if (input.standalonePlatform === "windows") {
+    const message = windowsReleasePathIssue(rawGameId);
+    if (message) issues.push(issue("metadata", "blocker", "windows_game_id_unsafe", message, rawGameId));
+  } else if (input.standalonePlatform === "android") {
+    const message = androidApplicationIdIssue(input.androidApplicationId);
+    if (message) issues.push(issue("metadata", "blocker", "android_application_id_required_or_invalid", message, rawGameId));
   }
 
   if (!input.title.trim()) issues.push(issue("metadata", "blocker", "title_required", "标题不能为空。请填写玩家看到的作品标题。", "title"));
@@ -728,10 +851,10 @@ function buildGroups(checks: PreflightCheck[]): PreflightGroup[] {
 export function runExportPreflight(input: ExportPreflightInput): PreflightReport {
   const checks = [
     check("entry_scene", "structure", "入口场景存在", validateEntryScene(input.script)),
-    check("scene_id_unique", "structure", "scene_id 唯一", validateSceneIds(input.nodes)),
+    check("scene_id_unique", "structure", "场景编号唯一", validateSceneIds(input.nodes)),
     check("choice_targets", "structure", "选项目标有效", validateChoiceTargets(input.script, input.nodes, input.edges)),
-    check("asset_references", "assets", "素材引用可追踪", validateAssetReferences(input.script, input.assets, input.nodes)),
-    check("visual_assets", "assets", "视觉资产待补", validateVisualAssetReadiness(input.nodes, input.assets)),
+    check("asset_references", "assets", "素材引用完整", validateAssetReferences(input.script, input.assets, input.nodes)),
+    check("visual_assets", "assets", "视觉素材待补", validateVisualAssetReadiness(input.nodes, input.assets)),
     check("audio_performance_options", "assets", "音频/演出可选项", validateOptionalAudioPerformance(input.nodes, input.assets)),
     check("character_references", "structure", "角色引用存在", validateCharacterReferences(input.script)),
     check("scene_backgrounds", "quality", "场景背景", validateSceneBackgrounds(input.script)),
@@ -739,7 +862,7 @@ export function runExportPreflight(input: ExportPreflightInput): PreflightReport
     check("branch_reachability", "quality", "分支可达性", validateBranchReachability(input.script)),
     check("scene_length", "quality", "场景内容长度", validateSceneLength(input.script)),
     check("opening_performance", "quality", "开局演出精美度", validateOpeningPerformance(input.script)),
-    check("metadata", "metadata", "发布元数据", validateMetadata(input.metadata)),
+    check("metadata", "metadata", "作品信息", validateMetadata(input.metadata)),
   ];
   const allIssues = checks.flatMap((item) => item.issues);
   const blockers = allIssues.filter((item) => item.severity === "blocker");

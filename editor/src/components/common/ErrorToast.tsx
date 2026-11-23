@@ -7,7 +7,7 @@ import { reportFrontendError } from "../../../../shared/logging/frontendErrorLog
 
 const autoDismissMs = 5000;
 const previewMaxLength = 96;
-const defaultOpenHint = "点击打开程序旁 error_log 文件夹里的完整错误报告。";
+const defaultOpenHint = "点击查看错误详情，必要时可导出诊断报告。";
 const toneLabels = {
   success: "完成",
   info: "通知",
@@ -114,7 +114,7 @@ export function ErrorToast({ notice, onDismiss }: { notice: EditorNotice; onDism
       setOpenHint(defaultOpenHint);
       void persistNoticeReport(notice)
         .then((path) => {
-          if (path) setOpenHint(`已导出：${path}。点击打开完整错误报告。`);
+          if (path) setOpenHint("错误报告已保存，点击查看详情。");
         })
         .catch((error) => {
           reportFrontendError("editor.error-report", error, { operation: "persist" });
@@ -155,7 +155,7 @@ export function ErrorToast({ notice, onDismiss }: { notice: EditorNotice; onDism
         event.stopPropagation();
         void openNoticeReport(notice)
           .then((path) => {
-            setOpenHint(path ? `已打开：${path}` : "已打开完整错误报告。");
+            setOpenHint("已打开错误详情。");
           })
           .catch((error) => {
             reportFrontendError("editor.error-report", error, { operation: "open" });

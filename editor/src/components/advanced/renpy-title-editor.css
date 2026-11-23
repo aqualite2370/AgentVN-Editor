@@ -1,0 +1,357 @@
+.renpy-title-editor { min-width: 0; }
+.renpy-title-editor .runtime-layout-center,
+.advanced-tools-panel.layout-mode .renpy-title-editor .runtime-layout-center {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+/* Both layout types retain the same tracks; authoring controls, not the
+   outer node rail, get the extra room. */
+.advanced-tools-panel.layout-mode .runtime-layout-grid {
+  grid-template-columns: minmax(288px, 300px) minmax(0, 1fr) minmax(300px, 340px);
+}
+@media (min-width: 641px) and (max-width: 1180px) {
+  .advanced-tools-panel.layout-mode .runtime-layout-grid {
+    grid-template-columns: 180px minmax(0, 1fr) 286px;
+  }
+  .advanced-tools-panel.layout-mode .runtime-layout-designer[data-renpy-editor] .runtime-layout-header { flex-wrap: wrap; }
+  .advanced-tools-panel.layout-mode .runtime-layout-designer[data-renpy-editor] .runtime-layout-header .row-actions { flex-wrap: wrap; min-width: 0; }
+}
+/* Desktop types share the common toolbar tracks. A type-specific wrap
+   moves the switch and Save button even though the outer workbench is stable. */
+.renpy-title-editor .renpy-editor-fields { display: flex; flex-direction: column; gap: 12px; }
+.renpy-title-editor .renpy-editor-fields > * { flex-shrink: 0; }
+.runtime-layout-designer[data-layout-type="renpy"] {
+  --renpy-property-fast: var(--motion-fast);
+  --renpy-property-normal: var(--motion-normal);
+}
+/* Native disclosure semantics and full-row feedback. No hover lift or second
+   backing rectangle; the summary is the single interaction surface. */
+.runtime-layout-designer[data-layout-type="renpy"] :is(.runtime-layout-sidebar, .runtime-layout-inspector) details > summary {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  box-sizing: border-box;
+  min-height: 38px;
+  padding: 9px 11px;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink-strong);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--surface-2) 96%, var(--ink-strong) 4%), var(--surface));
+  box-shadow: inset 0 1px color-mix(in srgb, var(--ink-strong) 7%, transparent);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color var(--renpy-property-fast) var(--ease-ui-out),
+    background-color var(--renpy-property-fast) var(--ease-ui-out), color var(--renpy-property-fast) var(--ease-ui-out);
+}
+.runtime-layout-designer[data-layout-type="renpy"] details > summary::-webkit-details-marker { display: none; }
+.runtime-layout-designer[data-layout-type="renpy"] :is(.runtime-layout-sidebar, .runtime-layout-inspector) details > summary::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  flex: 0 0 6px;
+  border-top: 1.5px solid currentColor;
+  border-right: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform var(--renpy-property-normal) var(--ease-ui-out);
+}
+.runtime-layout-designer[data-layout-type="renpy"] :is(.runtime-layout-sidebar, .runtime-layout-inspector) details[open] > summary::before { transform: rotate(135deg); }
+.runtime-layout-designer[data-layout-type="renpy"] :is(.runtime-layout-sidebar, .runtime-layout-inspector) details[open] > summary {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  background-color: color-mix(in srgb, var(--accent) 9%, var(--surface));
+}
+@media (hover: hover) {
+  .runtime-layout-designer[data-layout-type="renpy"] :is(.runtime-layout-sidebar, .runtime-layout-inspector) details > summary:hover {
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 65%, var(--line));
+  }
+}
+.runtime-layout-designer[data-layout-type="renpy"] :is(.runtime-layout-sidebar, .runtime-layout-inspector) details > summary:active {
+  background: color-mix(in srgb, var(--accent) 16%, var(--surface));
+  box-shadow: inset 0 1px 3px color-mix(in srgb, var(--ink-strong) 12%, transparent);
+}
+.runtime-layout-designer[data-layout-type="renpy"] :is(summary, .renpy-setting-help-trigger):focus-visible,
+.renpy-control-code h4:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: 6px;
+}
+@supports (interpolate-size: allow-keywords) {
+  .runtime-layout-designer[data-layout-type="renpy"] :is(.runtime-layout-sidebar, .runtime-layout-inspector) details::details-content {
+    interpolate-size: allow-keywords;
+    block-size: 0;
+    opacity: 0;
+    overflow: clip;
+    transition: block-size var(--renpy-property-normal) var(--ease-ui-out), opacity var(--renpy-property-fast) var(--ease-ui-out),
+      content-visibility var(--renpy-property-normal) allow-discrete;
+  }
+  .runtime-layout-designer[data-layout-type="renpy"] :is(.runtime-layout-sidebar, .runtime-layout-inspector) details[open]::details-content {
+    block-size: auto;
+    opacity: 1;
+  }
+}
+.renpy-setting-help { min-width: 0; }
+.runtime-layout-designer .renpy-setting-help-trigger {
+  display: inline-flex;
+  width: auto;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 3px 6px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  box-shadow: none;
+  font-size: 11px;
+  transform: none;
+  transition: color var(--renpy-property-fast) var(--ease-ui-out), border-color var(--renpy-property-fast) var(--ease-ui-out);
+}
+.runtime-layout-designer .renpy-setting-help-trigger:hover,
+.runtime-layout-designer .renpy-setting-help-trigger[aria-expanded="true"] { color: var(--accent); border-color: var(--line); transform: none; }
+.renpy-setting-help-reveal {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  visibility: hidden;
+  transition: grid-template-rows var(--renpy-property-normal) var(--ease-ui-out), opacity var(--renpy-property-fast) var(--ease-ui-out),
+    visibility 0s var(--renpy-property-normal);
+}
+.renpy-setting-help-reveal > div { min-height: 0; overflow: hidden; }
+.renpy-setting-help[data-open="true"] > .renpy-setting-help-reveal { grid-template-rows: 1fr; opacity: 1; visibility: visible; transition-delay: 0s; }
+.renpy-setting-help-content { padding: 8px 10px; border-left: 2px solid var(--accent); color: var(--muted); font-size: 12px; line-height: 1.6; }
+.renpy-setting-help-content p { margin: 0; }
+.renpy-setting-help-content p + p { margin-top: 7px; }
+.runtime-layout-designer .renpy-field-hint {
+  display: block;
+  max-height: 0;
+  min-height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  opacity: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+  transition: max-height var(--renpy-property-normal) var(--ease-ui-out), opacity var(--renpy-property-fast) var(--ease-ui-out),
+    visibility 0s var(--renpy-property-normal);
+}
+.runtime-layout-designer :is(label, .renpy-context-field):focus-within > .renpy-field-hint {
+  max-height: 6em;
+  opacity: 1;
+  visibility: visible;
+  transition-delay: 0s;
+}
+.renpy-region-style-source { color: var(--muted); font-size: 11px; }
+.renpy-control-code { scroll-margin-block: 12px; }
+.renpy-control-code h4 { margin: 0; }
+@media (prefers-reduced-motion: reduce) {
+  .runtime-layout-designer[data-layout-type="renpy"] {
+    --renpy-property-fast: 150ms;
+    --renpy-property-normal: 200ms;
+  }
+  /* Keep the same state handoff. Only the local movement/timing is gentler;
+     the legacy global button rule must not erase this help feedback. */
+  .runtime-layout-designer .renpy-setting-help-trigger {
+    transition: color 150ms var(--ease-ui-out), border-color 150ms var(--ease-ui-out) !important;
+  }
+}
+.advanced-tools-panel.layout-mode .renpy-title-editor .renpy-editor-fields { overflow-y: auto; overscroll-behavior: contain; }
+.renpy-title-editor .renpy-editor-fields label { display: grid; gap: 6px; min-width: 0; }
+.renpy-title-editor .renpy-editor-fields input { width: 100%; min-width: 0; box-sizing: border-box; }
+.renpy-title-text-editor fieldset { display: grid; gap: 8px; min-width: 0; margin: 0; padding: 10px; border: 1px solid var(--line); border-radius: 6px; }
+.renpy-title-text-editor p, .renpy-title-text-editor small, .renpy-title-text-editor output { margin: 0; font-size: 12px; line-height: 1.5; color: var(--muted); }
+.renpy-title-editor .renpy-title-text-editor label.renpy-title-text-visible { display: flex; align-items: center; gap: 8px; }
+.renpy-title-editor .renpy-title-text-visible input { width: 16px; height: 16px; min-height: 16px; padding: 0; flex: none; accent-color: var(--accent); }
+.renpy-title-editor .renpy-editor-fields button { white-space: normal; overflow-wrap: anywhere; min-width: 0; }
+.renpy-title-editor p, .renpy-title-editor small { overflow-wrap: anywhere; }
+.renpy-font-coverage {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--line) 86%, var(--accent));
+  border-left: 2px solid var(--accent);
+  border-radius: 7px;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--surface) 94%, var(--accent) 4%);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.renpy-font-coverage strong { color: var(--ink-strong); }
+.renpy-font-coverage[data-font-coverage="incomplete"],
+.renpy-font-coverage[data-font-coverage="error"] {
+  border-left-color: var(--warning, #d3983f);
+  background: color-mix(in srgb, var(--surface) 90%, var(--warning, #d3983f) 8%);
+}
+.renpy-font-coverage[data-font-coverage="complete"] {
+  border-left-color: var(--success, #4d9b75);
+}
+.renpy-editor-page-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; min-width: 0; }
+.renpy-editor-page-list > button { min-width: 0; min-height: 36px; padding: 6px 8px; }
+.renpy-editor-page-list > button[aria-current="page"] {
+  border-color: color-mix(in srgb, var(--accent) 64%, var(--line));
+  color: var(--ink-strong);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 18%, var(--surface-2)), color-mix(in srgb, var(--surface-2) 92%, var(--bg)));
+  box-shadow: inset 0 1px color-mix(in srgb, var(--ink-strong) 12%, transparent), 0 2px 8px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.renpy-gui-import-file-input { display: none; }
+.renpy-gui-import-backdrop { position: fixed; z-index: 1400; inset: 0; display: grid; place-items: center; padding: 16px; background: color-mix(in srgb, var(--bg) 62%, transparent); backdrop-filter: blur(12px) saturate(1.08); }
+.renpy-gui-import-backdrop[data-phase="closing"] { pointer-events: none; }
+.renpy-gui-import-dialog { display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; gap: 12px; width: min(980px, calc(100vw - 32px)); max-height: min(900px, calc(100dvh - 32px)); min-width: 0; padding: 18px; border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--line)); border-radius: var(--radius-modal); color: var(--ink-strong); background: linear-gradient(145deg, color-mix(in srgb, var(--accent) 8%, transparent), transparent 48%), var(--panel-bg); box-shadow: var(--shadow-popover); }
+.renpy-gui-import-dialog > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; min-width: 0; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.renpy-gui-import-dialog h3, .renpy-gui-import-dialog h4, .renpy-gui-import-dialog p { margin: 0; }
+.renpy-gui-import-dialog > header p, .renpy-gui-import-empty small, .renpy-gui-import-disclaimer { color: var(--muted); font-size: 12px; }
+.renpy-gui-import-body { display: grid; align-content: start; gap: 12px; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 2px 4px 6px 0; }
+.renpy-gui-import-empty { display: grid; align-content: center; justify-items: start; gap: 12px; min-height: 180px; }
+.renpy-gui-import-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: color-mix(in srgb, var(--surface) 78%, var(--accent) 8%); }
+.renpy-gui-import-source-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.renpy-gui-import-summary span { flex: 1 1 240px; color: var(--muted); font-size: 12px; }
+.renpy-gui-import-section, .renpy-gui-import-issues { display: grid; gap: 8px; min-width: 0; }
+.renpy-gui-library { display: grid; gap: 10px; min-width: 0; padding: 12px; border: 1px solid var(--line);
+  border-radius: 8px; background: color-mix(in srgb, var(--surface) 88%, transparent); }
+.renpy-gui-library > p, .renpy-gui-library small { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.renpy-gui-library article { display: flex; gap: 12px; justify-content: space-between; align-items: center;
+  min-width: 0; padding: 10px 0; border-top: 1px solid var(--line); }
+.renpy-gui-library article > div { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.renpy-gui-library article > button { flex: 0 0 auto; }
+.renpy-gui-import-section > label { display: grid; gap: 6px; }
+.renpy-gui-import-rows { display: grid; gap: 6px; min-width: 0; }
+.renpy-gui-import-row, .renpy-gui-import-asset-row { display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(160px, auto); align-items: center; gap: 10px; min-width: 0; padding: 8px; border: 1px solid var(--line); border-radius: 9px; background: color-mix(in srgb, var(--surface) 82%, transparent); }
+.renpy-gui-import-row small { color: var(--muted); }
+.renpy-gui-import-asset-row { grid-template-columns: 52px minmax(0, 1fr) minmax(128px, 160px) minmax(150px, 190px); }
+.renpy-gui-import-asset-row .rich-select, .renpy-gui-import-asset-row .rich-select-trigger { min-width: 0; width: 100%; }
+.renpy-gui-import-asset-row > img, .renpy-gui-import-font-preview { display: grid; place-items: center; width: 52px; height: 44px; object-fit: contain; border-radius: 6px; background: color-mix(in srgb, var(--field) 84%, transparent); }
+.renpy-gui-import-font-preview { font-size: 24px; font-weight: 700; }
+.renpy-gui-asset-preview { display: grid; gap: 3px; width: 52px; min-width: 0; }
+.renpy-gui-asset-preview img { width: 52px; height: 44px; object-fit: contain; border-radius: 6px; background: var(--field); }
+.renpy-gui-asset-preview small { font-size: 9px; color: var(--muted); overflow-wrap: anywhere; text-align: center; }
+.renpy-gui-import-asset-copy { display: grid; gap: 4px; min-width: 0; }
+.renpy-gui-import-asset-copy strong, .renpy-gui-import-issues li { overflow-wrap: anywhere; }
+.renpy-gui-import-asset-copy small { color: var(--muted); }
+.renpy-gui-import-issues { padding: 10px; border: 1px solid color-mix(in srgb, var(--warning, #e6a844) 55%, var(--line)); border-radius: 10px; background: color-mix(in srgb, var(--warning, #e6a844) 8%, var(--surface)); }
+.renpy-gui-import-issues ul { display: grid; gap: 6px; margin: 0; padding-left: 20px; font-size: 12px; }
+.renpy-gui-import-license { display: flex; align-items: flex-start; gap: 8px; }
+.renpy-gui-import-disclaimer { padding: 9px; border-left: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.renpy-gui-import-error { color: var(--danger, #d95f64); overflow-wrap: anywhere; }
+.renpy-gui-import-dialog > footer { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; padding-top: 10px; border-top: 1px solid var(--line); }
+.renpy-editor-preview-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding-bottom: 12px; }
+.renpy-editor-preview { width: 100%; min-width: 0; overflow: hidden; }
+.renpy-preview-status { margin: 10px 0; font-size: 12px; opacity: .8; }
+.renpy-property { display: grid; gap: 6px; min-width: 0; }
+.runtime-layout-type-control,
+.advanced-tools-panel.layout-mode .runtime-layout-header .runtime-layout-type-control,
+.advanced-tab-content.is-warm[data-tab="layout"] .runtime-layout-header .runtime-layout-type-control {
+  grid-template-columns: 260px 66px minmax(0, 138px);
+  width: 484px;
+  flex-basis: 484px;
+}
+.runtime-layout-advanced-toggle { display: flex; align-items: center; justify-content: center; gap: 6px; flex: none; white-space: nowrap; padding: 6px 0; min-height: 32px; box-sizing: border-box; }
+.runtime-layout-advanced-toggle input { width: 16px; height: 16px; accent-color: var(--accent); }
+.renpy-control-code { display: grid; gap: 8px; min-width: 0; padding-top: 12px; border-top: 1px solid var(--line); }
+.renpy-control-code header { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.renpy-control-code header span, .renpy-control-code p, .renpy-control-code small { font-size: 12px; color: var(--muted); line-height: 1.5; }
+.renpy-control-code textarea { width: 100%; min-width: 0; min-height: 140px; resize: vertical; box-sizing: border-box;
+  padding: 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--field); color: var(--ink);
+  font: 12px/1.6 Consolas, monospace; tab-size: 2; }
+.renpy-control-code [role="alert"] { color: var(--danger, #d95f64); font-size: 12px; overflow-wrap: anywhere; }
+.renpy-control-appearance { display: grid; gap: 8px; min-width: 0; border-top: 1px solid var(--line); padding-top: 10px; }
+.renpy-control-appearance > p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.renpy-control-appearance > output { color: var(--muted); font-size: 11px; }
+.renpy-control-appearance .rich-select,
+.renpy-control-appearance .rich-select-trigger { min-width: 0; width: 100%; }
+.renpy-control-background-preview { display: block; width: 100%; height: 76px; object-fit: contain; border: 1px solid var(--line); border-radius: 6px; background: var(--field); }
+.renpy-region-editor {
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 92%, var(--accent) 4%);
+}
+.renpy-region-editor h4 { margin: 0; }
+.renpy-region-list,
+.renpy-region-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  min-width: 0;
+}
+.renpy-region-list > button {
+  min-width: 0;
+  min-height: 34px;
+  padding: 6px 8px;
+  overflow-wrap: anywhere;
+}
+.renpy-region-list > button[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent) 64%, var(--line));
+  color: var(--ink-strong);
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface-2));
+}
+.renpy-region-fields label { font-size: 12px; }
+.renpy-region-style {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+}
+.renpy-region-style h4 { margin: 0; }
+.renpy-region-style-role-note {
+  margin: 0;
+  padding: 9px;
+  border-left: 2px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.renpy-region-style-property {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: end;
+  gap: 8px;
+  min-width: 0;
+}
+.renpy-region-style-property label { min-width: 0; font-size: 12px; }
+.renpy-region-style-property input[type="color"] {
+  width: 100%;
+  min-width: 64px;
+  height: 34px;
+  padding: 3px;
+}
+.renpy-region-style-property input[type="number"] { width: 100%; min-width: 72px; }
+.renpy-region-style-property output { align-self: center; white-space: nowrap; font-size: 11px; }
+.renpy-region-style-property button { min-height: 30px; padding: 4px 7px; white-space: nowrap; font-size: 11px; }
+.renpy-button-role-editor {
+  display: grid;
+  gap: 9px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 92%, var(--accent) 4%);
+}
+.renpy-button-role-editor h4 { margin: 0; }
+.renpy-button-role-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.renpy-button-role-editor input[type="color"] { min-height: 34px; padding: 2px; }
+
+@media (max-width: 640px) {
+  .renpy-gui-import-backdrop { padding: 8px; }
+  .renpy-gui-import-dialog { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); padding: 12px; border-radius: 12px; }
+  .renpy-gui-import-row { grid-template-columns: auto minmax(0, 1fr); }
+  .renpy-gui-import-row small { grid-column: 2; }
+  .renpy-gui-import-asset-row { grid-template-columns: 42px minmax(0, 1fr); }
+  .renpy-gui-import-asset-row > img, .renpy-gui-import-font-preview { width: 42px; height: 40px; }
+  .renpy-gui-import-asset-row .rich-select { grid-column: 1 / -1; width: 100%; }
+  .renpy-gui-import-dialog > footer > button { flex: 1 1 140px; }
+}
+
+/* The Editor WAAPI owner supplies continuous ordinary and gentler reduced
+   presentation. Do not replace that handoff with animation:none. */

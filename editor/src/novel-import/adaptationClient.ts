@@ -11,6 +11,7 @@ import type {
   NovelAiChunkSummary,
   NovelAiChunkTimelineNotes,
   NovelAiOutline,
+  NovelAiOutlineBatchCheckpoint,
   NovelAiOutlineIndex,
   NovelAiOutlineMainline,
   NovelAiOutlineStructure,
@@ -18,11 +19,17 @@ import type {
   SourceDocument,
 } from "./types";
 import type { ProviderSelectionPayload } from "../providers/types";
+import { backendClient } from "../api/backendClient";
 import { createSourceMapping } from "./sourceMapping";
 import { reportFrontendError } from "../../../shared/logging/frontendErrorLogger";
 
-const backendBaseUrl = (import.meta.env.VITE_BACKEND_URL as string | undefined) ?? "http://127.0.0.1:8278";
-const websocketBaseUrl = backendBaseUrl.replace(/^http/i, "ws");
+function getNovelBackendBaseUrl(): string {
+  return backendClient.getBaseUrl();
+}
+
+function getNovelWebsocketBaseUrl(): string {
+  return getNovelBackendBaseUrl().replace(/^http/i, "ws");
+}
 const defaultNovelAiRequestTimeoutSeconds = 300;
 const novelAiRequestTimeoutBufferSeconds = 30;
 const minNovelAiRequestTimeoutSeconds = 30;
@@ -51,9 +58,13 @@ export interface AiTraceEvent {
 export interface AiCheckpointEvent {
   stage: string;
   payload: unknown;
+  warnings?: unknown;
 }
 
 export interface NovelAiStreamHandlers {
+  signal?: AbortSignal;
+  /** Only direct adaptation has a durable result consumer for this identity. */
+  adaptationFingerprint?: string;
   onDelta?: (delta: string) => void;
   onStatus?: (status: string) => void;
   onTrace?: (trace: AiTraceEvent) => void;
@@ -63,6 +74,13 @@ export interface NovelAiStreamHandlers {
 }
 
 type NovelWsOperation = "scan_chunk" | "build_outline" | "plan_chapter" | "adapt_scene";
+const activeNovelRequests = new Set<AbortController>();
+export async function cancelActiveNovelAiRequests(): Promise<"terminal" | "unknown" | "local"> {
+  for (const controller of activeNovelRequests) controller.abort();
+  const cancellations = [...pendingNovelCancellations.values()];
+  if (!cancellations.length) return "local";
+  return (await Promise.all(cancellations)).every(Boolean) ? "terminal" : "unknown";
+}
 
 interface NovelWsEvent {
   type: string;
@@ -116,7 +134,7 @@ async function parseBackendError(response: Response, path: string): Promise<stri
   return `${path} returned HTTP ${response.status}: ${redactError(detail || response.statusText || "unknown error")}`;
 }
 
-async function postJson<T>(path: string, payload: unknown, baseUrl = backendBaseUrl, timeoutMs = novelAiRequestTimeoutMs(payload)): Promise<T> {
+async function postJson<T>(path: string, payload: unknown, baseUrl = getNovelBackendBaseUrl(), timeoutMs = novelAiRequestTimeoutMs(payload)): Promise<T> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -162,11 +180,14 @@ async function postSse<T>(
   path: string,
   payload: unknown,
   handlers: NovelAiStreamHandlers = {},
-  baseUrl = backendBaseUrl,
+  baseUrl = getNovelBackendBaseUrl(),
   timeoutMs = novelAiRequestTimeoutMs(payload),
 ): Promise<T> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  const abort = () => controller.abort();
+  handlers.signal?.addEventListener("abort", abort, { once: true });
+  if (handlers.signal?.aborted) controller.abort();
   try {
     const response = await fetch(`${baseUrl}${path}`, {
       method: "POST",
@@ -218,6 +239,7 @@ async function postSse<T>(
     if (!finalPayload) throw new Error(`${path} finished without a final structured payload.`);
     return finalPayload;
   } catch (error) {
+    if (handlers.signal?.aborted) throw new Error("解析已停止等待，成功断点保留。");
     let reportedError = error;
     if (error instanceof DOMException && error.name === "AbortError") {
       reportedError = new Error(`${path} timed out after ${Math.round(timeoutMs / 1000)} seconds.`);
@@ -226,6 +248,7 @@ async function postSse<T>(
     throw reportedError;
   } finally {
     window.clearTimeout(timeout);
+    handlers.signal?.removeEventListener("abort", abort);
   }
 }
 
@@ -252,39 +275,181 @@ function parseWsEvent(raw: MessageEvent<string>): NovelWsEvent | undefined {
   }
 }
 
+interface NovelStopIdentity { baseUrl: string; jobId: string; requestId: string; lastSeq: number }
+const unresolvedNovelStops = new Map<string, NovelStopIdentity>();
+const pendingNovelCancellations = new Map<string, Promise<boolean>>();
+const stopUnknown = "本地已暂停，但尚未确认原任务结束。再次点击继续只会查询原任务，不会重新提交。";
+const terminalNovelJobStatuses = new Set(["completed", "failed", "cancelled"]);
+export class NovelStopUnconfirmedError extends Error {
+  constructor(message = stopUnknown) { super(message); this.name = "NovelStopUnconfirmedError"; }
+}
+
+type NovelAdaptationJournal = Omit<NovelStopIdentity, "lastSeq"> & { fingerprint: string };
+const adaptationJournalKey = (scope: string) => `${scope}:adaptation`;
+const readAdaptationJournal = (key: string): NovelAdaptationJournal | undefined => {
+  const saved = window.localStorage.getItem(key);
+  if (saved === null) return;
+  const value = JSON.parse(saved);
+  if (!value || typeof value.baseUrl !== "string" || typeof value.jobId !== "string"
+    || typeof value.requestId !== "string" || typeof value.fingerprint !== "string") throw new Error("Invalid adaptation journal");
+  return value;
+};
+
+function clearAdaptationJournal(key: string, matches: (record: NovelAdaptationJournal) => boolean): void {
+  try {
+    const record = readAdaptationJournal(key);
+    if (record && matches(record)) window.localStorage.removeItem(key);
+  } catch (error) {
+    reportFrontendError("editor.novel-import-api", error, { operation: "clear-adaptation-receipt" });
+  }
+}
+
+export function acknowledgeNovelAdaptationReceipt(owner: { projectId: string; sessionId: string }, fingerprint: string): void {
+  clearAdaptationJournal(adaptationJournalKey(novelStopScope(owner)), record => record.fingerprint === fingerprint);
+}
+
+function knownNovelStop(scope: string): NovelStopIdentity | undefined {
+  const current = unresolvedNovelStops.get(scope);
+  if (current) return current;
+  try {
+    const record = JSON.parse(window.sessionStorage.getItem(scope) ?? "null");
+    if (record?.baseUrl === getNovelWebsocketBaseUrl() && typeof record.jobId === "string"
+      && typeof record.requestId === "string" && Number.isSafeInteger(record.lastSeq)) return record;
+  } catch { /* in-memory protection is still available */ }
+  return undefined;
+}
+
+function novelStopScope(owner: { projectId: string; sessionId: string }): string {
+  return `agentvn:novel-stop:${JSON.stringify([owner.projectId, owner.sessionId])}`;
+}
+
+export function confirmPriorNovelStop(owner: { projectId: string; sessionId: string }): Promise<boolean> | undefined {
+  const scope = novelStopScope(owner);
+  const unresolved = knownNovelStop(scope);
+  return unresolved ? cancelSubmittedNovelJob(scope, unresolved, false) : undefined;
+}
+
+function cancelSubmittedNovelJob(scope: string, identity: NovelStopIdentity, requestStop = true): Promise<boolean> {
+  const active = pendingNovelCancellations.get(scope);
+  if (active) return active;
+  const { baseUrl, jobId, requestId, lastSeq } = identity;
+  unresolvedNovelStops.set(scope, identity);
+  try { window.sessionStorage.setItem(scope, JSON.stringify(identity)); } catch { /* retain memory copy */ }
+  const confirmation = new Promise<boolean>((resolve) => {
+    // This connection can only send a cancellation for the original job. It
+    // cannot submit another model request or fall back to SSE.
+    const connection = new WebSocket(`${baseUrl}/api/ws/novel`);
+    const timer = window.setTimeout(() => finish(false), 3000);
+    let done = false;
+    let replayed = false;
+    function finish(terminal: boolean) {
+      if (done) return;
+      done = true;
+      window.clearTimeout(timer);
+      if (connection.readyState <= WebSocket.OPEN) connection.close();
+      resolve(terminal);
+    }
+    const subscribe = () => connection.send(JSON.stringify({ command: "subscribe_job", jobId, requestId, lastSeq }));
+    connection.onopen = () => {
+      try {
+        if (requestStop) connection.send(JSON.stringify({ command: "cancel_job", jobId, requestId }));
+        else subscribe();
+      }
+      catch { finish(false); }
+    };
+    connection.onmessage = message => {
+      const event = parseWsEvent(message);
+      if (!event || event.jobId !== jobId || event.requestId !== requestId) return;
+      const status = (event.payload as { status?: string; accepted?: unknown } | undefined)?.status;
+      if (event.type === "cancel_ack") {
+        if (status === "cancelled" || status === "failed") {
+          clearAdaptationJournal(adaptationJournalKey(scope), record => record.jobId === jobId && record.requestId === requestId);
+        }
+        if (status && terminalNovelJobStatuses.has(status)) { finish(true); return; }
+        try { subscribe(); }
+        catch { finish(false); }
+      } else if (event.type === "snapshot_required" && !replayed) {
+        replayed = true;
+        try { connection.send(JSON.stringify({ command: "subscribe_job", jobId, requestId, lastSeq: 0 })); }
+        catch { finish(false); }
+      } else if ((event.type === "lifecycle" || event.type === "agent_completed") && status && terminalNovelJobStatuses.has(status)) {
+        if (status === "cancelled" || status === "failed") {
+          clearAdaptationJournal(adaptationJournalKey(scope), record => record.jobId === jobId && record.requestId === requestId);
+        }
+        finish(true);
+      }
+    };
+    connection.onerror = () => finish(false);
+    connection.onclose = () => finish(false);
+  }).catch(() => false).then(terminal => {
+    pendingNovelCancellations.delete(scope);
+    if (terminal) {
+      unresolvedNovelStops.delete(scope);
+      try { window.sessionStorage.removeItem(scope); } catch { /* storage is optional */ }
+    } else reportFrontendError("editor.novel-import-api", new Error(stopUnknown), { operation: "cancel-original-job", jobId });
+    return terminal;
+  });
+  pendingNovelCancellations.set(scope, confirmation);
+  return confirmation;
+}
+
 async function postWs<T>(
+  scope: string,
   operation: NovelWsOperation,
   payload: unknown,
   handlers: NovelAiStreamHandlers = {},
-  baseUrl = websocketBaseUrl,
+  baseUrl = getNovelWebsocketBaseUrl(),
   timeoutMs = novelAiRequestTimeoutMs(payload),
 ): Promise<T> {
-  const jobId = `novel_job_${nanoid(10)}`;
-  const requestId = `novel_ws_${nanoid(10)}`;
+  const journalKey = handlers.adaptationFingerprint ? adaptationJournalKey(scope) : undefined;
+  let journal: NovelAdaptationJournal | undefined;
+  if (journalKey) {
+    try { journal = readAdaptationJournal(journalKey); }
+    catch { throw new NovelStopUnconfirmedError("无法读取原场景任务回执，未重新提交；请检查本机存储后再继续。"); }
+    if (journal && (journal.baseUrl !== baseUrl || journal.fingerprint !== handlers.adaptationFingerprint)) {
+      throw new NovelStopUnconfirmedError("原场景任务尚未确认，且工作内容、模型或后端已变化。恢复原配置后可查询原任务；未重新提交。");
+    }
+  }
+  const jobId = journal?.jobId ?? `novel_job_${nanoid(10)}`;
+  const requestId = journal?.requestId ?? `novel_ws_${nanoid(10)}`;
   let lastSeq = 0;
   let settled = false;
   let socket: WebSocket | undefined;
   let heartbeat: number | undefined;
   let idleTimer: number | undefined;
+  let reconnectTimer: number | undefined;
   let reconnects = 0;
-  let jobRestarts = 0;
-  let streamStarted = false;
+  let replayedSnapshot = false;
+  let legacySnapshotSeq = 0;
+  // A lost first acknowledgement does not mean the start command was lost.
+  // Once submission is attempted, only resubscribe to this job, never POST SSE.
+  let startSubmitted = Boolean(journal);
 
   return new Promise<T>((resolve, reject) => {
     const cleanup = () => {
       settled = true;
       if (heartbeat !== undefined) window.clearInterval(heartbeat);
       if (idleTimer !== undefined) window.clearTimeout(idleTimer);
+      if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
+      handlers.signal?.removeEventListener("abort", abort);
       if (socket && socket.readyState <= WebSocket.OPEN) socket.close();
     };
 
-    const fail = (message: string, allowSseFallback = !streamStarted) => {
+    const fail = (message: string, allowSseFallback = !startSubmitted, uncertain = Boolean(journalKey && startSubmitted)) => {
       if (settled) return;
       cleanup();
-      const error = new Error(redactError(message));
+      const error = uncertain
+        ? new NovelStopUnconfirmedError(`${redactError(message)} 原场景任务尚未确认，继续只会查询原任务。`)
+        : new Error(redactError(message));
       if (!allowSseFallback) (error as Error & { skipSseFallback?: boolean }).skipSseFallback = true;
       reject(error);
     };
+    const abort = () => {
+      if (startSubmitted) void cancelSubmittedNovelJob(scope, { baseUrl, jobId, requestId, lastSeq });
+      fail("解析已停止等待，成功断点保留。", false, false);
+    };
+    handlers.signal?.addEventListener("abort", abort, { once: true });
+    if (handlers.signal?.aborted) { abort(); return; }
 
     const armIdleTimer = () => {
       if (idleTimer !== undefined) window.clearTimeout(idleTimer);
@@ -300,45 +465,105 @@ async function postWs<T>(
     };
 
     const connect = (resume: boolean) => {
+      if (settled) return;
+      reconnectTimer = undefined;
       armIdleTimer();
-      socket = new WebSocket(`${baseUrl}/api/ws/novel`);
-      socket.onopen = () => {
+      let connection: WebSocket;
+      try {
+        connection = new WebSocket(`${baseUrl}/api/ws/novel`);
+      } catch {
+        fail("WebSocket connection could not be created.");
+        return;
+      }
+      socket = connection;
+      connection.onopen = () => {
+        if (settled || socket !== connection) return;
         if (heartbeat !== undefined) window.clearInterval(heartbeat);
         heartbeat = window.setInterval(() => {
-          if (socket?.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({ command: "ping", requestId, jobId, seq: lastSeq }));
+          if (!settled && socket === connection && connection.readyState === WebSocket.OPEN) {
+            connection.send(JSON.stringify({ command: "ping", requestId, jobId, seq: lastSeq }));
           }
         }, 15_000);
         const command = resume
           ? { command: "subscribe_job", requestId, jobId, lastSeq }
           : { command: "start_novel_job", requestId, jobId, operation, payload: normalizePayload(payload), lastSeq };
-        socket?.send(JSON.stringify(command));
+        const encoded = JSON.stringify(command);
+        if (!resume) {
+          if (journalKey && handlers.adaptationFingerprint) {
+            try {
+              window.localStorage.setItem(journalKey, JSON.stringify({ baseUrl, jobId, requestId,
+                fingerprint: handlers.adaptationFingerprint } satisfies NovelAdaptationJournal));
+            } catch {
+              fail("本机无法保存场景任务回执。未提交改编，请检查存储后再继续。", false, true);
+              return;
+            }
+          }
+          startSubmitted = true;
+        }
+        try {
+          connection.send(encoded);
+        } catch {
+          fail("WebSocket command could not be sent; the task was not resubmitted.", false);
+        }
       };
-      socket.onerror = () => {
-        if (!resume && lastSeq === 0) fail("WebSocket connection failed before the stream started.");
+      connection.onerror = () => {
+        if (settled || socket !== connection) return;
+        if (!startSubmitted) fail("WebSocket connection failed before the stream started.");
       };
-      socket.onclose = () => {
-        if (!settled && lastSeq > 0) reconnect();
+      connection.onclose = () => {
+        if (settled || socket !== connection) return;
+        if (heartbeat !== undefined) window.clearInterval(heartbeat);
+        heartbeat = undefined;
+        if (startSubmitted) reconnect();
+        else fail("WebSocket connection closed before the start command was submitted.");
       };
-      socket.onmessage = (message) => {
+      connection.onmessage = (message) => {
+        if (settled || socket !== connection) return;
         const event = parseWsEvent(message);
         if (!event) return;
         if (event.type === "connected" || event.type === "pong") return;
+        if (journalKey && (event.jobId !== jobId || event.requestId !== requestId)) {
+          // Older backends use the connection ID for a missing job response.
+          if (resume && event.type === "error" && event.jobId === jobId && /job not found/i.test(payloadMessage(event.payload))) {
+            fail("后端找不到原场景任务；已保留本机断点，未重新提交。", false);
+          }
+          return;
+        }
         const seq = Number(event.seq ?? 0);
+        if (event.type === "snapshot_required") {
+          if (seq > 0 && seq === legacySnapshotSeq) return; // older hubs buffered this control frame
+          if (journalKey && !replayedSnapshot) {
+            replayedSnapshot = true;
+            legacySnapshotSeq = seq;
+            lastSeq = 0;
+            try { connection.send(JSON.stringify({ command: "subscribe_job", jobId, requestId, lastSeq })); }
+            catch { fail("原场景任务的缓存无法接续。", false); }
+          } else fail("WebSocket resume buffer expired; no new request was submitted.", false);
+          return;
+        }
         if (seq > 0) {
-          if (seq <= lastSeq && event.type !== "snapshot_required") return;
+          if (seq <= lastSeq) return;
           lastSeq = seq;
           if (socket?.readyState === WebSocket.OPEN && seq % 8 === 0) {
             socket.send(JSON.stringify({ command: "ack", jobId, requestId, seq }));
           }
         }
-        if (seq > 0) streamStarted = true;
         if (progressWsEventTypes.has(event.type)) markProgress();
         if (event.type === "message_delta" || event.type === "agent_delta") {
           handlers.onDelta?.(payloadMessage(event.payload));
           return;
         }
         if (event.type === "lifecycle" || event.type === "agent_started" || event.type === "agent_completed") {
+          const status = (event.payload as { status?: string } | undefined)?.status;
+          if (journalKey && seq > 0 && (status === "cancelled" || (status === "failed" && event.type === "agent_completed"))) {
+            clearAdaptationJournal(journalKey, record => record.jobId === jobId);
+            fail(status === "cancelled" ? "原场景任务已取消，已保留断点。" : payloadMessage(event.payload, "原场景任务已明确失败。"), false, false);
+            return;
+          }
+          if (journalKey && seq > 0 && event.type === "agent_completed" && status === "completed") {
+            fail("原场景任务已结束，但没有收到可保存的完整结果。", false);
+            return;
+          }
           handlers.onStatus?.(payloadMessage(event.payload, event.type));
           if (event.type !== "lifecycle") {
             handlers.onTrace?.({
@@ -373,10 +598,6 @@ async function postWs<T>(
           handlers.onCheckpoint?.(event.payload as AiCheckpointEvent);
           return;
         }
-        if (event.type === "snapshot_required") {
-          fail("WebSocket resume buffer expired; restart this novel AI step.", false);
-          return;
-        }
         if (event.type === "final") {
           cleanup();
           handlers.onFinal?.(event.payload);
@@ -385,47 +606,33 @@ async function postWs<T>(
         }
         if (event.type === "error") {
           const messageText = payloadMessage(event.payload, "streaming model call failed");
-          if (resume && /job not found/i.test(messageText) && jobRestarts < 2 && socket?.readyState === WebSocket.OPEN) {
-            jobRestarts += 1;
-            lastSeq = 0;
-            streamStarted = false;
-            handlers.onTrace?.({
-              id: `${jobId}-restart-${jobRestarts}`,
-              phase: "websocket",
-              level: "warning",
-              title: "Restarting interrupted novel AI job",
-              message: "The backend restarted and lost the in-memory job. The same real model request is being started again.",
-              details: { operation, attempt: jobRestarts, maximumAttempts: 2 },
-            });
-            handlers.onStatus?.("Restarting the interrupted novel AI job with the same model request...");
-            markProgress();
-            socket.send(JSON.stringify({
-              command: "start_novel_job",
-              requestId,
-              jobId,
-              operation,
-              payload: normalizePayload(payload),
-              lastSeq: 0,
-            }));
+          if (resume && /job not found/i.test(messageText)) {
+            const reason = "后端任务已失去连接记录。已保存断点保留，请点击继续解析；未自动重新提交模型请求。";
+            handlers.onError?.(reason);
+            fail(reason, false);
             return;
           }
           handlers.onError?.(messageText);
-          fail(messageText, false);
+          // Socket-level errors are not evidence that the original work ended.
+          const terminal = !journalKey || seq > 0;
+          if (journalKey && terminal) clearAdaptationJournal(journalKey, record => record.jobId === jobId);
+          fail(messageText, false, !terminal);
         }
       };
     };
 
     const reconnect = () => {
-      if (settled) return;
+      if (settled || reconnectTimer !== undefined) return;
       reconnects += 1;
       if (reconnects > 3) {
         fail("WebSocket stream disconnected and could not resume.", false);
         return;
       }
-      window.setTimeout(() => connect(true), Math.min(1000 * reconnects, 3000));
+      if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
+      reconnectTimer = window.setTimeout(() => connect(true), Math.min(1000 * reconnects, 3000));
     };
 
-    connect(false);
+    connect(Boolean(journal));
   });
 }
 
@@ -435,28 +642,58 @@ async function postRealtime<T>(
   payload: unknown,
   handlers?: NovelAiStreamHandlers,
 ): Promise<T> {
+  // Runtime import avoids the client/store initialization cycle. The backend
+  // owns one retry budget; reconnecting never creates a second retry loop.
+  const { useNovelImportStore, captureNovelTaskOwnership, isNovelTaskOwnershipCurrent } = await import("../store/novelImportStore");
+  payload = { ...(payload as Record<string, unknown>),
+    max_retries: useNovelImportStore.getState().processing.config.maxRetryCount };
+  const controller = new AbortController();
+  const owner = captureNovelTaskOwnership(`transport:${operation}`);
+  const stopScope = novelStopScope(owner);
+  const ownershipTimer = window.setInterval(() => {
+    if (!isNovelTaskOwnershipCurrent(owner)) controller.abort();
+  }, 200);
+  activeNovelRequests.add(controller);
+  handlers = { ...handlers, signal: controller.signal };
   try {
-    return await postWs<T>(operation, payload, handlers);
-  } catch (error) {
-    if (error instanceof Error && (error as Error & { skipSseFallback?: boolean }).skipSseFallback) {
-      reportFrontendError("editor.novel-import-api", error, { operation, transport: "websocket" });
-      throw error;
+    const confirmation = confirmPriorNovelStop(owner);
+    if (confirmation && !await confirmation) throw new NovelStopUnconfirmedError();
+    if (controller.signal.aborted || !isNovelTaskOwnershipCurrent(owner)) {
+      throw new Error("解析已停止等待，成功断点保留。");
     }
-    reportFrontendError("editor.novel-import-api", error, {
-      operation,
-      transport: "websocket-fallback",
-    });
-    handlers?.onTrace?.({
-      phase: "websocket",
-      level: "warning",
-      title: "WebSocket fallback",
-      message: error instanceof Error ? error.message : String(error),
-    });
-    return postSse<T>(ssePath, payload, handlers);
-  }
+    try {
+      const stream = () => postWs<T>(stopScope, operation, payload, handlers);
+      const locks = globalThis.navigator?.locks;
+      if (handlers.adaptationFingerprint && locks) {
+        return await locks.request(adaptationJournalKey(stopScope), { ifAvailable: true }, lock => {
+          if (!lock) throw new NovelStopUnconfirmedError("另一个窗口正在查询或处理此场景。未重复提交。");
+          return stream();
+        });
+      }
+      return await stream();
+    } catch (error) {
+      if (error instanceof NovelStopUnconfirmedError
+        || (error instanceof Error && (error as Error & { skipSseFallback?: boolean }).skipSseFallback)) {
+        reportFrontendError("editor.novel-import-api", error, { operation, transport: "websocket" });
+        throw error;
+      }
+      reportFrontendError("editor.novel-import-api", error, {
+        operation,
+        transport: "websocket-fallback",
+      });
+      handlers?.onTrace?.({
+        phase: "websocket",
+        level: "warning",
+        title: "WebSocket fallback",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      if (controller.signal.aborted) throw error;
+      return await postSse<T>(ssePath, payload, handlers);
+    }
+  } finally { window.clearInterval(ownershipTimer); activeNovelRequests.delete(controller); }
 }
 
-export async function verifyNovelAiRoutes(baseUrl = backendBaseUrl): Promise<void> {
+export async function verifyNovelAiRoutes(baseUrl = getNovelBackendBaseUrl()): Promise<void> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 12_000);
   try {
@@ -532,6 +769,7 @@ export interface AiPlanChapterRequest {
   min_scene_count?: number;
   min_branch_suggestion_count?: number;
   allow_branch_suggestions?: boolean;
+  partial_batches?: import("./types").NovelAiSceneBatchCheckpoint[];
   provider_selection?: ProviderSelectionPayload;
 }
 
@@ -557,9 +795,14 @@ export async function aiBuildNovelOutlineStream(payload: {
   partial_mainline?: NovelAiOutlineMainline;
   partial_structure?: NovelAiOutlineStructure;
   partial_index?: NovelAiOutlineIndex;
+  partial_batches?: NovelAiOutlineBatchCheckpoint[];
+  partial_source_hash?: string;
   provider_selection?: ProviderSelectionPayload;
 }, handlers?: NovelAiStreamHandlers): Promise<NovelAiOutline> {
-  return postRealtime<NovelAiOutline>("build_outline", "/api/novel/import/ai_build_outline_stream", payload, handlers);
+  // modelName is local provenance, not part of the strict model-output schema.
+  const analyses = payload.analyses.map(({ modelName: _modelName, ...analysis }) => analysis);
+  return postRealtime<NovelAiOutline>("build_outline", "/api/novel/import/ai_build_outline_stream",
+    { ...payload, analyses }, handlers);
 }
 
 export async function aiPlanNovelChapter(request: AiPlanChapterRequest): Promise<AiScenePlanResponse> {

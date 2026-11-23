@@ -6,6 +6,7 @@ export type AssetSemanticCategory =
   | "audio"
   | "voice"
   | "video"
+  | "animation"
   | "font"
   | "ui"
   | "other";
@@ -55,6 +56,13 @@ export const assetCategoryOptions: AssetCategoryOption[] = [
     category: "video",
   },
   {
+    value: "animation",
+    label: "演出动画",
+    description: "用于演出动画指令的原生关键帧 JSON。",
+    example: "例如 emphasis.json；不支持 Lottie、Spine 或脚本文件。",
+    category: "animation",
+  },
+  {
     value: "font",
     label: "字体",
     description: "用于全局界面文字、默认对白文字或单句特殊文本。",
@@ -85,7 +93,7 @@ export const legacyAssetTypeLabels: Record<AssetType, string> = {
   sfx: "音乐/音效",
   voice: "语音",
   video: "视频",
-  animation: "其他素材",
+  animation: "演出动画",
   ui: "界面素材",
   font: "字体",
   other: "其他素材",
@@ -97,6 +105,7 @@ export function semanticCategoryForAssetType(assetType: AssetType | string | und
   if (assetType === "bgm" || assetType === "sfx") return "audio";
   if (assetType === "voice") return "voice";
   if (assetType === "video") return "video";
+  if (assetType === "animation") return "animation";
   if (assetType === "font") return "font";
   if (assetType === "ui") return "ui";
   return "other";

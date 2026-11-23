@@ -1,6 +1,16 @@
 import JSZip from "jszip";
-import { downloadCartridge, exportEditorCartridge, type EditorCartridgeExportInput, type EditorCartridgeExportResult } from "../cartridge/exportCartridge";
-import type { AssetManifestItem, GalleryManifest, GameManifest, RuntimeScript } from "../../../shared/cartridge/types";
+import {
+  downloadCartridge,
+  exportEditorCartridge,
+  type EditorCartridgeExportInput,
+  type EditorCartridgeExportResult,
+} from "../cartridge/exportCartridge";
+import type {
+  AssetManifestItem,
+  GalleryManifest,
+  GameManifest,
+  RuntimeScript,
+} from "../../../shared/cartridge/types";
 import type { AssetRef } from "../types/assets";
 
 export type PackageExportMode = "cartridge" | "standalone_package" | "standalone_project";
@@ -18,7 +28,9 @@ export interface RuntimeBundleExportResult {
 
 function buildStandaloneReadme(gameTitle: string, platform: PackageTargetPlatform): string {
   const platformLabel = platform === "windows" ? "Windows" : "Android";
-  const scriptName = platform === "windows" ? "scripts/build-runtime-standalone-windows.ps1" : "scripts/build-runtime-standalone-android.ps1";
+  const scriptName = platform === "windows"
+    ? "node scripts/build-runtime-standalone-windows.cjs --CartridgePath"
+    : "node scripts/build-runtime-standalone-android.cjs --CartridgePath";
   return [
     `${gameTitle} GameCLI 固定卡带容器工程`,
     "",
@@ -30,12 +42,12 @@ function buildStandaloneReadme(gameTitle: string, platform: PackageTargetPlatfor
     "3. 本说明文件",
     "",
     "推荐构建方式：",
-    `1. 保持 embedded-cartridge/game.vncart 不变。`,
-    `2. 在项目根目录运行 ${scriptName} -CartridgePath <解压目录>/embedded-cartridge/game.vncart。`,
+    "1. 保持 embedded-cartridge/game.vncart 不变。",
+    `2. 在项目根目录运行 ${scriptName} <解压目录>/embedded-cartridge/game.vncart。`,
     "3. 运行端会以 GameCLI 固定卡带模式启动并打包。",
     "",
     "说明：",
-    "这个工程包本质是 GameCLI 容器 + 固定内嵌卡带，不提供导入其他卡带的入口。",
+    "这个工程包本质是 GameCLI 容器和固定内嵌卡带，不提供导入其他卡带的入口。",
     "它不会把编辑器布局、创作期设置或记忆数据库带入玩家端。",
   ].join("\n");
 }
@@ -57,7 +69,7 @@ export async function exportStandaloneRuntimeBundle(
     targetPlatform: PackageTargetPlatform;
     projectAssets?: AssetManifestItem[];
     projectAssetRefs?: AssetRef[];
-  }
+  },
 ): Promise<RuntimeBundleExportResult> {
   const cartridge = await exportEditorCartridge(input);
   const zip = new JSZip();
@@ -70,19 +82,25 @@ export async function exportStandaloneRuntimeBundle(
     cartridge_cover_asset_id: cartridge.manifest.cover,
     shell_background_asset_id: cartridge.manifest.shell?.background,
     shell_icon_asset_id: cartridge.manifest.shell?.icon,
-    standalone_icon_asset_id: input.packageAppearance?.standaloneIconAssetId ?? input.packageAppearance?.iconAssetId ?? input.packageAppearance?.coverAssetId,
+    standalone_icon_asset_id:
+      input.packageAppearance?.standaloneIconAssetId
+      ?? input.packageAppearance?.iconAssetId
+      ?? input.packageAppearance?.coverAssetId,
     shell_settings_panel_background_asset_id: cartridge.manifest.shell?.settings_panel_background,
     shell_settings_entry_image_asset_id: cartridge.manifest.shell?.settings_entry_image,
     generated_at: new Date().toISOString(),
     gamecli_fixed_build_script:
       input.targetPlatform === "windows"
-        ? "scripts/build-runtime-standalone-windows.ps1"
-        : "scripts/build-runtime-standalone-android.ps1",
+        ? "scripts/build-runtime-standalone-windows.cjs"
+        : "scripts/build-runtime-standalone-android.cjs",
   };
 
   zip.file("embedded-cartridge/game.vncart", cartridge.blob);
   zip.file("package-profile.json", JSON.stringify(packageProfile, null, 2));
-  zip.file("README-构建说明.txt", buildStandaloneReadme(cartridge.manifest.title, input.targetPlatform));
+  zip.file(
+    "README-构建说明.txt",
+    buildStandaloneReadme(cartridge.manifest.title, input.targetPlatform),
+  );
 
   const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
   return {
@@ -102,12 +120,9 @@ export async function exportPackagingArtifact(
     targetPlatform: PackageTargetPlatform;
     projectAssets?: AssetManifestItem[];
     projectAssetRefs?: AssetRef[];
-  }
+  },
 ): Promise<RuntimeBundleExportResult> {
-  if (mode === "standalone_project") {
-    return exportStandaloneRuntimeBundle(input);
-  }
-
+  if (mode === "standalone_project") return exportStandaloneRuntimeBundle(input);
   const cartridge = await exportEditorCartridge(input);
   return {
     blob: cartridge.blob,

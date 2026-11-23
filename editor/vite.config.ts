@@ -1,11 +1,13 @@
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { fileURLToPath } from "node:url";
 import fs from "node:fs";
 import path from "node:path";
 
-const gameCliDist = fileURLToPath(new URL("../GameCli_framework/dist", import.meta.url));
-const bundledGameCliTarget = fileURLToPath(new URL("./dist/gamecli-preview", import.meta.url));
+const defaultGameCliDist = fileURLToPath(new URL("../GameCli_framework/dist", import.meta.url));
+const gameCliDist = process.env.AGENTVN_GAMECLI_PREVIEW_DIST
+  ? path.resolve(process.env.AGENTVN_GAMECLI_PREVIEW_DIST)
+  : defaultGameCliDist;
 
 function gameCliContentType(filePath: string): string {
   switch (path.extname(filePath).toLowerCase()) {
@@ -27,15 +29,30 @@ function gameCliContentType(filePath: string): string {
   }
 }
 
-function assertGameCliBuild(): void {
-  if (!fs.existsSync(path.join(gameCliDist, "index.html"))) {
-    throw new Error(`GameCLI web build is missing: ${gameCliDist}. Run npm run build:gamecli-preview.`);
+function assertGameCliBuild(dist = gameCliDist): void {
+  if (!fs.existsSync(path.join(dist, "index.html"))) {
+    throw new Error(`GameCLI web build is missing: ${dist}. Run npm run build:gamecli-preview.`);
   }
 }
 
-function gameCliPreviewPlugin() {
+function gameCliPreviewPlugin(): Plugin {
+  let bundledGameCliTarget: string | undefined;
   return {
     name: "agentvn-gamecli-preview",
+    configResolved(config) {
+      if (config.command === "build" && config.build.write) {
+        const outDir = path.resolve(config.root, config.build.outDir);
+        const startsWithin = (root: string, item: string) => {
+          const relative = path.relative(root, item);
+          return !relative || (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`));
+        };
+        if (startsWithin(outDir, gameCliDist) || startsWithin(gameCliDist, outDir)) {
+          throw new Error("GameCLI preview input and Editor outDir must be separate directories.");
+        }
+        assertGameCliBuild();
+        bundledGameCliTarget = path.join(outDir, "gamecli-preview");
+      }
+    },
     configureServer(server: { middlewares: { use: (route: string, handler: (request: { url?: string }, response: { statusCode: number; setHeader: (name: string, value: string) => void; end: (body?: Buffer) => void }, next: () => void) => void) => void } }) {
       assertGameCliBuild();
       server.middlewares.use("/gamecli-preview", (request, response, next) => {
@@ -73,8 +90,9 @@ function gameCliPreviewPlugin() {
         }
       });
     },
-    closeBundle() {
-      assertGameCliBuild();
+    // Dev server shutdown and failed builds must not rewrite production files.
+    writeBundle() {
+      if (!bundledGameCliTarget) return;
       fs.rmSync(bundledGameCliTarget, { recursive: true, force: true });
       fs.cpSync(gameCliDist, bundledGameCliTarget, { recursive: true });
     },

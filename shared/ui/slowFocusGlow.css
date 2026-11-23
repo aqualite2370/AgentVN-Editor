@@ -1,3 +1,6 @@
+/* Default Ren'Py Runtime dialog actions use text focus feedback. Their Modal
+   lives outside the page skin, so it needs an explicit exclusion here.
+   Authored roles and save-page dialogs keep their original glow policy. */
 :is(
   button,
   a[href],
@@ -8,13 +11,13 @@
   [role="menuitem"],
   [role="switch"],
   [tabindex]:not([tabindex="-1"])
-):is(:hover, :focus):not(:active):not(:disabled):not([aria-disabled="true"]) {
+):not(.quick-menu-button):not(.choice-option):not(.menu-action-button):not(.renpy-title-action):not(.renpy-menu-navigation-action):not(.ui-skin-scope[data-ui-screen] *):not(.modal-panel[data-layout-type="renpy"]:not([data-runtime-screen="save_load"]):not([data-renpy-role-custom="true"]) .modal-actions > .ui-button):is(:hover, :focus):not(:active):not(:disabled):not([aria-disabled="true"]) {
   box-shadow: var(--global-control-focus-shadow, var(--focus-ring)) !important;
   transition-duration: var(--control-focus-enter-duration, 520ms) !important;
   transition-timing-function: var(--ease-emphasis, cubic-bezier(0.18, 0.9, 0.18, 1)) !important;
 }
 
-:is(input, textarea, select):is(:hover, :focus):not(:active):not(:disabled) {
+:is(input:not([type="range"]), textarea, select):is(:hover, :focus):not(:active):not(:disabled) {
   box-shadow: var(--global-input-focus-shadow, var(--global-control-focus-shadow, var(--focus-ring))) !important;
   transition-duration: var(--control-focus-enter-duration, 520ms) !important;
   transition-timing-function: var(--ease-emphasis, cubic-bezier(0.18, 0.9, 0.18, 1)) !important;
@@ -24,7 +27,7 @@
   button,
   a[href],
   summary,
-  input,
+  input:not([type="range"]),
   textarea,
   select,
   [role="button"],
@@ -33,7 +36,7 @@
   [role="menuitem"],
   [role="switch"],
   [tabindex]:not([tabindex="-1"])
-):focus:not(:active):not(:disabled):not([aria-disabled="true"]) {
+):not(.renpy-title-action):not(.renpy-menu-navigation-action):focus:not(:active):not(:disabled):not([aria-disabled="true"]) {
   outline: 2px solid transparent !important;
   outline-offset: 3px;
 }
@@ -43,7 +46,7 @@
     button,
     a[href],
     summary,
-    input,
+    input:not([type="range"]),
     textarea,
     select,
     [role="button"],
@@ -70,8 +73,8 @@
     [role="menuitem"],
     [role="switch"],
     [tabindex]:not([tabindex="-1"])
-  ):is(:hover, :focus):not(:active):not(:disabled):not([aria-disabled="true"]),
-  :root :is(input, textarea, select):is(:hover, :focus):not(:active):not(:disabled) {
+  ):not(.renpy-title-action):not(.renpy-menu-navigation-action):is(:hover, :focus):not(:active):not(:disabled):not([aria-disabled="true"]),
+  :root :is(input:not([type="range"]), textarea, select):is(:hover, :focus):not(:active):not(:disabled) {
     transition-duration: 1ms !important;
   }
 }

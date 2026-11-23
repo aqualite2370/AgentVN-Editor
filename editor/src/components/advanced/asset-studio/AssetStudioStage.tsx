@@ -20,6 +20,7 @@ import type { ImageGenerationJob, ImageGenerationRecipeV1 } from "../../../asset
 import type { GeneratedAssetCandidate } from "../../../asset-generation/session";
 import type { ImageOperation, ReferenceImage } from "../../../providers/types";
 import { AssetStudioCanvasEditor } from "./AssetStudioCanvasEditor";
+import { GlassSelectionGroup } from "../../common/GlassSelectionGroup";
 
 interface AssetStudioStageProps {
   recipe: ImageGenerationRecipeV1;
@@ -115,17 +116,17 @@ export function AssetStudioStage({
         {candidate && (
           <div className="asset-studio-stage-heading-actions">
             {completedCandidates.length > 1 && (
-              <div className="asset-studio-view-switcher" role="group" aria-label="结果查看方式">
-                <button type="button" data-help-key="asset.viewFocus" className={viewMode === "focus" ? "is-active" : ""} aria-pressed={viewMode === "focus"} onClick={() => setViewMode("focus")}>
+              <GlassSelectionGroup className="asset-studio-view-switcher" role="group" ariaLabel="结果查看方式" selectedKey={viewMode}>
+                <button type="button" data-help-key="asset.viewFocus" className={viewMode === "focus" ? "is-active" : ""} data-glass-selected={viewMode === "focus"} aria-pressed={viewMode === "focus"} onClick={() => setViewMode("focus")}>
                   <ImageIcon size={15} aria-hidden="true" />聚焦
                 </button>
-                <button type="button" data-help-key="asset.viewGrid" className={viewMode === "grid" ? "is-active" : ""} aria-pressed={viewMode === "grid"} onClick={() => setViewMode("grid")}>
+                <button type="button" data-help-key="asset.viewGrid" className={viewMode === "grid" ? "is-active" : ""} data-glass-selected={viewMode === "grid"} aria-pressed={viewMode === "grid"} onClick={() => setViewMode("grid")}>
                   <Grid2X2 size={15} aria-hidden="true" />网格
                 </button>
-                <button type="button" data-help-key="asset.viewCompare" className={viewMode === "compare" ? "is-active" : ""} aria-pressed={viewMode === "compare"} onClick={() => setViewMode("compare")}>
+                <button type="button" data-help-key="asset.viewCompare" className={viewMode === "compare" ? "is-active" : ""} data-glass-selected={viewMode === "compare"} aria-pressed={viewMode === "compare"} onClick={() => setViewMode("compare")}>
                   <Columns2 size={15} aria-hidden="true" />A/B
                 </button>
-              </div>
+              </GlassSelectionGroup>
             )}
             <div className="asset-studio-stage-meta">
               <span>{candidate.width} × {candidate.height}</span>

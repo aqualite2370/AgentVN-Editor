@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/android-schema.json",
+  "identifier": "android-restored",
+  "description": "Existing player permissions for replacement Android Activity windows.",
+  "platforms": ["android"],
+  "windows": ["main-restored-*"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-destroy",
+    "dialog:default",
+    "fs:default",
+    "fs:allow-read-file",
+    "fs:allow-write-file",
+    "opener:default"
+  ]
+}

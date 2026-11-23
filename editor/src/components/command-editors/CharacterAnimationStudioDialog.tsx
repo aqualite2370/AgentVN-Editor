@@ -1,3 +1,4 @@
+import { NumberInput } from "../common/NumberInput";
 import {
   Check,
   Clock3,
@@ -7,7 +8,6 @@ import {
   Plus,
   RotateCcw,
   SlidersHorizontal,
-  Sparkles,
   Trash2,
   X,
 } from "lucide-react";
@@ -471,10 +471,10 @@ export function CharacterAnimationStudioDialog({
         kind: "tween",
         phase: "exit",
         duration_ms: 460,
-        easing: "ease-in",
+        easing: "ease-out",
         display_name: "退场淡出",
         keyframes: normalizeKeyframes([
-          { offset: 0, opacity: 1, x: 0, y: 0, scale: 1, easing: "ease-in" },
+          { offset: 0, opacity: 1, x: 0, y: 0, scale: 1, easing: "ease-out" },
           { offset: 1, opacity: 0, x: 42, y: 0, scale: 0.98 },
         ]),
       });
@@ -546,12 +546,7 @@ export function CharacterAnimationStudioDialog({
       >
         <header className="character-animation-studio-header">
           <div>
-            <span className="studio-kicker">
-              <Sparkles size={14} />
-              Adobe 式补间 V1
-            </span>
             <h3 id="character-animation-studio-title">{title}</h3>
-            <p>{targetLabel} 的入场、退场和强调动作可以在这里用关键帧直接调整。</p>
           </div>
           <button type="button" className="studio-icon-button" aria-label="关闭动效工作室" data-help-key="animation.studioCancel" onClick={onClose}>
             <X size={17} />
@@ -579,11 +574,11 @@ export function CharacterAnimationStudioDialog({
               </label>
               <label>
                 时长 ms
-                <input type="number" min={80} max={10000} step={20} value={duration} disabled={disabled} data-help-key="command.sprite.animationConfig.duration" onChange={(event) => setConfig({ duration_ms: Number(event.target.value) })} />
+                <NumberInput type="number" min={80} max={10000} step={20} value={duration} disabled={disabled} data-help-key="command.sprite.animationConfig.duration" onChange={(event) => setConfig({ duration_ms: Number(event.target.value) })} />
               </label>
               <label>
                 延迟 ms
-                <input type="number" min={0} max={10000} step={20} value={delay} disabled={disabled} data-help-key="command.sprite.animationConfig.delay" onChange={(event) => setConfig({ delay_ms: Number(event.target.value) })} />
+                <NumberInput type="number" min={0} max={10000} step={20} value={delay} disabled={disabled} data-help-key="command.sprite.animationConfig.delay" onChange={(event) => setConfig({ delay_ms: Number(event.target.value) })} />
               </label>
               <label>
                 全局缓动
@@ -658,7 +653,7 @@ export function CharacterAnimationStudioDialog({
             <div className="studio-field-grid">
               <label>
                 进度
-                <input
+                <NumberInput
                   type="number"
                   min={0}
                   max={1}
@@ -676,7 +671,7 @@ export function CharacterAnimationStudioDialog({
               {propertyTracks.map((track) => (
                 <label key={track.key}>
                   {track.label}{track.unit ? ` ${track.unit}` : ""}
-                  <input
+                  <NumberInput emptyValue=""
                     type="number"
                     step={track.key === "scale" || track.key === "brightness" || track.key === "opacity" ? 0.05 : 1}
                     min={track.key === "opacity" ? 0 : undefined}

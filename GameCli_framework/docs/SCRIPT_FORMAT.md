@@ -16,6 +16,32 @@ Optional fields:
 
 - `loading_animation`
 - `characters`
+- `opening_audio`
+- `default_dialog_presentation`: `dialog`, `nvl`, or `bubble`; absent means `dialog`.
+
+## Dialogue presentation and inheritance
+
+Runtime `0.18.0` / Script Schema `1.10.0` adds project and character presentation
+defaults and authored bubble positions. For dialogue, the priority is command
+`presentation_mode` → character `dialog_presentation` → project
+`default_dialog_presentation` → `dialog`. Narration skips character inheritance.
+These settings are story configuration, independent of the chosen UI layout and
+player preferences.
+
+Both `dialog` and `narration` may provide `bubble_position`:
+
+```json
+{ "mode": "fixed", "x": 65, "y": 25 }
+```
+
+Fixed coordinates are percentages of the actual game frame, bounded to 0–100.
+`{ "mode": "character", "offset_x": 5, "offset_y": -2 }` follows the visible speaker,
+with optional offsets bounded to -100–100 frame percentages. Missing speakers use
+the upper safe fallback; fixed anchors and following bubbles avoid frame edges
+and the quick bar. Unknown modes, extra keys and non-finite/out-of-range
+coordinates are rejected. Saves preserve the resolved mode, authored position,
+NVL accumulated lines and current text fragment; restoring does not re-execute
+the dialogue.
 
 Example:
 
@@ -55,6 +81,21 @@ GameCLI supports three loading animation modes:
 
 `default` uses the built-in circular boot animation. `video` references a packed `video` asset. `image_sequence` references packed `ui` assets and defaults to 1000 ms per image when the frame duration is omitted.
 
+## Opening Audio
+
+`opening_audio` is an optional ordered list of audio tracks played after the built-in line loader and before the title menu:
+
+```json
+{
+  "opening_audio": [
+    { "asset_id": "opening_chime", "asset_type": "sfx", "playback": "once" },
+    { "asset_id": "title_theme", "asset_type": "bgm", "playback": "loop" }
+  ]
+}
+```
+
+`asset_type` must be `bgm`, `sfx`, or `voice`. `once` advances to the next track when the audio ends. `loop` repeats the current track and should be the final queue item. The editor normalizes the queue so only the final track can loop. Opening audio stops when the player enters a story.
+
 ## Scenes
 
 Scenes contain:
@@ -90,7 +131,22 @@ Supported command types:
 - `bgm`
 - `sfx`
 - `camera`
+- `rollback`
+
+`rollback` accepts `checkpoint`, `block`, `fix`, `suspend`, or `resume`. A checkpoint may set `hard: false` to keep it available for internal roll-forward without making it a player-visible rollback stop. Scripts may also provide a top-level `rollback` object with `enabled`, `hard_limit`, `log_length`, `pause_as_checkpoint`, and `fixed_choice_mode`.
 - `wait`
+
+Narration keeps the existing dialog-panel presentation unless `narration_style` is set:
+
+```json
+{
+  "type": "narration",
+  "text": "夜色吞没了站台。",
+  "narration_style": "centered"
+}
+```
+
+`narration_style: "centered"` darkens the stage, hides the narration panel, and centers the text on screen. `dialog` (or an omitted field) preserves the existing narration panel. Per-line font and text style overrides still apply in centered mode.
 
 ## Choice Commands
 
@@ -196,6 +252,8 @@ Sprite commands control character standees:
   "character_id": "alice",
   "sprite_id": "alice_default",
   "position": "center",
+  "offset_x": 0,
+  "offset_y": 0,
   "layer": 4,
   "visible": true,
   "animation": "fade_in",
@@ -210,6 +268,8 @@ Sprite commands control character standees:
   }
 }
 ```
+
+`offset_x` and `offset_y` are optional signed percentages of the runtime stage. They preserve old projects when omitted, are applied outside the character animation transform, and are validated to `-40..40` for X and `-30..30` for Y.
 
 `layer` controls standee depth and accepts integers from `-1000` to `1000`; larger values render in front. Missing or `null` values inherit the same character's current layer, while a new character defaults to effective layer `0`. Equal layers retain appearance order, and changing a layer does not move the standee horizontally.
 

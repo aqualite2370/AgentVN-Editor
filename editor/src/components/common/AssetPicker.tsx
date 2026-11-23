@@ -15,6 +15,8 @@ import { FieldHelp } from "./FieldHelp";
 import { assetSlotWarning, resolveAssetSlotGuidance } from "../../utils/assetSlotGuidance";
 import { generatedAssetToAssetRef } from "../../utils/projectAssets";
 import type { ReferenceImage, SavedGenerationProvenance } from "../../providers/types";
+import { GlassSelectionGroup } from "./GlassSelectionGroup";
+import { readViewportMetrics, subscribeToViewportChanges } from "../../utils/viewportMetrics";
 
 export type AssetPickerType = Extract<
   AssetType,
@@ -194,19 +196,20 @@ export function AssetPicker({
     const rect = trigger.getBoundingClientRect();
     const viewportGap = 12;
     const gap = 8;
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
+    const viewport = readViewportMetrics();
+    const viewportWidth = viewport.width;
+    const viewportHeight = viewport.height;
     const width = Math.min(Math.max(rect.width, 320), 520, Math.max(280, viewportWidth - viewportGap * 2));
-    const belowSpace = viewportHeight - rect.bottom - viewportGap;
-    const aboveSpace = rect.top - viewportGap;
+    const belowSpace = viewport.bottom - rect.bottom - viewportGap;
+    const aboveSpace = rect.top - viewport.top - viewportGap;
     const placement: AssetPickerPopoverPosition["placement"] = belowSpace < 340 && aboveSpace > belowSpace ? "top" : "bottom";
-    const available = Math.max(0, placement === "top" ? aboveSpace : belowSpace);
-    const maxHeight = Math.max(220, Math.min(520, available - gap));
-    const top = placement === "bottom" ? Math.min(viewportHeight - viewportGap - maxHeight, rect.bottom + gap) : undefined;
-    const bottom = placement === "top" ? Math.max(viewportGap, viewportHeight - rect.top + gap) : undefined;
+    const available = Math.max(1, placement === "top" ? aboveSpace : belowSpace);
+    const maxHeight = Math.max(1, Math.min(520, available - gap));
+    const top = placement === "bottom" ? Math.min(viewport.bottom - viewportGap - maxHeight, rect.bottom + gap) : undefined;
+    const bottom = placement === "top" ? Math.max(viewportGap, viewport.bottom - rect.top + gap) : undefined;
     const left = Math.min(
-      Math.max(viewportGap, rect.left),
-      Math.max(viewportGap, viewportWidth - width - viewportGap),
+      Math.max(viewport.left + viewportGap, rect.left),
+      Math.max(viewport.left + viewportGap, viewport.right - width - viewportGap),
     );
     setPopoverPosition({ top, bottom, left, width, maxHeight, placement });
   }, []);
@@ -243,13 +246,11 @@ export function AssetPicker({
 
     document.addEventListener("pointerdown", handlePointerDown);
     document.addEventListener("keydown", handleKeyDown);
-    window.addEventListener("resize", handleViewportChange);
-    window.addEventListener("scroll", handleViewportChange, true);
+    const unsubscribeViewport = subscribeToViewportChanges(handleViewportChange);
     return () => {
       document.removeEventListener("pointerdown", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("resize", handleViewportChange);
-      window.removeEventListener("scroll", handleViewportChange, true);
+      unsubscribeViewport();
     };
   }, [popoverOpen, updatePopoverPosition, usePopover]);
 
@@ -325,7 +326,7 @@ export function AssetPicker({
         <button
           ref={triggerRef}
           type="button"
-          className={`asset-picker-selected asset-picker-selected-button${popoverOpen ? " is-open" : ""}`}
+          className={`asset-picker-selected asset-picker-selected-button asset-picker-trigger${popoverOpen ? " is-open" : ""}`}
           data-help-key={`${helpKey}.openPicker`}
           aria-haspopup="dialog"
           aria-expanded={popoverOpen}
@@ -343,12 +344,13 @@ export function AssetPicker({
   function renderTypeTabs() {
     if (tabs.length <= 1) return null;
     return (
-      <div className="asset-picker-type-tabs" role="tablist" aria-label="素材类型过滤">
+      <GlassSelectionGroup className="asset-picker-type-tabs" role="tablist" ariaLabel="素材类型过滤" selectedKey={activeType} scrollAxis="x">
         {tabs.map((assetType) => (
           <button
             key={assetType}
             type="button"
             className={assetTypeMatchesExpected(activeType, assetType) ? "is-active" : ""}
+            data-glass-selected={assetTypeMatchesExpected(activeType, assetType)}
             data-help-key={`${helpKey}.type`}
             data-asset-type={assetType}
             role="tab"
@@ -359,7 +361,7 @@ export function AssetPicker({
             {assetTypeDisplayLabel(assetType)}
           </button>
         ))}
-      </div>
+      </GlassSelectionGroup>
     );
   }
 
@@ -399,7 +401,7 @@ export function AssetPicker({
 
   function renderAssetList() {
     return (
-      <div className="asset-picker-list" role="list">
+      <div className="asset-picker-list selection-scroll-region" role="list">
         {filteredAssets.map((asset) => {
           const source = mediaSource(asset);
           const selected = asset.asset_id === value;
@@ -415,6 +417,7 @@ export function AssetPicker({
                 data-asset-type={asset.asset_type}
                 aria-pressed={selected}
                 disabled={disabled}
+                onFocus={(event) => event.currentTarget.scrollIntoView({ block: "nearest" })}
                 onClick={() => handleSelect(asset)}
               >
                 <AssetPreview asset={asset} />
@@ -541,7 +544,7 @@ export function AssetPicker({
 
   if (usePopover) {
     return (
-      <div className={`asset-picker-field is-popover${disabled ? " is-disabled" : ""}${className ? ` ${className}` : ""}`}>
+      <div data-asset-field={field} className={`asset-picker-field is-popover${disabled ? " is-disabled" : ""}${className ? ` ${className}` : ""}`}>
         {heading}
         <div className="asset-picker is-popover-trigger" data-asset-picker-type={activeType}>
           {renderSelectedSummary(true)}
@@ -553,7 +556,7 @@ export function AssetPicker({
   }
 
   return (
-    <div className={`asset-picker-field${disabled ? " is-disabled" : ""}${className ? ` ${className}` : ""}`}>
+    <div data-asset-field={field} className={`asset-picker-field${disabled ? " is-disabled" : ""}${className ? ` ${className}` : ""}`}>
       {heading}
       <div className="asset-picker" data-asset-picker-type={activeType}>
         {renderSelectedSummary(false)}

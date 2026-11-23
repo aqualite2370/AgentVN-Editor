@@ -1,6 +1,7 @@
 import type { CharacterSpriteAnimationConfig } from "../animation/characterAnimation";
 import type { VisualTransitionConfig } from "../animation/visualTransition";
 import type { CameraCommand } from "../camera/cameraMotion";
+import type { UILayoutComponentStyle } from "./uiSkin";
 
 export type AssetType = "background" | "sprite" | "portrait" | "bgm" | "sfx" | "voice" | "video" | "animation" | "ui" | "font" | "other";
 export type BackgroundFit = "stretch" | "contain" | "cover";
@@ -24,6 +25,7 @@ export interface AssetManifestItem {
   asset_id: string;
   asset_type: AssetType;
   path: string;
+  display_name?: string;
   filename: string;
   mime_type?: string;
   size_bytes?: number;
@@ -114,25 +116,37 @@ export interface Choice {
   text: string;
   target_scene_id: string;
   conditions: Array<string | Condition>;
+  button_style?: UILayoutComponentStyle;
 }
 
+export type DialogPresentationMode = "dialog" | "nvl" | "bubble";
+/** Coordinates are percentages of the game frame; offsets share that space. */
+export type BubblePositionConfig =
+  | { mode: "character"; offset_x?: number; offset_y?: number }
+  | { mode: "fixed"; x: number; y: number };
+
 export type GameCommand =
-  | { type: "dialog"; character_id: string; text: string; emotion?: string | null; portrait?: string | null; voice?: string | null; side?: "left" | "right" | "center" | null; font_asset_id?: string | null; dialog_style?: DialogVisualStyle | null; dialog_style_mode?: "inherit" | "manual" }
-  | { type: "narration"; text: string; font_asset_id?: string | null; dialog_style?: DialogVisualStyle | null; dialog_style_mode?: "inherit" | "manual" }
+  | { type: "dialog"; presentation_mode?: DialogPresentationMode; bubble_position?: BubblePositionConfig; clear_nvl_page_before?: boolean; character_id: string; text: string; emotion?: string | null; portrait?: string | null; voice?: string | null; side?: "left" | "right" | "center" | null; font_asset_id?: string | null; dialog_style?: DialogVisualStyle | null; dialog_style_mode?: "inherit" | "manual" }
+  | { type: "narration"; presentation_mode?: DialogPresentationMode; bubble_position?: BubblePositionConfig; clear_nvl_page_before?: boolean; text: string; font_asset_id?: string | null; dialog_style?: DialogVisualStyle | null; dialog_style_mode?: "inherit" | "manual"; narration_style?: "dialog" | "centered" }
   | { type: "hide_dialog" }
   | { type: "background"; background_id: string; transition?: string | null; transition_config?: VisualTransitionConfig | null; background_fit?: BackgroundFit }
   | { type: "show_image"; image_id: string; image_fit?: BackgroundFit; image_display_name?: string | null; caption?: string | null; alt?: string | null; backdrop_opacity?: number | null; backdrop_blur_px?: number | null }
   | { type: "video"; video_id: string; video_fit?: BackgroundFit; fade_in_ms?: number; fade_out_ms?: number }
-  | { type: "sprite"; character_id: string; sprite_id: string; position?: string | null; layer?: number | null; animation?: string | null; animation_config?: CharacterSpriteAnimationConfig | null; switch_transition?: VisualTransitionConfig | null; scale?: number | null; visible: boolean }
-  | { type: "choice"; choices: Choice[] }
+  | { type: "sprite"; character_id: string; sprite_id: string; position?: string | null; offset_x?: number | null; offset_y?: number | null; layer?: number | null; animation?: string | null; animation_config?: CharacterSpriteAnimationConfig | null; switch_transition?: VisualTransitionConfig | null; scale?: number | null; visible: boolean }
+  | { type: "choice"; choices: Choice[]; button_style?: UILayoutComponentStyle }
   | { type: "state_update"; key: string; operation: "set" | "set_if_unset" | "add" | "subtract" | "toggle" | "append" | "remove"; value: JsonValue; value_type?: StateValueType }
   | { type: "conditional_jump"; condition: string | Condition; target_scene_id: string; else_target_scene_id?: string | null }
   | { type: "jump"; target_scene_id: string }
-  | { type: "animation"; animation_id: string; target: string; params: Record<string, JsonValue>; blocking: boolean }
-  | { type: "bgm"; bgm_id?: string | null; action: "play" | "stop" | "fade"; volume?: number | null; fade_ms?: number | null }
-  | { type: "sfx"; sfx_id: string; volume?: number | null }
+  | { type: "animation"; animation_id: string; animation_asset_id?: string; target: string; params: Record<string, JsonValue>; blocking: boolean }
+  | { type: "bgm"; bgm_id?: string | null; action: "play" | "stop"; volume?: number | null; fade_ms?: number | null }
+  | { type: "sfx"; sfx_id: string; action?: "play" | "stop"; fade_ms?: number | null; volume?: number | null }
   | CameraCommand
-  | { type: "wait"; duration_ms: number };
+  | { type: "wait"; duration_ms: number }
+  | { type: "gallery_anchor"; anchor_id: string; title: string; asset_id: string; description?: string | null; image_fit?: import("./galleryPresentation").GalleryImageFit }
+  | (
+      | { type: "rollback"; action: "checkpoint"; hard?: boolean }
+      | { type: "rollback"; action: "block" | "fix" | "suspend" | "resume" }
+    );
 
 export interface Scene {
   scene_id: string;
@@ -146,10 +160,27 @@ export interface Scene {
   ending_id?: string;
 }
 
-export type LoadingAnimationConfig =
+export interface OpeningPresentation {
+  mode?: "fullscreen" | "centered";
+  fit?: "contain" | "cover" | "stretch";
+  width_percent?: number;
+  height_percent?: number;
+}
+
+export type LoadingAnimationConfig = (
   | { kind: "default" }
   | { kind: "video"; video_asset_id: string }
-  | { kind: "image_sequence"; image_asset_ids: string[]; frame_duration_ms?: number };
+  | { kind: "image_sequence"; image_asset_ids: string[]; frame_duration_ms?: number }
+) & { presentation?: OpeningPresentation };
+
+export type OpeningAudioAssetType = Extract<AssetType, "bgm" | "sfx" | "voice">;
+export type OpeningAudioPlayback = "once" | "loop";
+
+export interface OpeningAudioTrack {
+  asset_id: string;
+  asset_type: OpeningAudioAssetType;
+  playback: OpeningAudioPlayback;
+}
 
 export interface SpeakerFocusConfig {
   enabled: boolean;
@@ -163,13 +194,23 @@ export interface RuntimeScript {
   title: string;
   entry_scene_id: string;
   default_sprite_scale?: number;
+  default_dialog_presentation?: DialogPresentationMode;
   speaker_focus?: SpeakerFocusConfig;
   loading_animation?: LoadingAnimationConfig;
+  opening_audio?: OpeningAudioTrack[];
+  rollback?: {
+    enabled?: boolean;
+    hard_limit?: number;
+    log_length?: number;
+    pause_as_checkpoint?: boolean;
+    fixed_choice_mode?: "selected_only" | "selected_marked";
+  };
   characters?: Array<{
     character_id: string;
     name: string;
     aliases?: string[];
     dialog_style?: DialogVisualStyle | null;
+    dialog_presentation?: DialogPresentationMode;
   }>;
   scenes: Scene[];
 }
@@ -178,7 +219,11 @@ export interface GalleryItem {
   item_id: string;
   title: string;
   description?: string;
+  image_fit?: import("./galleryPresentation").GalleryImageFit;
   asset_id: string;
+  anchor_id?: string;
+  scene_id?: string;
+  command_index?: number;
   unlock_condition?: JsonValue;
   hidden_until_unlocked?: boolean;
 }

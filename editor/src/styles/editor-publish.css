@@ -1,0 +1,13 @@
+/* Short windows scroll the publishing task itself instead of squeezing the
+   editable stage below a full-height log dock. Preserve the existing dock,
+   stage navigation and button geometry. */
+@media (max-height: 520px) {
+  .toolbar-popover.workspace-task-panel.cartridge {
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  .toolbar-popover.workspace-task-panel.cartridge .cartridge-export-panel.package-workbench {
+    min-height: 560px;
+  }
+}

@@ -2,6 +2,7 @@ import type { GameCommand } from "../types/commands";
 import type { GameManifest } from "../types/manifest";
 import type { SaveData } from "../types/save";
 import type { RuntimeScript } from "../types/script";
+import { isBubblePositionConfig, isDialogPresentationMode } from "../../../shared/cartridge/dialogPresentation";
 
 export interface ValidationIssue {
   code: string;
@@ -30,9 +31,32 @@ export function validateRuntimeScript(script: RuntimeScript): ValidationIssue[] 
 
 export function validateCommandFields(script: RuntimeScript): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
+  if (script.default_dialog_presentation !== undefined && !isDialogPresentationMode(script.default_dialog_presentation)) {
+    issues.push({ code: "dialog_presentation_mode", message: "工程默认对白呈现方式无效，请重新导出卡带。" });
+  }
+  for (const character of script.characters ?? []) {
+    if (character.dialog_presentation !== undefined && !isDialogPresentationMode(character.dialog_presentation)) {
+      issues.push({ code: "dialog_presentation_mode", message: `角色 ${character.character_id} 的默认对白呈现方式无效。` });
+    }
+  }
   for (const scene of scenesOf(script)) {
     for (const [index, command] of scene.commands.entries()) {
       const path = `${scene.scene_id}.commands.${index}`;
+      if (command.type === "sfx") {
+        if (command.action !== undefined && command.action !== "play" && command.action !== "stop")
+          issues.push({ code: "sfx_action", message: `${path} 的音效动作无效。` });
+        if (command.fade_ms != null && (!Number.isInteger(command.fade_ms) || command.fade_ms < 0 || command.fade_ms > 60000))
+          issues.push({ code: "sfx_fade_duration", message: `${path} 的音效淡出时长须为 0 到 60000 毫秒的整数。` });
+      }
+      if (command.type === "gallery_anchor" && command.image_fit !== undefined
+        && !["contain", "cover", "fullscreen"].includes(command.image_fit))
+        issues.push({ code: "gallery_image_fit", message: `${path} 的画廊图片显示方式无效。` });
+      if (command.type === "dialog" || command.type === "narration") {
+        issues.push(...validateDialogPresentation(command, path));
+        if (command.clear_nvl_page_before !== undefined && typeof command.clear_nvl_page_before !== "boolean") {
+          issues.push({ code: "dialog_nvl_clear_page", message: `${path} 的 NVL 清页值必须是布尔值。` });
+        }
+      }
       if (command.type === "show_image") {
         if (!command.image_id?.trim()) {
           issues.push({ code: "show_image_asset_missing", message: `${path} 的展示图片事件缺少 image_id。` });
@@ -61,7 +85,24 @@ export function validateCommandFields(script: RuntimeScript): ValidationIssue[] 
           issues.push({ code: "video_fade_out", message: `${path} 的 fade_out_ms 必须在 0 到 10000 之间。` });
         }
       }
+      if (command.type === "rollback" && command.action !== "checkpoint" && "hard" in command && command.hard !== undefined) {
+        issues.push({ code: "rollback_hard_field", message: `${path} 的 hard 只适用于 checkpoint。` });
+      }
     }
+  }
+  return issues;
+}
+
+function validateDialogPresentation(dialog: {
+  presentation_mode?: unknown;
+  bubble_position?: unknown;
+}, path: string): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  if (dialog.presentation_mode !== undefined && !isDialogPresentationMode(dialog.presentation_mode)) {
+    issues.push({ code: "dialog_presentation_mode", message: `${path} 的对白呈现方式无效，只支持 dialog、nvl 或 bubble。` });
+  }
+  if (dialog.bubble_position !== undefined && !isBubblePositionConfig(dialog.bubble_position)) {
+    issues.push({ code: "dialog_bubble_position", message: `${path} 的气泡定位无效，请使用安全的角色偏移或0–100%的固定画面坐标。` });
   }
   return issues;
 }
@@ -168,15 +209,25 @@ export function validateNextSceneTargets(script: RuntimeScript): ValidationIssue
 export function validateAssetReferences(script: RuntimeScript, manifest: GameManifest): ValidationIssue[] {
   const assets = new Map(manifest.assets.map((asset) => [asset.asset_id, asset]));
   const issues: ValidationIssue[] = [];
-  const check = (id: string | null | undefined, code: string, label: string) => {
+  const check = (id: string | null | undefined, code: string, label: string, location?: string) => {
     if (id && !assets.has(id)) {
       issues.push({
         code,
-        message: `${label}资源编号未打包（asset_id）：${id} 被剧情事件引用，但不在卡带素材清单中。原因：素材库里缺少该资源，或导出时没有收集到它。影响：GameCLI 播放到相关事件时可能显示或播放失败。解决方案：请在素材库中补充该资源，或把事件里的资源编号改成已存在的 asset_id。`
+        message: `${location ? `${location}：` : ""}${label}「${id}」不在卡带素材清单中。请在对应位置重新选择素材。`
       });
     }
   };
   const loadingAnimation = script.loading_animation;
+  for (const track of script.opening_audio ?? []) {
+    const asset = assets.get(track.asset_id);
+    check(track.asset_id, "opening_audio_asset", "开屏音频");
+    if (asset && (asset.asset_type !== track.asset_type || !asset.mime_type?.startsWith("audio/"))) {
+      issues.push({
+        code: "opening_audio_asset_type",
+        message: `开屏音频 ${track.asset_id} 必须是可播放的 ${track.asset_type} 音频素材。`,
+      });
+    }
+  }
   if (loadingAnimation?.kind === "video") check(loadingAnimation.video_asset_id, "loading_animation_asset", "载入动画视频");
   if (loadingAnimation?.kind === "image_sequence") {
     for (const assetId of loadingAnimation.image_asset_ids) check(assetId, "loading_animation_asset", "载入动画图片");
@@ -193,11 +244,17 @@ export function validateAssetReferences(script: RuntimeScript, manifest: GameMan
   for (const character of script.characters ?? []) {
     check(character.dialog_style?.background_asset_id, "dialog_background_asset", "角色对白框底图");
   }
-  for (const scene of scenesOf(script)) {
-    for (const command of scene.commands as GameCommand[]) {
-      if (command.type === "background") check(command.background_id, "background_asset", "背景");
+  for (const [sceneIndex, scene] of scenesOf(script).entries()) {
+    for (const [commandIndex, command] of (scene.commands as GameCommand[]).entries()) {
+      const sceneLabel = scene.title?.trim() || `场景 ${sceneIndex + 1}`;
+      const locationFor = (action: string, field: string) =>
+        `位置：场景「${sceneLabel}」 · 事件 ${commandIndex + 1} · ${action} · ${field}`;
+      if (command.type === "background" && command.background_id?.trim()) {
+        check(command.background_id, "background_asset", "背景素材", locationFor("设置背景", "背景素材"));
+      }
       if (command.type === "show_image") {
-        check(command.image_id, "show_image_asset", "展示图片");
+        const location = locationFor("显示图片", "图片素材");
+        check(command.image_id, "show_image_asset", "图片素材", location);
         const asset = assets.get(command.image_id);
         const imageLike = asset && (
           ["background", "sprite", "portrait", "ui"].includes(asset.asset_type) ||
@@ -206,33 +263,38 @@ export function validateAssetReferences(script: RuntimeScript, manifest: GameMan
         if (asset && !imageLike) {
           issues.push({
             code: "show_image_asset_type",
-            message: `展示图片事件引用的素材 ${command.image_id} 不是图片类素材。`,
+            message: `${location}：素材「${command.image_id}」不是图片类型。`,
           });
         }
       }
       if (command.type === "video") {
-        check(command.video_id, "video_asset", "过场视频");
+        const location = locationFor("播放视频", "视频素材");
+        check(command.video_id, "video_asset", "视频素材", location);
         const asset = assets.get(command.video_id);
         if (asset && asset.asset_type !== "video") {
           issues.push({
             code: "video_asset_type",
-            message: `过场视频事件引用的素材 ${command.video_id} 不是视频类型素材。`,
+            message: `${location}：素材「${command.video_id}」不是视频类型。`,
           });
         }
       }
-      if (command.type === "sprite") check(command.sprite_id, "sprite_asset", "立绘");
+      if (command.type === "sprite" && command.visible !== false) {
+        check(command.sprite_id, "sprite_asset", "立绘素材", locationFor("显示立绘", "立绘素材"));
+      }
       if (command.type === "dialog") {
-        check(command.portrait, "portrait_asset", "头像");
-        check(command.voice, "voice_asset", "语音");
-        check(command.font_asset_id, "font_asset", "字体");
-        check(command.dialog_style?.background_asset_id, "dialog_background_asset", "对白框底图");
+        check(command.portrait, "portrait_asset", "头像素材", locationFor("显示对白", "头像素材"));
+        check(command.voice, "voice_asset", "语音素材", locationFor("显示对白", "语音素材"));
+        check(command.font_asset_id, "font_asset", "字体素材", locationFor("显示对白", "字体素材"));
+        check(command.dialog_style?.background_asset_id, "dialog_background_asset", "对白框底图", locationFor("显示对白", "对白框底图"));
       }
       if (command.type === "narration") {
-        check(command.font_asset_id, "font_asset", "字体");
-        check(command.dialog_style?.background_asset_id, "dialog_background_asset", "旁白框底图");
+        check(command.font_asset_id, "font_asset", "字体素材", locationFor("显示旁白", "字体素材"));
+        check(command.dialog_style?.background_asset_id, "dialog_background_asset", "旁白框底图", locationFor("显示旁白", "旁白框底图"));
       }
-      if (command.type === "bgm") check(command.bgm_id, "bgm_asset", "BGM");
-      if (command.type === "sfx") check(command.sfx_id, "sfx_asset", "音效");
+      if (command.type === "bgm" && command.action !== "stop") {
+        check(command.bgm_id, "bgm_asset", "音乐素材", locationFor("播放音乐", "音乐素材"));
+      }
+      if (command.type === "sfx" && command.action !== "stop" && command.sfx_id?.trim()) check(command.sfx_id, "sfx_asset", "音效素材", locationFor("播放音效", "音效素材"));
     }
   }
   return issues;
@@ -240,11 +302,50 @@ export function validateAssetReferences(script: RuntimeScript, manifest: GameMan
 
 export function validateSaveData(save: SaveData): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
-  if (save.save_kind && save.save_kind !== "manual" && save.save_kind !== "auto") {
-    issues.push({ code: "save_kind", message: "存档分类无效（save_kind）：只支持 manual 或 auto。请删除损坏存档后重新保存。" });
+  if (save.dialog) issues.push(...validateDialogPresentation(save.dialog, "存档对白"));
+  if (save.nvl_presentation_mode !== undefined && !isDialogPresentationMode(save.nvl_presentation_mode)) {
+    issues.push({ code: "dialog_presentation_mode", message: "存档对白呈现方式无效，请选择其他存档。" });
+  }
+  if (save.nvl_page !== undefined) {
+    if (!Array.isArray(save.nvl_page)) {
+      issues.push({ code: "nvl_page", message: "存档 NVL 累积页无效，请选择其他存档。" });
+    } else {
+      for (const [index, line] of save.nvl_page.entries()) {
+        if (!line || typeof line !== "object") {
+          issues.push({ code: "nvl_page", message: `存档 NVL 第${index + 1}行无效。` });
+        } else {
+          issues.push(...validateDialogPresentation(line, `存档 NVL 第${index + 1}行`));
+        }
+      }
+    }
+  }
+  if (
+    save.dialog_page_index !== undefined
+    && (!Number.isSafeInteger(save.dialog_page_index) || save.dialog_page_index < 0)
+  ) {
+    issues.push({ code: "dialog_page_index", message: "对白分页位置无效（dialog_page_index），请使用其他存档或重新保存。" });
+  }
+  if (
+    save.dialog_page_count !== undefined
+    && (!Number.isSafeInteger(save.dialog_page_count) || save.dialog_page_count < 1)
+  ) {
+    issues.push({ code: "dialog_page_count", message: "对白分页总数无效（dialog_page_count），请使用其他存档或重新保存。" });
+  }
+  if (
+    save.dialog_page_index !== undefined
+    && save.dialog_page_count !== undefined
+    && save.dialog_page_index >= save.dialog_page_count
+  ) {
+    issues.push({ code: "dialog_page_position", message: "对白分页位置超出当前分页范围，请使用其他存档或重新保存。" });
+  }
+  if (save.save_kind && !["manual", "auto", "quick"].includes(save.save_kind)) {
+    issues.push({ code: "save_kind", message: "存档分类无效（save_kind）：只支持 manual、auto 或 quick。请删除损坏存档后重新保存。" });
   }
   if (save.preview_image && !save.preview_image.startsWith("data:image/webp;base64,")) {
     issues.push({ code: "preview_image", message: "存档预览格式无效（preview_image）：只支持内嵌 WebP 快照。存档仍可尝试读取，但不会显示预览图。" });
+  }
+  if (save.preview_version !== undefined && save.preview_version !== 2) {
+    issues.push({ code: "preview_version", message: "存档预览版本无效（preview_version）：将尝试在存档页面后台重建封面。" });
   }
   if (!save.save_id) issues.push({ code: "save_id", message: "存档编号缺失（save_id）：原因：存档文件没有唯一编号。影响：GameCLI 无法稳定识别这个存档槽。解决方案：请重新保存游戏，或删除损坏存档后再试。" });
   if (!save.game_id) issues.push({ code: "game_id", message: "游戏编号缺失（game_id）：原因：存档没有记录所属游戏。影响：GameCLI 无法判断该存档属于哪张卡带。解决方案：请确认存档来自当前卡带，必要时重新保存。" });

@@ -9,9 +9,18 @@ import type {
   SceneCandidate,
   SourceDocument,
 } from "./types";
-import { createSourceMapping, updateSourceMappingAfterEdit } from "./sourceMapping";
+import { createSourceMapping, splitsSurrogatePair, updateSourceMappingAfterEdit } from "./sourceMapping";
 import { nextUniqueSceneId, remapSceneSelfTargets, sceneIdBase } from "./sceneIdUniqueness";
+import { normalizeNovelSceneForRuntime } from "./normalizeNovelSceneForRuntime";
 import { assetTypeDisplayLabel, assetTypeMatchesExpected, isImageLikeAssetType } from "../../../shared/cartridge/assetTaxonomy";
+import {
+  MAX_SPRITE_OFFSET_X,
+  MAX_SPRITE_OFFSET_Y,
+  MIN_SPRITE_OFFSET_X,
+  MIN_SPRITE_OFFSET_Y,
+  isValidSpriteOffsetX,
+  isValidSpriteOffsetY,
+} from "../../../shared/cartridge/spritePlacement";
 
 const validCommandTypes = new Set([
   "background",
@@ -30,6 +39,7 @@ const validCommandTypes = new Set([
   "sfx",
   "camera",
   "wait",
+  "rollback",
 ]);
 
 export interface NovelBlueprintValidationInput {
@@ -114,14 +124,21 @@ function characterKeys(characters: CharacterCandidate[], sceneCharacters: string
 }
 
 function isTraceableExcerpt(document: SourceDocument, start: number, end: number, excerpt: string): boolean {
-  const source = document.normalized_text.slice(start, end);
-  const probe = excerpt.trim().replace(/\s+/g, " ").slice(0, 80);
-  if (!probe) return false;
-  return source.replace(/\s+/g, " ").includes(probe);
+  const text = document.normalized_text;
+  if (!excerpt.trim() || excerpt.length > end - start) return false;
+  const source = text.slice(start, end);
+  let match = source.indexOf(excerpt);
+  while (match !== -1) {
+    if (!splitsSurrogatePair(source, match) && !splitsSurrogatePair(source, match + excerpt.length)) return true;
+    match = source.indexOf(excerpt, match + 1);
+  }
+  return false;
 }
 
 function hasValidRange(document: SourceDocument, start: number, end: number): boolean {
-  return Number.isFinite(start) && Number.isFinite(end) && start >= 0 && end >= start && end <= document.normalized_text.length;
+  const text = document.normalized_text;
+  return Number.isInteger(start) && Number.isInteger(end) && start >= 0 && end > start && end <= text.length
+    && !splitsSurrogatePair(text, start) && !splitsSurrogatePair(text, end);
 }
 
 function assetById(projectAssets: AssetRef[] = []): Map<string, AssetRef> {
@@ -225,9 +242,22 @@ function validateCommandReferences(input: {
       return;
     }
 
+    if (command.type === "narration") {
+      if (command.narration_style !== undefined && command.narration_style !== "dialog" && command.narration_style !== "centered") {
+        input.errors.push(`${path}.narration_style: narration_style must be dialog or centered.`);
+      }
+      return;
+    }
+
     if (command.type === "sprite") {
       validateCharacterReference({ value: command.character_id, keys: input.characterKeys, label: `${path}.sprite`, errors: input.errors, passed: input.passed });
       validateAssetReference({ assetId: command.sprite_id, expectedType: "sprite", path: `${path}.sprite_id`, assetTypes: input.assetTypes, hasProjectAssets: input.hasProjectAssets, errors: input.errors, warnings: input.warnings, passed: input.passed });
+      if (command.offset_x !== null && command.offset_x !== undefined && !isValidSpriteOffsetX(command.offset_x)) {
+        input.errors.push(`${path}.sprite_offset_x_range: offset_x must be within ${MIN_SPRITE_OFFSET_X}..${MAX_SPRITE_OFFSET_X}.`);
+      }
+      if (command.offset_y !== null && command.offset_y !== undefined && !isValidSpriteOffsetY(command.offset_y)) {
+        input.errors.push(`${path}.sprite_offset_y_range: offset_y must be within ${MIN_SPRITE_OFFSET_Y}..${MAX_SPRITE_OFFSET_Y}.`);
+      }
       return;
     }
 
@@ -247,12 +277,33 @@ function validateCommandReferences(input: {
     }
 
     if (command.type === "bgm") {
+      if (command.action !== "play" && command.action !== "stop") {
+        input.errors.push(`${path}.bgm_action: BGM action must be play or stop.`);
+      }
       validateAssetReference({ assetId: command.bgm_id, expectedType: "bgm", path: `${path}.bgm_id`, assetTypes: input.assetTypes, hasProjectAssets: input.hasProjectAssets, optional: true, errors: input.errors, warnings: input.warnings, passed: input.passed });
       return;
     }
 
     if (command.type === "sfx") {
-      validateAssetReference({ assetId: command.sfx_id, expectedType: "sfx", path: `${path}.sfx_id`, assetTypes: input.assetTypes, hasProjectAssets: input.hasProjectAssets, errors: input.errors, warnings: input.warnings, passed: input.passed });
+      if (command.action !== "stop") validateAssetReference({ assetId: command.sfx_id, expectedType: "sfx", path: `${path}.sfx_id`, assetTypes: input.assetTypes, hasProjectAssets: input.hasProjectAssets, errors: input.errors, warnings: input.warnings, passed: input.passed });
+      return;
+    }
+
+    if (command.type === "camera") {
+      return;
+    }
+
+    if (command.type === "choice") {
+      return;
+    }
+
+    if (command.type === "rollback") {
+      const action = (command as { action?: unknown }).action;
+      if (!["checkpoint", "block", "fix", "suspend", "resume"].includes(String(action))) {
+        input.errors.push(`${path}.rollback_action: rollback action is invalid.`);
+      } else if (command.action !== "checkpoint" && "hard" in command && command.hard !== undefined) {
+        input.errors.push(`${path}.rollback_hard_field: hard only applies to checkpoint rollback controls.`);
+      }
       return;
     }
 
@@ -312,11 +363,11 @@ export function validateNovelBlueprintWrite(input: NovelBlueprintValidationInput
 
   let adapted: AdaptedScene = {
     ...input.adaptedScene,
-    scene_beat: {
+    scene_beat: normalizeNovelSceneForRuntime({
       ...input.adaptedScene.scene_beat,
       commands: cloneArray(input.adaptedScene.scene_beat.commands),
       tags: cloneArray(input.adaptedScene.scene_beat.tags),
-    },
+    }),
     source_mapping: cloneSourceMapping((input.adaptedScene as Partial<AdaptedScene>).source_mapping),
     warnings: cloneArray(input.adaptedScene.warnings),
   };
@@ -345,8 +396,10 @@ export function validateNovelBlueprintWrite(input: NovelBlueprintValidationInput
   const candidateRangeValid = hasValidRange(input.document, input.sceneCandidate.start_offset, input.sceneCandidate.end_offset);
   const mapping = adapted.source_mapping;
   const mappingTraceable =
+    candidateRangeValid &&
     mapping.document_id === input.document.document_id &&
-    hasValidRange(input.document, mapping.start_offset, mapping.end_offset) &&
+    mapping.start_offset === input.sceneCandidate.start_offset &&
+    mapping.end_offset === input.sceneCandidate.end_offset &&
     isTraceableExcerpt(input.document, mapping.start_offset, mapping.end_offset, mapping.source_excerpt);
 
   if (!adapted.source_scene_candidate_id || adapted.source_scene_candidate_id !== input.sceneCandidate.scene_candidate_id) {

@@ -236,6 +236,8 @@ export interface SourceMapping {
 
 export interface AdaptedScene {
   adapted_scene_id: string;
+  /** Captured by the caller of the model, never supplied by the model itself. */
+  modelName?: string;
   source_scene_candidate_id: string;
   scene_beat: SceneBeat;
   source_mapping: SourceMapping;
@@ -261,6 +263,8 @@ export interface ImportOptions {
 
 export interface NovelImportSession {
   session_id: string;
+  /** Model captured when this session starts an actual generation request. */
+  modelName?: string;
   document?: SourceDocument;
   import_record?: BookImportRecord;
   chunks: TextChunk[];
@@ -276,6 +280,9 @@ export interface NovelImportSession {
   ai_chunk_analyses: NovelAiChunkAnalysis[];
   scan_partials: Record<string, NovelAiChunkPartial>;
   outline_partials: NovelAiOutlinePartial;
+  scene_plan_partials?: Record<string, NovelAiSceneBatchCheckpoint[]>;
+  /** Completed model responses awaiting the normal validated graph writer. */
+  adaptation_checkpoints?: Record<string, NovelAdaptationCheckpoint>;
   planned_chapter_ids: string[];
   validation_reports: NovelImportValidationReport[];
   ai_outline?: NovelAiOutline;
@@ -465,6 +472,7 @@ export interface NovelPersistenceState {
 
 export interface NovelAiChunkAnalysis {
   chunk_id: string;
+  modelName?: string;
   index: number;
   summary: string;
   chapter_candidates: ChapterCandidate[];
@@ -498,6 +506,7 @@ export interface NovelAiChunkTimelineNotes {
 }
 
 export interface NovelAiChunkPartial {
+  modelName?: string;
   document_id?: string;
   chunk_id?: string;
   start_offset?: number;
@@ -552,6 +561,19 @@ export interface NovelAiOutlinePartial {
   mainline?: NovelAiOutlineMainline;
   structure?: NovelAiOutlineStructure;
   index?: NovelAiOutlineIndex;
+  source_hash?: string;
+  batches?: NovelAiOutlineBatchCheckpoint[];
+}
+
+export interface NovelAiOutlineBatchCheckpoint {
+  key: string;
+  stage: "mainline" | "structure" | "index";
+  payload: NovelAiOutlineMainline | NovelAiOutlineStructure | NovelAiOutlineIndex;
+}
+
+export interface NovelAiSceneBatchCheckpoint {
+  key: string;
+  payload: Record<string, unknown>;
 }
 
 export interface ProgressiveImportJob {
@@ -565,7 +587,9 @@ export interface ProgressiveImportJob {
   total: number;
   generatedCount: number;
   failedSceneIds: string[];
+  retryCount?: number;
   skippedSceneIds?: string[];
+  skippedSceneErrors?: Record<string, string>;
   lastInsertedNodeId?: string;
   cancelRequested: boolean;
   pauseRequested?: boolean;
@@ -620,6 +644,8 @@ export interface AdaptSceneRequest {
   previous_scene_summary?: string;
   import_options: ImportOptions;
   memory_mode: MemoryMode;
+  scene_beat_checkpoint?: SceneBeat;
+  scene_beat_warnings?: string[];
 }
 
 export interface AdaptSceneResponse {
@@ -630,6 +656,14 @@ export interface AdaptSceneResponse {
   conflict_points: ConflictPoint[];
   warnings: string[];
 }
+
+export type NovelAdaptationCheckpoint = {
+  inputFingerprint: string;
+  createdAt: string;
+} & ({ response: AdaptSceneResponse; partial?: never } | {
+  response?: never;
+  partial: { candidateId: string; documentId: string; sceneBeat: SceneBeat; warnings: string[] };
+});
 
 export interface ImportReport {
   total_chars: number;

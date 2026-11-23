@@ -1,5 +1,5 @@
-import { RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { ChevronDown, ChevronUp, RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { reportFrontendError } from "../../../../shared/logging/frontendErrorLogger";
 import {
@@ -15,6 +15,7 @@ import {
   type LivePreviewRuntimeMessage,
   type PreviewStartSpec,
 } from "../../../../shared/preview/livePreviewProtocol";
+import { resolveLivePreviewPatchSceneId } from "../../../../shared/preview/livePreviewPatch";
 import { applyProjectRuntimeSettingsToScript } from "../../utils/exportScript";
 import { manifestAssetsFromProjectAssets } from "../../utils/projectAssets";
 import {
@@ -23,6 +24,7 @@ import {
 } from "../../utils/previewEntryPaths";
 import type { AssetRef } from "../../types/assets";
 import { RuntimePreviewMask } from "../common/RuntimePreviewMask";
+import { GlassSelectionGroup } from "../common/GlassSelectionGroup";
 import { useRuntimePreviewTransition } from "../../hooks/useRuntimePreviewTransition";
 
 type RuntimePreviewScreen = "title_menu" | "playing" | "settings" | "save_load" | "history" | "gallery" | "about";
@@ -35,6 +37,7 @@ const livePreviewDebounceMs = 150;
 const livePreviewHandshakeTimeoutMs = 2500;
 const livePreviewHandshakeRetryLimit = 8;
 const livePreviewHandshakeBackoffMs = 10000;
+const compactPreviewReferenceHeight = 280;
 
 const previewScreens: Array<{ id: RuntimePreviewScreen; label: string }> = [
   { id: "title_menu", label: "标题" },
@@ -93,23 +96,34 @@ function liveScene(scene: NonNullable<ReturnType<typeof useEditorStore.getState>
 
 export function PreviewPanel({
   collapsed,
+  workspaceActive = true,
   resizing,
+  deferRuntimeMount = false,
   onCollapsedChange,
 }: {
   collapsed: boolean;
+  workspaceActive?: boolean;
   resizing: boolean;
+  deferRuntimeMount?: boolean;
   onCollapsedChange: (collapsed: boolean) => void;
 }) {
   const [phase, setPhase] = useState<"idle" | "opening" | "closing">("idle");
   const [activeScreen, setActiveScreen] = useState<RuntimePreviewScreen>("playing");
   const [status, setStatus] = useState<PreviewStatus>("idle");
+  const [unlockAllGallery, setUnlockAllGallery] = useState(false);
+  const unlockAllGalleryRef = useRef(false);
+  const [frameFit, setFrameFit] = useState({ width: 0, height: 0, scale: 1 });
   const [message, setMessage] = useState("展开后会连接内嵌 GameCLI 实时预览。");
+  const [uiSkinCompatibilityWarnings, setUISkinCompatibilityWarnings] = useState<string[]>([]);
   const phaseTimerRef = useRef<number | null>(null);
   const handshakeTimerRef = useRef<number | null>(null);
   const handshakeRetryRef = useRef(0);
   const initializationAttemptRef = useRef(0);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const previewFrameRef = useRef<HTMLDivElement>(null);
+  const expandButtonRef = useRef<HTMLButtonElement>(null);
+  const collapseButtonRef = useRef<HTMLButtonElement>(null);
+  const pendingToggleFocusRef = useRef<"expand" | "collapse" | undefined>(undefined);
   const reloadButtonRef = useRef<HTMLButtonElement>(null);
   const routePickerRef = useRef<HTMLDivElement>(null);
   const liveRevisionRef = useRef(0);
@@ -120,13 +134,16 @@ export function PreviewPanel({
   const liveRunCounterRef = useRef(0);
   const activeRunIdRef = useRef("");
   const liveInitializedRef = useRef(false);
+  const workspaceActiveRef = useRef(workspaceActive);
+  const workspacePausedRef = useRef(false);
+  workspaceActiveRef.current = workspaceActive;
   const liveRefreshTimerRef = useRef<number | null>(null);
   const pendingFullScriptRef = useRef(false);
   const pendingPresentationRef = useRef(false);
   const pendingSceneIdsRef = useRef(new Set<string>());
   const wasResizingRef = useRef(false);
-  const activeSceneIdRef = useRef<string>();
-  const replaySourceLabelRef = useRef<string>();
+  const activeSceneIdRef = useRef<string | undefined>(undefined);
+  const replaySourceLabelRef = useRef<string | undefined>(undefined);
   const [activeSceneId, setActiveSceneId] = useState<string>();
   const [routePickerOpen, setRoutePickerOpen] = useState(false);
   const [routePickerCandidates, setRoutePickerCandidates] = useState<PreviewEntryPathCandidate[]>([]);
@@ -140,6 +157,16 @@ export function PreviewPanel({
   const selectedNode = useEditorStore((state) => state.nodes.find((node) => node.id === state.selectedNodeId));
   const project = useProjectStore();
   const commandCount = nodes.reduce((total, node) => total + (node.data.scene?.commands.length ?? 0), 0);
+
+  useEffect(() => {
+    unlockAllGalleryRef.current = false;
+    setUnlockAllGallery(false);
+  }, [project.projectId]);
+
+  useEffect(() => {
+    unlockAllGalleryRef.current = false;
+    setUnlockAllGallery(false);
+  }, [project.projectId]);
 
   useEffect(() => () => {
     if (phaseTimerRef.current !== null) window.clearTimeout(phaseTimerRef.current);
@@ -167,6 +194,7 @@ export function PreviewPanel({
     liveRunCounterRef.current += 1;
     const runId = `run-${liveRunCounterRef.current}`;
     activeRunIdRef.current = runId;
+    workspacePausedRef.current = false;
     return runId;
   }
 
@@ -278,7 +306,8 @@ export function PreviewPanel({
   }
 
   function resumeForGeometryChange() {
-    if (!activeRunIdRef.current) return;
+    if (!activeRunIdRef.current || !workspaceActiveRef.current) return;
+    workspacePausedRef.current = false;
     const requestId = nextRequestId("resume");
     postLiveMessage({
       type: "agentvn.live-preview.control",
@@ -289,6 +318,12 @@ export function PreviewPanel({
       runId: activeRunIdRef.current,
       action: "resume",
     });
+  }
+
+  function pauseForWorkspace() {
+    if (!liveInitializedRef.current || workspacePausedRef.current) return;
+    workspacePausedRef.current = true;
+    pauseForGeometryChange();
   }
 
   function postRuntimeMessage(payload: Record<string, unknown>, transfer?: Transferable[]) {
@@ -344,6 +379,7 @@ export function PreviewPanel({
       projectAssets: manifestAssetsFromProjectAssets(currentProject.assetManifest),
       projectAssetRefs: currentProject.assetManifest,
       uiSkin: currentProject.settings.runtimeUILayout,
+      uiLayoutProfiles: currentProject.settings.runtimeUILayoutProfiles,
       packageAppearance: currentProject.settings.packageAppearance,
       characterDialogStyles: currentProject.settings.characterDialogStyles,
     };
@@ -360,9 +396,10 @@ export function PreviewPanel({
       const currentProject = useProjectStore.getState();
       const data = await createEditorLivePreviewData(liveExportInput(script));
       if (attempt !== initializationAttemptRef.current || !iframeRef.current?.contentWindow) return;
+      setUISkinCompatibilityWarnings(data.uiSkinCompatibilityWarnings);
       const requestId = nextRequestId("init");
       const runId = nextRunId();
-      const sceneId = selectedSceneId() ?? data.script.entry_scene_id;
+      const sceneId = data.script.entry_scene_id;
       postLiveMessage({
         type: "agentvn.live-preview.init",
         protocolVersion: LIVE_PREVIEW_PROTOCOL_VERSION,
@@ -370,6 +407,7 @@ export function PreviewPanel({
         revision: nextLiveRevision(),
         requestId,
         runId,
+        previewOptions: { unlockAllGallery: unlockAllGalleryRef.current },
         manifest: data.manifest,
         script: data.script,
         uiSkin: data.uiSkin,
@@ -397,6 +435,24 @@ export function PreviewPanel({
     active: !collapsed,
     reducedMotion: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false,
   });
+
+  // Share the toolbar's input lease without collapsing or remounting the
+  // background frame. Late ready events must respect the same lease.
+  useLayoutEffect(() => {
+    if (collapsed) return;
+    if (!workspaceActive) {
+      setRoutePickerOpen(false);
+      pauseForWorkspace();
+    } else if (workspacePausedRef.current && previewTransition.phase === "ready") {
+      resumeForGeometryChange();
+    }
+  }, [collapsed, workspaceActive, previewTransition.phase]);
+
+  useEffect(() => {
+    if (status === "error" && previewTransition.phase !== "ready") {
+      previewTransition.failTransition();
+    }
+  }, [previewTransition.failTransition, previewTransition.phase, status]);
 
   useEffect(() => {
     if (collapsed) {
@@ -467,10 +523,12 @@ export function PreviewPanel({
           pendingFullScriptRef.current = false;
           pendingSceneIdsRef.current.clear();
           const currentProject = useProjectStore.getState();
-          const script = fullScript ? currentLiveScript() : undefined;
+          const latestScript = currentLiveScript();
+          const script = fullScript ? latestScript : undefined;
           const presentation = includePresentation && script
             ? await createEditorLivePreviewData(liveExportInput(script))
             : undefined;
+          if (presentation) setUISkinCompatibilityWarnings(presentation.uiSkinCompatibilityWarnings);
           const editor = useEditorStore.getState();
           const scenes = !fullScript
             ? editor.nodes
@@ -480,7 +538,7 @@ export function PreviewPanel({
             : undefined;
           const requestId = nextRequestId("patch");
           const runId = nextRunId();
-          const sceneId = selectedSceneId() ?? script?.entry_scene_id;
+          const sceneId = resolveLivePreviewPatchSceneId(latestScript, activeSceneIdRef.current);
           postLiveMessage({
             type: "agentvn.live-preview.patch",
             protocolVersion: LIVE_PREVIEW_PROTOCOL_VERSION,
@@ -577,6 +635,7 @@ export function PreviewPanel({
 
   const openPanel = () => {
     clearPhaseTimer();
+    if (document.activeElement === expandButtonRef.current) pendingToggleFocusRef.current = "collapse";
     previewTransition.beginTransition();
     onCollapsedChange(false);
     setPhase("opening");
@@ -592,6 +651,7 @@ export function PreviewPanel({
     previewTransition.beginTransition();
     setPhase("closing");
     phaseTimerRef.current = window.setTimeout(() => {
+      if (document.activeElement === collapseButtonRef.current) pendingToggleFocusRef.current = "expand";
       onCollapsedChange(true);
       setPhase("idle");
       phaseTimerRef.current = null;
@@ -608,6 +668,13 @@ export function PreviewPanel({
     if (collapsed || !liveInitializedRef.current) return;
     const sceneId = selectedNode?.data.scene?.scene_id;
     if (!sceneId) return;
+    let script: RuntimeScript;
+    try {
+      script = currentLiveScript();
+    } catch {
+      return;
+    }
+    if (!script.scenes.some((scene) => scene.scene_id === sceneId)) return;
     const requestId = nextRequestId("scene");
     const runId = nextRunId();
     postLiveMessage({
@@ -632,7 +699,12 @@ export function PreviewPanel({
 
   useEffect(() => {
     scheduleLivePatch({ fullScript: true });
-  }, [project.settings.characterDialogStyles, scheduleLivePatch]);
+  }, [
+    project.settings.characterDialogStyles,
+    project.settings.defaultDialogPresentation,
+    project.settings.characterDialogPresentations,
+    scheduleLivePatch,
+  ]);
 
   useEffect(() => {
     scheduleLivePatch({ includePresentation: true });
@@ -667,6 +739,18 @@ export function PreviewPanel({
         clearHandshakeTimer();
         liveInitializedRef.current = false;
         replaySourceLabelRef.current = undefined;
+        const failedSceneId = event.data.sceneId;
+        if (failedSceneId && failedSceneId === activeSceneIdRef.current) {
+          try {
+            const latestScript = currentLiveScript();
+            if (resolveLivePreviewPatchSceneId(latestScript, failedSceneId) !== failedSceneId) {
+              activeSceneIdRef.current = undefined;
+              setActiveSceneId(undefined);
+            }
+          } catch {
+            // Keep the original preview error when the current editor graph cannot be exported.
+          }
+        }
         setStatus("error");
         setMessage(event.data.message);
       } else if (event.data.type === "agentvn.live-preview.ready") {
@@ -680,20 +764,23 @@ export function PreviewPanel({
         replaySourceLabelRef.current = undefined;
         setMessage(replaySourceLabel
           ? `已从“${replaySourceLabel}”重载：${event.data.sceneId ?? "当前场景"}`
-          : `实时渲染：${event.data.sceneId ?? "当前场景"}`);
+          : uiSkinCompatibilityWarnings.length > 0
+            ? `实时渲染：${event.data.sceneId ?? "当前场景"}；已自动兼容 ${uiSkinCompatibilityWarnings.length} 项历史样式`
+            : `实时渲染：${event.data.sceneId ?? "当前场景"}`);
         sendScreen(activeScreen);
         previewTransition.markReady();
+        if (!workspaceActiveRef.current) pauseForWorkspace();
       }
     }
     window.addEventListener("message", handleLivePreviewResponse);
     return () => window.removeEventListener("message", handleLivePreviewResponse);
-  }, [activeScreen, initializeLivePreview, previewTransition.phase]);
+  }, [activeScreen, initializeLivePreview, previewTransition.phase, uiSkinCompatibilityWarnings]);
 
   if (collapsed) {
     return (
-      <aside className="preview-panel is-collapsed">
-        <button type="button" className="preview-rail-button" data-help-key="preview.openPanel" onClick={openPanel}>
-          <strong>预览</strong>
+      <aside id="editor-live-preview" aria-label="实时场景预览" className="preview-panel is-collapsed">
+        <button ref={expandButtonRef} type="button" className="preview-rail-button" aria-expanded={false} data-help-key="preview.openPanel" onClick={openPanel}>
+          <strong><ChevronDown size={15} aria-hidden="true" /> 展开实时预览</strong>
           <span>{commandCount} 条</span>
         </button>
       </aside>
@@ -701,21 +788,16 @@ export function PreviewPanel({
   }
 
   return (
-    <aside className={`preview-panel is-expanded${phase !== "idle" ? ` is-${phase}` : ""}`}>
+    <aside id="editor-live-preview" aria-label="实时场景预览" className={`preview-panel is-expanded${phase !== "idle" ? ` is-${phase}` : ""}`}>
       <header className="embedded-runtime-preview-header">
         <div className="embedded-runtime-preview-heading">
-          <strong>真实客户端预览</strong>
-          <span>{project.title}</span>
+          <strong>实时场景预览</strong>
+          <span
+            role="status"
+            className={`embedded-runtime-preview-status is-${status}${uiSkinCompatibilityWarnings.length > 0 ? " has-compatibility-warning" : ""}`}
+            title={uiSkinCompatibilityWarnings.length > 0 ? `${message}\n${uiSkinCompatibilityWarnings.join("\n")}` : message}
+          >{message}</span>
         </div>
-        <button type="button" className="preview-collapse-button" data-help-key="preview.closePanel" onClick={closePanel}>
-          收起
-        </button>
-      <div className="embedded-runtime-preview-toolbar">
-        {previewScreens.map((screen) => (
-          <button key={screen.id} type="button" data-help-key="preview.screen" className={activeScreen === screen.id ? "is-active" : ""} onClick={() => selectScreen(screen.id)}>
-            {screen.label}
-          </button>
-        ))}
         <button
           ref={reloadButtonRef}
           type="button"
@@ -726,24 +808,59 @@ export function PreviewPanel({
           aria-expanded={routePickerOpen}
           onClick={reloadCurrentScene}
         >
-          <RefreshCw size={14} /> 重载场景
+          <RefreshCw size={14} aria-hidden="true" /> 重载场景
         </button>
-      </div>
-      <div className={`embedded-runtime-preview-status is-${status}`} title={message}>{message}</div>
+        <label className="preview-gallery-option" title="仅影响预览，不改变正式游戏的画廊进度。">
+          <input type="checkbox" checked={unlockAllGallery}
+            onChange={(event) => {
+              const checked = event.target.checked;
+              unlockAllGalleryRef.current = checked;
+              setUnlockAllGallery(checked);
+              if (liveInitializedRef.current && activeRunIdRef.current) postLiveMessage({
+                type: "agentvn.live-preview.control",
+                protocolVersion: LIVE_PREVIEW_PROTOCOL_VERSION,
+                sessionId: liveSessionRef.current,
+                revision: nextLiveRevision(),
+                requestId: nextRequestId("gallery-access"),
+                runId: activeRunIdRef.current,
+                action: "set_gallery_unlock_all",
+                unlockAllGallery: checked,
+              });
+            }} />
+          <span>直接解锁全部画廊</span>
+        </label>
+        <button ref={collapseButtonRef} type="button" className="preview-collapse-button" aria-expanded={true} aria-label="收起实时预览" data-help-key="preview.closePanel" onClick={closePanel}>
+          <ChevronUp size={15} aria-hidden="true" /> 收起
+        </button>
+        <GlassSelectionGroup className="embedded-runtime-preview-toolbar" selectedKey={activeScreen} scrollAxis="x" role="group" ariaLabel="预览游戏页面">
+          {previewScreens.map((screen) => (
+            <button key={screen.id} type="button" data-help-key="preview.screen" aria-pressed={activeScreen === screen.id} className={activeScreen === screen.id ? "is-active" : ""} data-glass-selected={activeScreen === screen.id} onClick={() => selectScreen(screen.id)}>
+              {screen.label}
+            </button>
+          ))}
+        </GlassSelectionGroup>
       </header>
       <div
         ref={previewFrameRef}
         className={`embedded-runtime-preview-frame is-transition-${previewTransition.phase}`}
       >
-        <iframe
-          ref={iframeRef}
-          title="GameCLI 内嵌预览"
-          src={runtimePreviewUrl}
-          onLoad={() => {
-            liveInitializedRef.current = false;
-            if (previewTransition.phase === "ready") void initializeLivePreview();
-          }}
-        />
+        {deferRuntimeMount
+          ? <div className="embedded-runtime-preview-deferred" role="status">编辑器就绪后启动实时预览…</div>
+          : (
+            <iframe
+              ref={iframeRef}
+              title="GameCLI 内嵌预览"
+              src={runtimePreviewUrl}
+              style={frameFit.scale < 1 ? {
+                width: frameFit.width, height: frameFit.height,
+                transform: `scale(${frameFit.scale})`, transformOrigin: "top left",
+              } : undefined}
+              onLoad={() => {
+                liveInitializedRef.current = false;
+                if (previewTransition.phase === "ready") void initializeLivePreview();
+              }}
+            />
+          )}
         <RuntimePreviewMask
           visible={previewTransition.maskVisible}
           snapshot={previewTransition.snapshot}
@@ -769,7 +886,7 @@ export function PreviewPanel({
             <strong>选择进入路线</strong>
             <span>从不同的上一个场景重放当前场景过渡</span>
           </header>
-          <div className="preview-route-picker-list">
+          <div className="preview-route-picker-list selection-scroll-region">
             {routePickerCandidates.map((candidate, index) => {
               const sourceLabel = previousSceneLabel(candidate);
               return (
@@ -778,6 +895,7 @@ export function PreviewPanel({
                   type="button"
                   role="menuitem"
                   data-help-key="preview.reloadSceneRoute"
+                  onFocus={(event) => event.currentTarget.scrollIntoView({ block: "nearest" })}
                   onClick={() => {
                     const sceneId = activeSceneIdRef.current;
                     if (sceneId) replaySceneFromPath(sceneId, candidate);

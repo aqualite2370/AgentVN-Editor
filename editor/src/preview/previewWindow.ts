@@ -1,6 +1,9 @@
+import type { PreviewOptions } from "../../../shared/preview/livePreviewProtocol";
+
 export interface GameCliPreviewRequest {
   cartridge: Blob;
   fileName: string;
+  previewOptions?: PreviewOptions;
   onProgress?: (event: GameCliPreviewProgressEvent) => void;
 }
 
@@ -21,6 +24,7 @@ export interface GameCliDirectoryPreviewRequest {
   fileName: string;
   textFiles: GameCliDirectoryPreviewTextFile[];
   assets: GameCliDirectoryPreviewAsset[];
+  previewOptions?: PreviewOptions;
   onProgress?: (event: GameCliPreviewProgressEvent) => void;
 }
 
@@ -46,6 +50,7 @@ interface GameCliPreviewUploadAppendResult {
 
 const GAMECLI_PREVIEW_UPLOAD_CHUNK_BYTES = 256 * 1024;
 const LEGACY_GAMECLI_PREVIEW_MAX_BYTES = 8 * 1024 * 1024;
+let browserPreviewWindow: Window | null = null;
 
 export function isTauriRuntime(): boolean {
   return "__TAURI_INTERNALS__" in window;
@@ -108,6 +113,7 @@ async function openBrowserPreview(request: GameCliPreviewRequest, statusMessage?
   if (!target) {
     throw new Error("The browser blocked the GameCLI preview window. Allow popups or use the desktop app.");
   }
+  browserPreviewWindow = target;
 
   request.onProgress?.({ phase: "browser", percent: 48, message: "Sending temporary cartridge to browser preview window." });
   const previewNonce = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -116,6 +122,7 @@ async function openBrowserPreview(request: GameCliPreviewRequest, statusMessage?
     cartridgeBuffer: await request.cartridge.arrayBuffer(),
     fileName: request.fileName,
     previewNonce,
+    previewOptions: { unlockAllGallery: request.previewOptions?.unlockAllGallery === true },
   };
 
   for (const delayMs of [250, 750, 1400, 2400, 4000, 6500, 9000]) {
@@ -165,6 +172,7 @@ export async function openGameCliPreview(request: GameCliPreviewRequest): Promis
     request.onProgress?.({ phase: "validate", percent: 86, message: "Validating temporary cartridge structure and resources." });
     const previewRoot = await invokeTauri<string>("open_gamecli_preview_disk_upload", {
       uploadId: upload.uploadId,
+      unlockAllGallery: request.previewOptions?.unlockAllGallery === true,
     });
     request.onProgress?.({ phase: "launch", percent: 100, message: "GameCLI disk preview started." });
     return { mode: "gamecli", message: `GameCLI disk preview root: ${previewRoot}` };
@@ -197,6 +205,7 @@ export async function openGameCliPreview(request: GameCliPreviewRequest): Promis
     request.onProgress?.({ phase: "launch", percent: 96, message: "Temporary cartridge written; launching GameCLI." });
     const path = await invokeTauri<string>("open_gamecli_preview_upload", {
       uploadId: upload.uploadId,
+      unlockAllGallery: request.previewOptions?.unlockAllGallery === true,
     });
     request.onProgress?.({ phase: "launch", percent: 100, message: "GameCLI preview launch request sent." });
     return { mode: "gamecli", message: `GameCLI preview cartridge written: ${path}` };
@@ -208,6 +217,7 @@ export async function openGameCliPreview(request: GameCliPreviewRequest): Promis
     const path = await invokeTauri<string>("open_gamecli_preview", {
       cartridgeBytes,
       fileName: request.fileName,
+      unlockAllGallery: request.previewOptions?.unlockAllGallery === true,
     });
     request.onProgress?.({ phase: "launch", percent: 100, message: "GameCLI preview launch request sent." });
     return { mode: "gamecli", message: `GameCLI preview cartridge written through legacy host: ${path}` };
@@ -297,6 +307,7 @@ export async function openGameCliPreviewDirectory(request: GameCliDirectoryPrevi
     request.onProgress?.({ phase: "validate", percent: 88, message: "Generating checksum.json and validating preview directory." });
     const previewRoot = await invokeTauri<string>("finalize_gamecli_preview_directory", {
       sessionId: session.sessionId,
+      unlockAllGallery: request.previewOptions?.unlockAllGallery === true,
     });
     request.onProgress?.({ phase: "launch", percent: 100, message: "GameCLI directory preview started." });
     return { mode: "gamecli", message: `GameCLI directory preview root: ${previewRoot}` };
@@ -308,10 +319,15 @@ export async function openGameCliPreviewDirectory(request: GameCliDirectoryPrevi
   }
 }
 
+export async function getGameCliPreviewRunning(): Promise<boolean> {
+  if (!isTauriRuntime()) return browserPreviewWindow !== null && !browserPreviewWindow.closed;
+  return invokeTauri<boolean>("get_gamecli_preview_running");
+}
+
 export async function closeGameCliPreview(): Promise<void> {
   if (!isTauriRuntime()) {
-    const target = window.open("", "agentvn-gamecli-preview");
-    target?.close();
+    browserPreviewWindow?.close();
+    browserPreviewWindow = null;
     return;
   }
   const { invoke } = await import("@tauri-apps/api/core");

@@ -1,7 +1,8 @@
-import { ArrowLeft } from "lucide-react";
 import { useRuntimeStore } from "../../store/runtimeStore";
 import { useUILayoutStyle } from "../../uiSkin/uiSkinRuntime";
-import { Button } from "../common/Button";
+import { UILayoutOpacitySurface } from "../../uiSkin/UILayoutOpacitySurface";
+import { ScreenBackButton } from "./ScreenBackButton";
+import { RenpyMenuFrame } from "./RenpyMenuFrame";
 
 function textOrFallback(value: string | undefined, fallback: string): string {
   const trimmed = value?.trim();
@@ -10,43 +11,41 @@ function textOrFallback(value: string | undefined, fallback: string): string {
 
 export function AboutScreen() {
   const game = useRuntimeStore((state) => state.currentGame);
-  const runtimeMode = useRuntimeStore((state) => state.runtimeMode);
+  const presentationMode = useRuntimeStore((state) => state.presentationMode);
   const aboutLayout = useUILayoutStyle("about", "about_panel");
   const aboutCopy = game?.manifest.shell?.about;
-  const modeDescription = runtimeMode === "preview"
-    ? "编辑器预览模式：当前内容来自临时卡带。"
-    : runtimeMode === "fixed"
-      ? "固定卡带模式：此发布包只运行内置卡带。"
-      : "卡带库模式：可以导入、移除和切换多张 .vncart 卡带。";
   const fields = aboutCopy?.fields?.filter((field) => field.label?.trim() || field.value?.trim()) ?? [];
   const title = textOrFallback(aboutCopy?.title, "关于");
+  const kicker = textOrFallback(aboutCopy?.kicker, "作品信息");
+  const note = aboutCopy?.note?.trim();
 
   return (
-    <main className="screen-panel" aria-label={title} data-testid="about-screen" data-runtime-screen="about">
+    <RenpyMenuFrame activeScreen="about" className="screen-panel about-screen-shell" aria-label={title} data-testid="about-screen" data-runtime-screen="about" data-presentation-mode={presentationMode}>
       <header>
-        <h2>{title}</h2>
-        <Button aria-label="返回主菜单" data-testid="back-to-main-menu" onClick={() => useRuntimeStore.getState().closeMenu()}>
-          <ArrowLeft size={17} /> 返回
-        </Button>
+        <ScreenBackButton label="返回主菜单" testId="back-to-main-menu" onClick={() => useRuntimeStore.getState().closeMenu()} />
       </header>
-      <section className="about-card ui-layouted" style={aboutLayout.style}>
-        <span className="panel-kicker">{textOrFallback(aboutCopy?.kicker, "GameCLI Framework")}</span>
-        <h1>{textOrFallback(aboutCopy?.heading, game?.title ?? "AgentVN 玩家端")}</h1>
-        <p>{textOrFallback(aboutCopy?.description, game?.description ?? "独立视觉小说卡带播放器。导入 .vncart 后，卡带和存档会保存在本机玩家库中。")}</p>
-        {fields.length > 0 ? (
-          <dl>
-            {fields.map((field, index) => (
-              <div key={`${field.label ?? "field"}-${index}`} className="about-field-row">
-                <dt>{field.label}</dt>
-                <dd>{field.value}</dd>
-              </div>
-            ))}
-          </dl>
-        ) : (
-          <p className="inline-note">暂无字段，请前往编辑器设置文本。</p>
-        )}
-        <p className="inline-note">{textOrFallback(aboutCopy?.note, modeDescription)}</p>
-      </section>
-    </main>
+      <UILayoutOpacitySurface as="section" className="about-card ui-layouted" style={aboutLayout.style} presentationComponent={aboutLayout.component}>
+        <div className="about-card-content">
+          <h2 className="about-page-title">{title}</h2>
+          <div className="about-intro">
+            <span className="panel-kicker">{kicker}</span>
+            <h1>{textOrFallback(aboutCopy?.heading, game?.title ?? "AgentVN 玩家端")}</h1>
+            <p>{textOrFallback(aboutCopy?.description, game?.description ?? "视觉小说作品信息。")}</p>
+          </div>
+          {fields.length > 0 && (
+            <dl className="about-field-list">
+              {fields.map((field, index) => (
+                <div key={`${field.label ?? "field"}-${index}`} className="about-field-row">
+                  <dt>{field.label}</dt>
+                  <dd>{field.value}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
+          {fields.length === 0 && <p className="runtime-about-fields-empty">暂无字段，请前往编辑器设置文本。</p>}
+          {note && <p className="inline-note about-note">{note}</p>}
+        </div>
+      </UILayoutOpacitySurface>
+    </RenpyMenuFrame>
   );
 }

@@ -30,11 +30,14 @@ GameCLI uses these values only when the referenced assets are packed. Missing or
 `script.json` must include `schema_version`, `game_id`, `title`, `entry_scene_id`, and `scenes`. It may also include:
 
 - `loading_animation`: built-in boot animation, video, or image sequence.
+- `opening_audio`: ordered audio tracks played after the boot loader and before story playback.
 - `characters`: character IDs, names, aliases, optional `dialog_style`, and sprite animation target validation data.
 
 GameCLI rejects script references that point to missing scenes and rejects sprite animation targets that cannot be traced to a known character unless the target is `sprite:selected` or `sprite:all`.
 
 Dialog style priority is per-line manual `DialogCommand.dialog_style`, then `characters[].dialog_style`, then the runtime UI skin dialog panel. Narration commands can also carry a per-line `dialog_style`. `dialog_style.background_fit` accepts `stretch`, `contain`, or `cover`; omitted values keep the legacy `cover` behavior. A manual dialog line is not overwritten by character default updates in the editor.
+
+Narration commands may set `narration_style` to `dialog` or `centered`. Missing values use `dialog` for backward compatibility. `centered` darkens the full story stage, ignores the narration panel background, and places the narration text directly in the screen center while retaining text and font overrides.
 
 ## Loading Animation Assets
 
@@ -44,6 +47,8 @@ Loading animation asset rules:
 - `{ "kind": "video", "video_asset_id": "..." }` must reference a packed asset with `asset_type: "video"`.
 - `{ "kind": "image_sequence", "image_asset_ids": [...] }` must reference packed assets with `asset_type: "ui"`.
 - Image sequences default to 1000 ms per image when `frame_duration_ms` is omitted.
+
+Opening audio tracks must reference packed assets with `asset_type` `bgm`, `sfx`, or `voice` and an `audio/*` MIME type. Supported baseline formats are WAV, MP3, and FLAC; OGG and M4A remain supported when the target WebView can decode them.
 
 ## Validation
 

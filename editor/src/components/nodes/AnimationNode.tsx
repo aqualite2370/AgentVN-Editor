@@ -15,7 +15,7 @@ export function AnimationNode({ id, data, selected }: NodeProps<EditorNode>) {
       <Handle id="default" type="target" position={Position.Top} />
       <header><span className="node-kicker">旧版独立动画节点</span><strong>{animationTitle}</strong></header>
       <p>{animationSummary}</p>
-      <button
+      <button data-help-key="editor.control"
         type="button"
         className="legacy-animation-convert-button"
         onClick={(event) => {

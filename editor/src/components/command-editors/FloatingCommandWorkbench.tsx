@@ -1,3 +1,4 @@
+import { NumberInput } from "../common/NumberInput";
 import {
   BookOpenText,
   Clapperboard,
@@ -9,27 +10,39 @@ import {
   MessageSquareText,
   Minus,
   Repeat2,
+  RotateCcw,
   MonitorPlay,
+  Move3d,
   Music2,
   ScanSearch,
   Sparkles,
   Volume2,
   WandSparkles,
+  Images,
+  ListPlus,
   X,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
 import type { BgmAction, GameCommand, GameCommandType } from "../../types/commands";
 import type { CharacterSpriteAnimationConfig } from "../../../../shared/animation/characterAnimation";
 import { compileCharacterAnimation, defaultCharacterAnimationConfig } from "../../../../shared/animation/characterAnimation";
+import { DEFAULT_BGM_FADE_MS } from "../../../../shared/cartridge/bgmTransition";
+import { sanitizeSpriteOffsetX, sanitizeSpriteOffsetY } from "../../../../shared/cartridge/spritePlacement";
+import { DEFAULT_SPRITE_SCALE, sanitizeSpriteScale, spriteScalePercent } from "../../../../shared/cartridge/spriteScale";
 import { commandLabels, defaultCommand } from "../../utils/commandTools";
 import { characterIdFromSpriteTarget, collectCharacterIdsFromNodes, spriteTargetForCharacter } from "../../utils/characterReferences";
 import { useEditorStore } from "../../store/editorStore";
+import { useProjectStore } from "../../store/projectStore";
+import { applySpritePlacementToNodes, type SpritePlacementScope } from "../../utils/spritePlacementApply";
 import { CharacterAnimationControls } from "./CharacterAnimationControls";
-import { SpriteScaleControl } from "./SpriteScaleControl";
+import { SpritePlacementStudioDialog } from "./SpritePlacementStudioDialog";
+import { resolveCharacterSpriteLayout } from "../../utils/spritePlacementApply";
 import { AssetPicker } from "../common/AssetPicker";
 import { reportFrontendError } from "../../../../shared/logging/frontendErrorLogger";
 import { RichSelect } from "../common/RichSelect";
+import { inspectEditorAnimationAsset } from "../../animation/animationAsset";
+import type { AssetRef } from "../../types/assets";
 
 interface WorkbenchRect {
   x: number;
@@ -41,8 +54,15 @@ interface WorkbenchRect {
 interface WorkbenchGroup {
   id: string;
   title: string;
-  description: string;
   types: GameCommandType[];
+}
+
+interface InsertPopoverPosition {
+  top?: number;
+  bottom?: number;
+  left: number;
+  width: number;
+  placement: "top" | "bottom";
 }
 
 const storageKey = "agentvn.commandWorkbenchRect.layoutV3";
@@ -69,31 +89,31 @@ const workbenchGroups: WorkbenchGroup[] = [
   {
     id: "narrative",
     title: "文本叙事",
-    description: "对白与旁白，负责把剧情真正说出来。",
     types: ["dialog", "narration", "hide_dialog"],
   },
   {
     id: "visuals",
     title: "画面角色",
-    description: "背景、立绘与角色站位相关的表现。",
     types: ["background", "show_image", "video", "sprite"],
   },
   {
     id: "branching",
     title: "分支状态",
-    description: "选项和状态修改，用来推动条件与分支。",
     types: ["choice", "state_update", "conditional_jump", "jump"],
   },
   {
     id: "audio",
     title: "音频节奏",
-    description: "音乐、音效与停顿，决定节奏和氛围。",
     types: ["bgm", "sfx", "wait"],
+  },
+  {
+    id: "gallery",
+    title: "画廊",
+    types: ["gallery_anchor"],
   },
   {
     id: "performance",
     title: "演出镜头",
-    description: "动画和镜头效果，适合转场与强调。",
     types: ["animation", "camera"],
   },
 ];
@@ -132,6 +152,10 @@ function commandIcon(type: GameCommandType) {
       return Clapperboard;
     case "wait":
       return Hourglass;
+    case "gallery_anchor":
+      return Images;
+    case "rollback":
+      return RotateCcw;
   }
 }
 
@@ -214,41 +238,37 @@ function quickPanelTitle(type: GameCommandType): string {
   return commandLabels[type];
 }
 
-function quickPanelDescription(type: GameCommandType): string {
-  switch (type) {
-    case "bgm":
-      return "先选择音乐素材和播放方式，再一键加进场景队列。";
-    case "animation":
-      return "先选择动画素材和作用目标，后续再到命令卡里细调参数。";
-    case "show_image":
-      return "选择关键物品、线索、照片或信件图片，播放时会聚焦展示并等待玩家点击。";
-    case "hide_dialog":
-      return "隐藏当前对白或旁白框并继续播放，适合在等待、运镜或纯画面演出前使用。";
-    case "camera":
-      return "打开运镜工作室，在真实场景里调整构图、时长和演出节奏。";
-    default:
-      return "这个类型会以默认参数添加到场景末尾，添加后可继续展开卡片细调。";
-  }
-}
-
 export function FloatingCommandWorkbench({
   onAdd,
+  onInsert,
+  sceneId = "",
+  commands = [],
   onOpenCameraStudio,
   onClose,
   onMinimize,
   isClosing = false,
+  requestedCommand,
 }: {
   onAdd: (command: GameCommand) => void;
+  onInsert?: (command: GameCommand, afterIndex: number) => void;
+  sceneId?: string;
+  commands?: GameCommand[];
   onOpenCameraStudio?: () => void;
   onClose?: () => void;
   onMinimize?: () => void;
   isClosing?: boolean;
+  requestedCommand?: { sceneId: string; type: GameCommandType; characterId?: string; nonce: number };
 }) {
   const nodes = useEditorStore((state) => state.nodes);
+  const setNodes = useEditorStore((state) => state.setNodes);
+  const setNotice = useEditorStore((state) => state.setNotice);
+  const characterSpriteLayouts = useProjectStore((state) => state.settings.characterSpriteLayouts);
+  const characterDisplayNames = useProjectStore((state) => state.settings.characterDisplayNames);
   const characterIds = useMemo(() => collectCharacterIdsFromNodes(nodes), [nodes]);
   const [rect, setRect] = useState(loadRect);
-  const [commandType, setCommandType] = useState<GameCommandType>("bgm");
-  const [displayType, setDisplayType] = useState<GameCommandType>("bgm");
+  const initialType = requestedCommand?.sceneId === sceneId ? requestedCommand.type : "bgm";
+  const [commandType, setCommandType] = useState<GameCommandType>(initialType);
+  const [displayType, setDisplayType] = useState<GameCommandType>(initialType);
   const [transitionPhase, setTransitionPhase] = useState<"idle" | "leaving" | "entering">("entering");
   const [detailMorphPhase, setDetailMorphPhase] = useState<"idle" | "morphing" | "settled">("idle");
   const [pressedType, setPressedType] = useState<GameCommandType | null>(null);
@@ -256,24 +276,65 @@ export function FloatingCommandWorkbench({
   const [closeRequested, setCloseRequested] = useState(false);
   const [bgmId, setBgmId] = useState("");
   const [bgmAction, setBgmAction] = useState<BgmAction>("play");
+  const [bgmFadeMs, setBgmFadeMs] = useState(DEFAULT_BGM_FADE_MS);
   const [showImageId, setShowImageId] = useState("");
   const [showImageFit, setShowImageFit] = useState<"contain" | "cover" | "stretch">("contain");
-  const [spriteCharacterId, setSpriteCharacterId] = useState("alice");
+  const [spriteCharacterId, setSpriteCharacterId] = useState(
+    requestedCommand?.sceneId === sceneId ? requestedCommand.characterId || "alice" : "alice",
+  );
   const [spriteAssetId, setSpriteAssetId] = useState("");
   const [spritePosition, setSpritePosition] = useState("center");
+  const [spriteOffsetX, setSpriteOffsetX] = useState(0);
+  const [spriteOffsetY, setSpriteOffsetY] = useState(0);
   const [spriteVisible, setSpriteVisible] = useState(true);
   const [spriteScale, setSpriteScale] = useState<number | null>(null);
+  const [spritePlacementOpen, setSpritePlacementOpen] = useState(false);
   const [spriteAnimationConfig, setSpriteAnimationConfig] = useState<CharacterSpriteAnimationConfig>(() => defaultCharacterAnimationConfig(true));
+  const [spriteInheritsAnimation, setSpriteInheritsAnimation] = useState(true);
+  const spriteAnimationDefaults = useProjectStore(state => state.settings.spriteAnimationDefaults);
   const [animationId, setAnimationId] = useState("");
+  const [animationAssetPending, setAnimationAssetPending] = useState(false);
+  const [animationAssetError, setAnimationAssetError] = useState<string>();
+  const animationSelectionGeneration = useRef(0);
+  useEffect(() => () => { ++animationSelectionGeneration.current; }, []);
+  async function selectAnimationAsset(id: string, asset?: AssetRef) {
+    const owner = ++animationSelectionGeneration.current;
+    setAnimationAssetError(undefined);
+    setAnimationAssetPending(false);
+    if (!id) { setAnimationId(""); return; }
+    if (!asset) { setAnimationAssetError("找不到所选动画素材。"); return; }
+    setAnimationAssetPending(true);
+    try {
+      await inspectEditorAnimationAsset(asset);
+      if (owner === animationSelectionGeneration.current) setAnimationId(id);
+    } catch (error) {
+      if (owner === animationSelectionGeneration.current)
+        setAnimationAssetError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (owner === animationSelectionGeneration.current) setAnimationAssetPending(false);
+    }
+  }
   const [animationTarget, setAnimationTarget] = useState("sprite:alice");
   const [animationConfig, setAnimationConfig] = useState<CharacterSpriteAnimationConfig>(() => ({ ...defaultCharacterAnimationConfig(true), kind: "tween" }));
-  const transitionTimerRef = useRef<number>();
-  const pressTimerRef = useRef<number>();
-  const pulseTimerRef = useRef<number>();
+  const [insertPopoverOpen, setInsertPopoverOpen] = useState(false);
+  const [insertAfterInput, setInsertAfterInput] = useState("");
+  const [insertError, setInsertError] = useState("");
+  const [insertPopoverPosition, setInsertPopoverPosition] = useState<InsertPopoverPosition>({
+    top: 0,
+    left: 0,
+    width: 280,
+    placement: "bottom",
+  });
+  const transitionTimerRef = useRef<number | undefined>(undefined);
+  const pressTimerRef = useRef<number | undefined>(undefined);
+  const pulseTimerRef = useRef<number | undefined>(undefined);
   const detailCardRef = useRef<HTMLElement>(null);
   const previousDetailRectRef = useRef<DOMRect | null>(null);
   const detailMorphRef = useRef<Animation | null>(null);
   const detailMorphSettleTimerRef = useRef<number | null>(null);
+  const insertTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const insertPopoverRef = useRef<HTMLElement | null>(null);
+  const insertInputRef = useRef<HTMLInputElement | null>(null);
   const prefersReducedMotion = useMemo(
     () => typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches,
     []
@@ -282,6 +343,49 @@ export function FloatingCommandWorkbench({
   useEffect(() => {
     window.localStorage.setItem(storageKey, JSON.stringify(rect));
   }, [rect]);
+
+  useEffect(() => {
+    const layout = resolveCharacterSpriteLayout(spriteCharacterId, {
+      characterDisplayNames,
+      characterSpriteLayouts,
+    });
+    if (layout) {
+      setSpritePosition(layout.position || "center");
+      setSpriteOffsetX(layout.offset_x);
+      setSpriteOffsetY(layout.offset_y);
+      setSpriteScale(layout.scale);
+      return;
+    }
+    setSpritePosition("center");
+    setSpriteOffsetX(0);
+    setSpriteOffsetY(0);
+    setSpriteScale(null);
+  }, [characterDisplayNames, characterSpriteLayouts, spriteCharacterId]);
+
+  function updateInsertPopoverPosition() {
+    const trigger = insertTriggerRef.current;
+    if (!trigger) return;
+    const triggerRect = trigger.getBoundingClientRect();
+    const viewportGap = 12;
+    const gap = 8;
+    const width = Math.min(320, Math.max(260, window.innerWidth - viewportGap * 2));
+    const belowSpace = window.innerHeight - triggerRect.bottom - viewportGap;
+    const aboveSpace = triggerRect.top - viewportGap;
+    const placement: InsertPopoverPosition["placement"] = belowSpace < 220 && aboveSpace > belowSpace ? "top" : "bottom";
+    const top = placement === "bottom" ? Math.min(window.innerHeight - viewportGap - 1, triggerRect.bottom + gap) : undefined;
+    const bottom = placement === "top" ? Math.max(viewportGap, window.innerHeight - triggerRect.top + gap) : undefined;
+    const left = Math.min(
+      Math.max(viewportGap, triggerRect.right - width),
+      Math.max(viewportGap, window.innerWidth - width - viewportGap),
+    );
+    setInsertPopoverPosition({ top, bottom, left, width, placement });
+  }
+
+  function closeInsertPopover() {
+    setInsertPopoverOpen(false);
+    setInsertAfterInput("");
+    setInsertError("");
+  }
 
   useEffect(() => {
     const handleResize = () => setRect((current) => clampRect(current));
@@ -297,6 +401,35 @@ export function FloatingCommandWorkbench({
       observer?.disconnect();
     };
   }, []);
+
+  useLayoutEffect(() => {
+    if (!insertPopoverOpen) return;
+    updateInsertPopoverPosition();
+  }, [insertPopoverOpen, commands.length]);
+
+  useEffect(() => {
+    if (!insertPopoverOpen) return;
+    const focusTimer = window.requestAnimationFrame(() => insertInputRef.current?.focus());
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (insertTriggerRef.current?.contains(target) || insertPopoverRef.current?.contains(target)) return;
+      closeInsertPopover();
+    };
+    const handleViewportChange = () => updateInsertPopoverPosition();
+    document.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("resize", handleViewportChange);
+    window.addEventListener("scroll", handleViewportChange, true);
+    return () => {
+      window.cancelAnimationFrame(focusTimer);
+      document.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("resize", handleViewportChange);
+      window.removeEventListener("scroll", handleViewportChange, true);
+    };
+  }, [insertPopoverOpen]);
+
+  useEffect(() => {
+    if (commands.length === 0 || commandType === "camera") closeInsertPopover();
+  }, [commands.length, commandType]);
 
   useEffect(() => {
     return () => {
@@ -442,7 +575,7 @@ export function FloatingCommandWorkbench({
 
   function buildCommand(): GameCommand {
     if (commandType === "bgm") {
-      return { type: "bgm", bgm_id: bgmId || null, action: bgmAction, volume: 0.8, fade_ms: 500 };
+      return { type: "bgm", bgm_id: bgmId || null, action: bgmAction, volume: 0.8, fade_ms: bgmFadeMs };
     }
     if (commandType === "show_image") {
       return {
@@ -460,21 +593,25 @@ export function FloatingCommandWorkbench({
         character_id: spriteCharacterId.trim() || "alice",
         sprite_id: spriteAssetId.trim(),
         position: spritePosition.trim() || "center",
+        offset_x: spriteOffsetX,
+        offset_y: spriteOffsetY,
         animation: "",
         animation_display_name: spriteAnimationConfig.display_name ?? "",
         animation_config: { ...spriteAnimationConfig, phase: spriteVisible ? spriteAnimationConfig.phase : "exit" },
+        animation_source: spriteInheritsAnimation ? "project" : "manual",
         scale: spriteScale,
         visible: spriteVisible,
       };
     }
     if (commandType === "animation") {
-      const compiled = compileCharacterAnimation(animationConfig, null, null, true);
+      const compiled = animationId ? null : compileCharacterAnimation(animationConfig, null, null, true);
       return {
         type: "animation",
-        animation_id: animationId.trim(),
+        animation_id: animationId.trim() || "custom",
+        ...(animationId ? { animation_asset_id: animationId } : {}),
         animation_display_name: animationConfig.display_name ?? "",
         target: animationTarget.trim() || spriteTargetForCharacter("selected"),
-        params: compiled?.params ?? { duration: 500 },
+        params: animationId ? {} : compiled?.params ?? { duration: 500 },
         blocking: compiled?.blocking ?? true,
       };
     }
@@ -505,6 +642,13 @@ export function FloatingCommandWorkbench({
     }, 90);
   }
 
+  useEffect(() => {
+    if (!requestedCommand || requestedCommand.sceneId !== sceneId) return;
+    handleTypeSelect(requestedCommand.type);
+    if (requestedCommand.characterId && requestedCommand.type === "sprite")
+      setSpriteCharacterId(requestedCommand.characterId);
+  }, [requestedCommand, sceneId]);
+
   function requestMinimize() {
     if (closeRequested) return;
     (onMinimize ?? onClose)?.();
@@ -516,11 +660,33 @@ export function FloatingCommandWorkbench({
   }
 
   function submitCommand() {
+    if (commandType === "animation" && (animationAssetPending || animationAssetError)) return;
     if (commandType === "camera" && onOpenCameraStudio) {
       onOpenCameraStudio();
       return;
     }
     onAdd(buildCommand());
+  }
+
+  function openInsertPopover() {
+    if (!onInsert || commands.length === 0 || commandType === "camera") return;
+    setInsertAfterInput("");
+    setInsertError("");
+    setInsertPopoverOpen(true);
+  }
+
+  function submitInsert(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
+    if (!onInsert) return;
+    if (commandType === "animation" && (animationAssetPending || animationAssetError)) return;
+    const afterIndex = Number(insertAfterInput);
+    if (!Number.isInteger(afterIndex) || afterIndex < 1 || afterIndex > commands.length) {
+      setInsertError(`请输入 1 到 ${commands.length} 之间的整数序号`);
+      insertInputRef.current?.focus();
+      return;
+    }
+    onInsert(buildCommand(), afterIndex);
+    closeInsertPopover();
   }
 
   function renderQuickFields() {
@@ -531,16 +697,18 @@ export function FloatingCommandWorkbench({
           <strong>
             <Music2 size={15} /> 背景音乐
           </strong>
-          <AssetPicker
-            label="背景音乐素材"
-            field="bgm_id"
-            value={bgmId}
-            allowedTypes={["bgm"]}
-            helpKey="command.bgm.bgmId"
-            emptyLabel="暂无可用背景音乐素材"
-            variant="popover"
-            onChange={setBgmId}
-          />
+          {bgmAction === "play" && (
+            <AssetPicker
+              label="背景音乐素材"
+              field="bgm_id"
+              value={bgmId}
+              allowedTypes={["bgm"]}
+              helpKey="command.bgm.bgmId"
+              emptyLabel="暂无可用背景音乐素材"
+              variant="popover"
+              onChange={setBgmId}
+            />
+          )}
           <label>
             播放动作
             <RichSelect
@@ -548,12 +716,41 @@ export function FloatingCommandWorkbench({
               options={[
                 { value: "play", label: "播放" },
                 { value: "stop", label: "停止" },
-                { value: "fade", label: "淡入淡出" },
               ]}
               helpKey="command.bgm.action"
               onChange={(nextAction) => setBgmAction(nextAction as BgmAction)}
             />
           </label>
+          <label>
+            {bgmAction === "play" ? "播放效果" : "停止效果"}
+            <RichSelect
+              value={bgmFadeMs > 0 ? "fade" : "instant"}
+              options={bgmAction === "play"
+                ? [
+                    { value: "fade", label: "淡入" },
+                    { value: "instant", label: "立即播放" },
+                  ]
+                : [
+                    { value: "fade", label: "淡出" },
+                    { value: "instant", label: "立即停止" },
+                  ]}
+              helpKey="command.bgm.fadeMs"
+              onChange={(effect) => setBgmFadeMs(effect === "fade" ? (bgmFadeMs || DEFAULT_BGM_FADE_MS) : 0)}
+            />
+          </label>
+          {bgmFadeMs > 0 && (
+            <label>
+              {bgmAction === "play" ? "淡入时长（毫秒）" : "淡出时长（毫秒）"}
+              <NumberInput
+                type="number"
+                min="0"
+                step="100"
+                value={bgmFadeMs}
+                data-help-key="command.bgm.fadeMs"
+                onChange={(event) => setBgmFadeMs(Math.max(0, Number(event.target.value)))}
+              />
+            </label>
+          )}
         </div>
       );
     }
@@ -641,14 +838,31 @@ export function FloatingCommandWorkbench({
               显示立绘
             </label>
           </div>
-          <SpriteScaleControl compact characterId={spriteCharacterId} value={spriteScale} onChange={setSpriteScale} />
+          <section className="sprite-placement-summary" aria-label="立绘位置与缩放">
+            <div>
+              <strong>立绘位置与缩放</strong>
+              <span>
+                {spritePosition || "center"} · X {sanitizeSpriteOffsetX(spriteOffsetX).toFixed(1)}%
+                {" · "}Y {sanitizeSpriteOffsetY(spriteOffsetY).toFixed(1)}%
+                {" · "}{spriteScalePercent(sanitizeSpriteScale(spriteScale, DEFAULT_SPRITE_SCALE))}
+              </span>
+            </div>
+            <button type="button" data-help-key="command.sprite.placementStudio" onClick={() => setSpritePlacementOpen(true)}>
+              <Move3d size={16} />
+              调整立绘
+            </button>
+          </section>
+          <label className="check-row"><input type="checkbox" checked={spriteInheritsAnimation}
+            aria-label="继承全局立绘动画" onChange={event => setSpriteInheritsAnimation(event.target.checked)} />
+            继承全局{spriteVisible ? "入场" : "退场"}动画
+          </label>
           <CharacterAnimationControls
-            value={spriteAnimationConfig}
+            value={(spriteInheritsAnimation ? spriteAnimationDefaults?.[spriteVisible ? "enter" : "exit"] : undefined) ?? spriteAnimationConfig}
             visible={spriteVisible}
             compact
             studioTitle="立绘动效工作室"
             targetLabel={`${spriteCharacterId || "角色"} 立绘`}
-            onChange={(next) => setSpriteAnimationConfig(next ?? { ...defaultCharacterAnimationConfig(spriteVisible), kind: "none" })}
+            onChange={(next) => { setSpriteInheritsAnimation(false); setSpriteAnimationConfig(next ?? { ...defaultCharacterAnimationConfig(spriteVisible), kind: "none" }); }}
           />
         </div>
       );
@@ -663,14 +877,16 @@ export function FloatingCommandWorkbench({
           </strong>
           <AssetPicker
             label="演出动画素材"
-            field="animation_id"
+            field="animation_asset_id"
             value={animationId}
             allowedTypes={["animation"]}
             helpKey="command.animation.animationId"
             emptyLabel="暂无可用动画素材"
             variant="popover"
-            onChange={setAnimationId}
+            onChange={(id, asset) => void selectAnimationAsset(id, asset)}
           />
+          {animationAssetPending && <span role="status">正在检查动画素材…</span>}
+          {animationAssetError && <span role="alert">{animationAssetError}</span>}
           <label>
             动画目标
             <input value={animationTarget} data-help-key="command.animation.target" onChange={(event) => setAnimationTarget(event.target.value)} />
@@ -690,13 +906,13 @@ export function FloatingCommandWorkbench({
               <input data-help-key="command.animation.spriteTargetCustom" value={spriteTargetId} onChange={(event) => setAnimationTarget(spriteTargetForCharacter(event.target.value))} />
             </label>
           </div>
-          <CharacterAnimationControls
+          {!animationId && <CharacterAnimationControls
             value={animationConfig}
             compact
             studioTitle="演出动效工作室"
             targetLabel={animationTarget || "动画目标"}
             onChange={(next) => setAnimationConfig(next ?? { ...defaultCharacterAnimationConfig(true), kind: "none" })}
-          />
+          />}
         </div>
       );
     }
@@ -706,11 +922,10 @@ export function FloatingCommandWorkbench({
           <strong>
             <Clapperboard size={15} /> 运镜
           </strong>
-          <p className="workbench-note">工作室会读取当前场景末尾继承到的机位。只有点击“应用运镜”后才会写入场景。</p>
         </div>
       );
     }
-    return <p className="workbench-note">{quickPanelDescription(displayType)}</p>;
+    return null;
   }
 
   const detailHasSettings = displayType === "bgm" || displayType === "show_image" || displayType === "sprite" || displayType === "animation" || displayType === "camera";
@@ -777,7 +992,6 @@ export function FloatingCommandWorkbench({
               >
                 <div className="workbench-category-head">
                   <strong>{group.title}</strong>
-                  <small>{group.description}</small>
                 </div>
                 <div className="workbench-type-grid">
                   {group.types.map((type) => {
@@ -807,17 +1021,140 @@ export function FloatingCommandWorkbench({
         >
           <header>
             <strong>{quickPanelTitle(displayType)}</strong>
-            <small>{quickPanelDescription(displayType)}</small>
           </header>
           <div className="workbench-detail-content">{renderQuickFields()}</div>
         </section>
-        <button type="button" className="workbench-submit" data-help-key="workbench.addCommand" onClick={submitCommand}>
-          {commandType === "camera" ? "打开运镜工作室" : "添加到场景末尾"}
-        </button>
+        <div className="workbench-submit-actions">
+          <button type="button" className="workbench-submit" data-testid="workbench-add-command" data-help-key="workbench.addCommand" disabled={commandType === "animation" && (animationAssetPending || Boolean(animationAssetError))} onClick={submitCommand}>
+            {commandType === "camera" ? "打开运镜工作室" : "添加到场景末尾"}
+          </button>
+          <button
+            ref={insertTriggerRef}
+            type="button"
+            className="workbench-submit workbench-insert-trigger"
+            data-testid="workbench-insert-command"
+            data-help-key="workbench.insertCommand"
+            aria-haspopup="dialog"
+            aria-expanded={insertPopoverOpen}
+            disabled={!onInsert || commands.length === 0 || commandType === "camera" || (commandType === "animation" && (animationAssetPending || Boolean(animationAssetError)))}
+            title={commandType === "camera" ? "运镜请在事件列表中用＋运镜选择位置" : undefined}
+            onClick={insertPopoverOpen ? closeInsertPopover : openInsertPopover}
+          >
+            <ListPlus size={16} aria-hidden="true" />
+            插入到场景
+          </button>
+        </div>
       </div>
       <span className="floating-command-resize" data-help-key="workbench.resize" onPointerDown={startResize} />
     </aside>
   );
 
-  return createPortal(workbench, document.body);
+  return createPortal(
+    <>
+      {workbench}
+      {insertPopoverOpen && createPortal(
+        <section
+          ref={insertPopoverRef}
+          className="workbench-insert-popover"
+          role="dialog"
+          aria-labelledby="workbench-insert-title"
+          aria-describedby="workbench-insert-description"
+          data-placement={insertPopoverPosition.placement}
+          style={{
+            top: insertPopoverPosition.top,
+            bottom: insertPopoverPosition.bottom,
+            left: insertPopoverPosition.left,
+            width: insertPopoverPosition.width,
+          }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <div className="workbench-insert-popover-copy">
+            <strong id="workbench-insert-title">
+              <ListPlus size={16} aria-hidden="true" /> 插入到指定事件之后
+            </strong>
+            <span id="workbench-insert-description">输入 1～{commands.length}，插入到对应事件后面。</span>
+          </div>
+          <form className="workbench-insert-form" noValidate onSubmit={submitInsert}>
+            <label htmlFor="workbench-insert-index">事件序号</label>
+            <NumberInput data-help-key="editor.control"
+              ref={insertInputRef}
+              id="workbench-insert-index"
+              type="number"
+              inputMode="numeric"
+              min={1}
+              max={commands.length}
+              step={1}
+              value={insertAfterInput}
+              aria-label="插入到第几个事件之后"
+              aria-invalid={insertError ? "true" : "false"}
+              aria-describedby={insertError ? "workbench-insert-error" : "workbench-insert-description"}
+              onChange={(event) => {
+                setInsertAfterInput(event.target.value);
+                if (insertError) setInsertError("");
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  closeInsertPopover();
+                }
+              }}
+            />
+            <div className="workbench-insert-actions">
+              <button data-help-key="editor.control" type="button" onClick={closeInsertPopover}>取消</button>
+              <button data-help-key="editor.control" type="submit" className="workbench-insert-confirm">确认插入</button>
+            </div>
+          </form>
+          {insertError && <p id="workbench-insert-error" className="workbench-insert-error" role="alert">{insertError}</p>}
+        </section>,
+        document.body,
+      )}
+      {spritePlacementOpen && (
+        <SpritePlacementStudioDialog
+          command={{
+            type: "sprite",
+            character_id: spriteCharacterId.trim() || "alice",
+            sprite_id: spriteAssetId.trim(),
+            position: spritePosition.trim() || "center",
+            offset_x: spriteOffsetX,
+            offset_y: spriteOffsetY,
+            scale: spriteScale,
+            visible: spriteVisible,
+          }}
+          commands={commands}
+          commandIndex={commands.length}
+          sceneId={sceneId}
+          onClose={() => setSpritePlacementOpen(false)}
+          onApply={(layout, scope: SpritePlacementScope) => {
+            const result = sceneId
+              ? applySpritePlacementToNodes(nodes, sceneId, spriteCharacterId, layout, scope, useProjectStore.getState().settings)
+              : undefined;
+            if (result && result.changedCommands > 0) {
+              setNodes(result.nodes);
+            }
+            setSpritePosition(layout.position || "center");
+            setSpriteOffsetX(layout.offset_x);
+            setSpriteOffsetY(layout.offset_y);
+            setSpriteScale(layout.scale);
+            if (scope === "character") {
+              const ids = result?.matchingCharacterIds.length ? result.matchingCharacterIds : [spriteCharacterId];
+              ids.filter(Boolean).forEach((characterId) => useProjectStore.getState().setCharacterSpriteLayout(characterId, layout));
+            }
+            const targetLabel = result?.targetDisplayName || spriteCharacterId || "当前角色";
+            setNotice({
+              message: scope === "character"
+                ? `已应用到全部「${targetLabel}」立绘。`
+                : `已应用到当前场景的「${targetLabel}」立绘。`,
+              tone: "success",
+              source: "立绘位置与缩放",
+              detail: scope === "character"
+                ? `更新 ${Math.max(1, result?.changedCommands ?? 1)} 条命令，并保存为角色默认布局。`
+                : `更新 ${Math.max(1, result?.changedCommands ?? 1)} 条命令。`,
+            });
+            setSpritePlacementOpen(false);
+          }}
+        />
+      )}
+    </>,
+    document.body,
+  );
 }

@@ -1,0 +1,231 @@
+// Local, fail-closed adaptation of the pinned Tauri Android PluginManager.
+// Never edits Cargo's registry. The generated Kotlin replaces exactly one
+// source file in this build; Gradle and the JVM regression use this same code.
+import java.security.MessageDigest
+
+String agentvnPluginManager(String source) {
+    def digest = MessageDigest.getInstance("SHA-256").digest(source.getBytes("UTF-8")).encodeHex().toString()
+    if (digest != "2b0ef3b8cc92182858456f4b504330d61d23a3fe62a2e4e08c8f5c09cbdb4312") {
+        throw new IllegalStateException("Unsupported Tauri PluginManager source: " + digest)
+    }
+    def start = source.indexOf("  fun onActivityCreate(activity: AppCompatActivity) {")
+    def end = source.indexOf("  fun onNewIntent", start)
+    if (start < 0 || end < 0) throw new IllegalStateException("Missing activity creation boundary")
+    def replacement = '''
+  private var destroyedActivity: AppCompatActivity? = null
+
+  fun onActivityCreate(activity: AppCompatActivity) {
+    if (::activity.isInitialized && this.activity === activity) return
+    val previous = if (::activity.isInitialized) this.activity else null
+    // Construct every replacement before replacing the dispatch table. A
+    // broken constructor cannot silently leave a partially replaced map.
+    val replacements = plugins.mapValues { (_, handle) ->
+      val instance = handle.instance.javaClass.getConstructor(android.app.Activity::class.java)
+        .newInstance(activity) as Plugin
+      PluginHandle(this, handle.name, instance, handle.config, handle.jsonMapper)
+    }
+    val nextStart = activity.registerForActivityResult(
+      ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+      if (this.activity === activity && destroyedActivity !== activity) {
+        startActivityForResultCallback?.onResult(result)
+      }
+    }
+    val nextSender = activity.registerForActivityResult(
+      ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+      if (this.activity === activity && destroyedActivity !== activity) {
+        startIntentSenderForResultCallback?.onResult(result)
+      }
+    }
+    val nextPermissions = activity.registerForActivityResult(
+      ActivityResultContracts.RequestMultiplePermissions()
+    ) { result ->
+      if (this.activity === activity && destroyedActivity !== activity) {
+        requestPermissionsCallback?.onResult(result)
+      }
+    }
+    if (previous != null && destroyedActivity !== previous) {
+      for (handle in plugins.values) handle.instance.triggerOnDestroy(previous)
+    }
+    requestPermissionsCallback = null
+    startActivityForResultCallback = null
+    startIntentSenderForResultCallback = null
+    this.activity = activity
+    destroyedActivity = null
+    startActivityForResultLauncher = nextStart
+    startIntentSenderForResultLauncher = nextSender
+    requestPermissionsLauncher = nextPermissions
+    plugins.clear()
+    plugins.putAll(replacements)
+  }
+
+'''
+    source = source.substring(0, start) + replacement + source.substring(end)
+    def oldDestroy = '''  fun onDestroy(activity: AppCompatActivity) {
+    for (plugin in plugins.values) {
+      plugin.instance.triggerOnDestroy(activity)
+    }
+  }'''
+    def newDestroy = '''  fun onDestroy(activity: AppCompatActivity) {
+    if (!::activity.isInitialized || this.activity !== activity || destroyedActivity === activity) return
+    destroyedActivity = activity
+    requestPermissionsCallback = null
+    startActivityForResultCallback = null
+    startIntentSenderForResultCallback = null
+    for (plugin in plugins.values) {
+      plugin.instance.triggerOnDestroy(activity)
+    }
+  }'''
+    if (!source.contains(oldDestroy)) throw new IllegalStateException("Missing activity destruction boundary")
+    source = source.replace(oldDestroy, newDestroy)
+    source = source.replace("  fun onRestart(activity: AppCompatActivity) {\n",
+        "  fun onRestart(activity: AppCompatActivity) {\n    if (this.activity !== activity || destroyedActivity === activity) return\n")
+    return source
+}
+
+// Gradle delegates this property to Settings; it is not a Groovy Binding
+// variable. Plain GroovyShell transform tests intentionally have no delegate.
+def agentvnGradle = null
+try {
+    agentvnGradle = getProperty("gradle")
+} catch (groovy.lang.MissingPropertyException ignored) {
+    // Only the standalone transformation harness lacks a Gradle owner.
+}
+if (agentvnGradle != null) {
+    def agentvnConfigured = false
+    agentvnGradle.beforeProject { project ->
+        if (project.path == ":tauri-android") {
+            project.plugins.withId("org.jetbrains.kotlin.android") {
+                project.afterEvaluate {
+                    def original = new File(project.projectDir, "src/main/java/app/tauri/plugin/PluginManager.kt")
+                    def generated = new File(rootProject.projectDir, "agentvn-runtime/generated/app/tauri/plugin/AgentVNPluginManager.kt")
+                    generated.parentFile.mkdirs()
+                    generated.setText(agentvnPluginManager(original.getText("UTF-8")), "UTF-8")
+                    def generatedRoot = new File(rootProject.projectDir, "agentvn-runtime/generated")
+                    def kotlinSources = project.extensions.getByName("kotlin").sourceSets.getByName("main").kotlin
+                    def javaSources = project.extensions.getByName("android").sourceSets.getByName("main").java
+                    for (sources in [kotlinSources, javaSources]) {
+                        sources.exclude("**/PluginManager.kt")
+                        sources.srcDir(generatedRoot)
+                    }
+                    // AGP's AndroidSourceDirectorySet is not a Gradle FileCollection.
+                    // Its filtered FileTree is exposed through sourceFiles.
+                    def declared = (kotlinSources.files + javaSources.sourceFiles.files).findAll {
+                        it.name in ["PluginManager.kt", "AgentVNPluginManager.kt"]
+                    }.toSet()
+                    if (declared != [generated].toSet()) {
+                        throw new IllegalStateException("PluginManager replacement is not the sole configured source: " + declared)
+                    }
+                    def evidence = new File(rootProject.projectDir, "agentvn-runtime/plugin-manager-source.json")
+                    evidence.setText(groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson([
+                        source: original.canonicalPath,
+                        sourceSha256: MessageDigest.getInstance("SHA-256").digest(original.bytes).encodeHex().toString(),
+                        generated: generated.canonicalPath,
+                        generatedSha256: MessageDigest.getInstance("SHA-256").digest(generated.bytes).encodeHex().toString(),
+                        declared: declared.collect { it.canonicalPath }
+                    ])), "UTF-8")
+                    // KGP also wires Android Java roots directly into Kotlin
+                    // compilation; source-set filters alone are insufficient.
+                    // Filter the actual compiler inputs without changing or
+                    // copying the upstream registry source.
+                    project.tasks.matching {
+                        it.name.startsWith("compile") && it.name.endsWith("Kotlin")
+                    }.configureEach { task ->
+                        task.exclude("**/PluginManager.kt")
+                        task.doFirst {
+                            def compilerInputs = task.sources.files.findAll {
+                                it.name in ["PluginManager.kt", "AgentVNPluginManager.kt"]
+                            }.toSet()
+                            // Test compilations have neither main source file.
+                            if (!compilerInputs.isEmpty()) {
+                                if (compilerInputs != [generated].toSet()) {
+                                    throw new IllegalStateException(
+                                        "PluginManager replacement is not the sole compiler input: " + compilerInputs)
+                                }
+                                new File(rootProject.projectDir,
+                                    "agentvn-runtime/compiler-" + task.name + ".json").setText(
+                                    groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson([
+                                        task: task.path,
+                                        declared: compilerInputs.collect { it.canonicalPath },
+                                        generatedSha256: MessageDigest.getInstance("SHA-256")
+                                            .digest(generated.bytes).encodeHex().toString()
+                                    ])), "UTF-8")
+                            }
+                        }
+                    }
+                    agentvnConfigured = true
+                }
+            }
+        }
+    }
+    agentvnGradle.projectsEvaluated {
+        if (!agentvnConfigured) {
+            throw new IllegalStateException(
+                "ANDROID_ACTIVITY_RESTORATION_NOT_CONFIGURED: expected :tauri-android Kotlin source replacement")
+        }
+        // Tauri 2.11.2's build script tracks its previous generated file, but
+        // not WRY_ANDROID_KOTLIN_FILES_OUT_DIR. A shared Cargo target can thus
+        // omit this file in a new Android workspace even though Wry correctly
+        // regenerates its own sources. Materialize the same pinned template
+        // locally; do not modify Cargo fingerprints or registry sources.
+        def appProject = agentvnGradle.rootProject.findProject(":app")
+        if (appProject != null) {
+            if (!appProject.plugins.hasPlugin("com.android.application")) {
+                throw new IllegalStateException("ANDROID_ACTIVITY_CODEGEN_NOT_CONFIGURED: expected Android application")
+            }
+            def packageName = appProject.extensions.getByName("android").namespace
+            if (!(packageName instanceof String) ||
+                !(packageName ==~ /[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+/)) {
+                throw new IllegalStateException("ANDROID_ACTIVITY_CODEGEN_PACKAGE_INVALID: " + packageName)
+            }
+            def tauriProject = agentvnGradle.rootProject.project(":tauri-android")
+            def template = new File(tauriProject.projectDir.parentFile, "android-codegen/TauriActivity.kt")
+            if (!template.isFile()) {
+                throw new IllegalStateException("ANDROID_ACTIVITY_CODEGEN_MISSING: " + template)
+            }
+            def templateSha = MessageDigest.getInstance("SHA-256").digest(template.bytes).encodeHex().toString()
+            if (templateSha != "7c14c42554e4bb4e9bab576307c85c2998e6b3f82397979c547294b26a9e7423") {
+                throw new IllegalStateException("ANDROID_ACTIVITY_CODEGEN_UNSUPPORTED: " + templateSha)
+            }
+            def generated = new File(appProject.projectDir,
+                "src/main/java/" + packageName.replace(".", "/") + "/generated/TauriActivity.kt")
+            def content = template.getText("UTF-8").replace("{{package}}", packageName)
+            generated.parentFile.mkdirs()
+            if (!generated.isFile() || generated.getText("UTF-8") != content) {
+                generated.setText(content, "UTF-8")
+            }
+            def generatedSha = MessageDigest.getInstance("SHA-256").digest(generated.bytes).encodeHex().toString()
+            def evidenceRoot = new File(agentvnGradle.rootProject.projectDir, "agentvn-runtime")
+            evidenceRoot.mkdirs()
+            new File(evidenceRoot, "tauri-codegen-source.json").setText(
+                groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson([
+                    source: template.canonicalPath, sourceSha256: templateSha,
+                    generated: generated.canonicalPath, generatedSha256: generatedSha,
+                    packageName: packageName
+                ])), "UTF-8")
+            appProject.tasks.matching {
+                it.name.startsWith("compile") && it.name.endsWith("Kotlin")
+            }.configureEach { task ->
+                task.doFirst {
+                    def declared = task.sources.files.findAll { it.name == "TauriActivity.kt" }.toSet()
+                    if (!declared.isEmpty()) {
+                        if (declared != [generated].toSet() ||
+                            generated.getText("UTF-8") != content) {
+                            throw new IllegalStateException(
+                                "ANDROID_ACTIVITY_CODEGEN_COMPILER_INPUT_INVALID: " + declared)
+                        }
+                        new File(evidenceRoot, "app-compiler-" + task.name + ".json").setText(
+                            groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson([
+                                task: task.path, declared: declared.collect { it.canonicalPath },
+                                generatedSha256: generatedSha, packageName: packageName
+                            ])), "UTF-8")
+                    } else if (!task.name.contains("Test")) {
+                        throw new IllegalStateException(
+                            "ANDROID_ACTIVITY_CODEGEN_COMPILER_INPUT_MISSING: " + task.path)
+                    }
+                }
+            }
+        }
+    }
+}

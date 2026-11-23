@@ -15,7 +15,7 @@ export type RuntimePreviewTransitionPhase =
   | "reloading";
 
 interface RuntimePreviewTransitionOptions {
-  containerRef: RefObject<HTMLElement>;
+  containerRef: RefObject<HTMLElement | null>;
   initialize: () => void | Promise<void>;
   requestFreezeFrame: () => string | undefined;
   pause: () => void;
@@ -45,10 +45,10 @@ export function useRuntimePreviewTransition({
   const tokenRef = useRef(0);
   const freezeRequestRef = useRef("");
   const settleRequestedRef = useRef(false);
-  const captureTimerRef = useRef<number>();
-  const settleTimerRef = useRef<number>();
-  const revealTimerRef = useRef<number>();
-  const geometryAnimationRef = useRef<Animation>();
+  const captureTimerRef = useRef<number | undefined>(undefined);
+  const settleTimerRef = useRef<number | undefined>(undefined);
+  const revealTimerRef = useRef<number | undefined>(undefined);
+  const geometryAnimationRef = useRef<Animation | undefined>(undefined);
   const initializeRef = useRef(initialize);
   const requestFreezeFrameRef = useRef(requestFreezeFrame);
   const pauseRef = useRef(pause);
@@ -177,6 +177,17 @@ export function useRuntimePreviewTransition({
     finishTransition();
   }, [beginTransition, finishTransition]);
 
+  const failTransition = useCallback(() => {
+    clearTimers();
+    geometryAnimationRef.current?.cancel();
+    geometryAnimationRef.current = undefined;
+    tokenRef.current += 1;
+    settleRequestedRef.current = false;
+    freezeRequestRef.current = "";
+    resumeRef.current();
+    updatePhase("ready");
+  }, [clearTimers, updatePhase]);
+
   const completeWithoutReload = useCallback(() => {
     settleRequestedRef.current = false;
     if (settleTimerRef.current !== undefined) window.clearTimeout(settleTimerRef.current);
@@ -212,6 +223,7 @@ export function useRuntimePreviewTransition({
     acceptFreezeFrame,
     markReady,
     forceReload,
+    failTransition,
     completeWithoutReload,
   };
 }

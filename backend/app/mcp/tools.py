@@ -11,10 +11,12 @@ from pydantic import BaseModel, ValidationError
 from app.core.errors import AIProviderError
 from app.ai.structured_normalization import normalize_structured_payload
 from app.models.memory import MemoryUpdate
+from app.models.assistant_creation import AssistantComponentDraftBatch
 from app.models.novel_import import (
     AdaptSceneResponse,
     NovelAiBranchSuggestionResponse,
     NovelAiChapterScenePlan,
+    NovelAiChapterSceneBatch,
     NovelAiChunkAnalysis,
     NovelAiChunkEntityIndex,
     NovelAiChunkSummary,
@@ -50,6 +52,15 @@ class AgentVNToolRegistry:
 
     def __init__(self) -> None:
         self._tools: tuple[AgentVNTool, ...] = (
+            AgentVNTool(
+                name="submit_assistant_component_draft",
+                description=(
+                    "Submit up to 16 bounded AgentVN component drafts and/or up to 8 label/geometry proposals "
+                    "for explicitly authorized existing layout elements for local validation and human review. "
+                    "This tool does not write to a project or execute markup."
+                ),
+                response_model=AssistantComponentDraftBatch,
+            ),
             AgentVNTool(
                 name="create_scene_beat",
                 description=(
@@ -129,6 +140,11 @@ class AgentVNToolRegistry:
                 name="plan_novel_chapter_scenes",
                 description="Plan validated visual-novel scenes for one imported novel chapter.",
                 response_model=NovelAiChapterScenePlan,
+            ),
+            AgentVNTool(
+                name="plan_novel_scene_batch",
+                description="Plan at most two bounded scenes from one authoritative chapter source batch; never return commands or duplicate source text.",
+                response_model=NovelAiChapterSceneBatch,
             ),
             AgentVNTool(
                 name="analyze_novel_conflicts",

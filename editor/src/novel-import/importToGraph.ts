@@ -3,6 +3,8 @@ import type { AdaptedScene } from "./types";
 import type { EditorNode } from "../types/nodes";
 import type { MemoryMode } from "../types/memory";
 import { buildPendingVisualAssetsForScene, ensureSceneHasBackgroundPlaceholder } from "../utils/assetAudit";
+import { normalizeNovelSceneForRuntime } from "./normalizeNovelSceneForRuntime";
+import { updateSourceMappingAfterEdit } from "./sourceMapping";
 
 export interface NovelImportLayout {
   importLineId: string;
@@ -47,7 +49,8 @@ export function adaptedSceneToNode(
   index: number,
   memoryMode: MemoryMode = "none",
 ): EditorNode {
-  const backgroundResult = ensureSceneHasBackgroundPlaceholder(adapted.scene_beat);
+  const sceneForGraph = normalizeNovelSceneForRuntime(adapted.scene_beat);
+  const backgroundResult = ensureSceneHasBackgroundPlaceholder(sceneForGraph);
   const scene = backgroundResult.scene;
   const nodeId = `novel_node_${layout.importLineId}_${scene.scene_id}`;
   return {
@@ -65,7 +68,7 @@ export function adaptedSceneToNode(
       editorMeta: {
         collapsedInspectorSections: [],
         source: "imported",
-        sourceMapping: adapted.source_mapping,
+        sourceMapping: updateSourceMappingAfterEdit(adapted.source_mapping, scene),
         needsReview: adapted.needs_review,
         importSessionId: layout.sessionId,
         importLineId: layout.importLineId,

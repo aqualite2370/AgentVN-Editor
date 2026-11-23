@@ -55,6 +55,8 @@ Export versions are selected by script capability:
 - Without structured camera `motion`, export `schema_version: "1.1.0"` and `manifest.runtime_version: "0.2.0"`.
 - With structured single-motion camera commands, export `schema_version: "1.2.0"` and `manifest.runtime_version: "0.3.0"`.
 - When any scene contains a structured camera `sequence`, export `schema_version: "1.3.0"` and `manifest.runtime_version: "0.4.0"`.
+- When a script uses centered narration (`narration_style: "centered"`), export `schema_version: "1.4.0"` and `manifest.runtime_version: "0.5.0"` so older players cannot silently fall back to the legacy narration panel.
+- When a script uses rollback author controls or non-default rollback configuration, export `schema_version: "1.5.0"` and `manifest.runtime_version: "0.6.0"`.
 - Legacy camera commands and `AnimationCommand(target: "camera")` do not raise the capability version. They keep their 0.2 whole-screen behavior.
 - Existing `1.0.0` scripts remain readable through the compatibility path.
 

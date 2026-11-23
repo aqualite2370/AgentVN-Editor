@@ -5,8 +5,10 @@ export type RuntimeMode = "library" | "preview" | "fixed";
 
 export interface LaunchConfig {
   mode: RuntimeMode;
+  presentationMode: "development" | "release";
   cartridgePath?: string;
   previewRoot?: string;
+  unlockAllGallery?: boolean;
 }
 
 interface RuntimeModeFile {
@@ -15,6 +17,10 @@ interface RuntimeModeFile {
 
 interface FixedOnlyFile {
   fixedOnly?: boolean;
+}
+
+interface ReleasePackageFile {
+  presentationMode?: string;
 }
 
 function normalizeMode(mode: string | undefined): RuntimeMode {
@@ -54,6 +60,19 @@ async function readFixedOnlyMarker(): Promise<boolean> {
   }
 }
 
+async function readReleasePackageMarker(): Promise<"development" | "release"> {
+  try {
+    const response = await fetch("/release-package.json", { cache: "no-store" });
+    if (!response.ok) return "development";
+    const marker = (await response.json()) as ReleasePackageFile;
+    return marker.presentationMode === "release" ? "release" : "development";
+  } catch {
+    return (import.meta.env.VITE_AGENTVN_RELEASE_PACKAGE as string | undefined) === "true"
+      ? "release"
+      : "development";
+  }
+}
+
 export async function getLaunchConfig(): Promise<LaunchConfig> {
   const params = new URLSearchParams(window.location.search);
   const queryMode = params.get("mode");
@@ -62,11 +81,13 @@ export async function getLaunchConfig(): Promise<LaunchConfig> {
   const buildFixedOnly = readBuildFixedOnlyMarker();
   const modeFromFile = await readRuntimeModeFile();
   const fixedOnly = await readFixedOnlyMarker();
+  const presentationMode = await readReleasePackageMarker();
   const fixedOnlyActive = (buildFixedOnly && buildMode !== "library") || (fixedOnly && modeFromFile !== "library");
 
   if (fixedOnlyActive) {
     return {
       mode: "fixed",
+      presentationMode,
       cartridgePath: params.get("cartridge") ?? undefined,
       previewRoot: params.get("previewRoot") ?? undefined,
     };
@@ -75,6 +96,8 @@ export async function getLaunchConfig(): Promise<LaunchConfig> {
   if (queryMode || legacyPreviewMode) {
     return {
       mode: legacyPreviewMode ? "preview" : normalizeMode(queryMode ?? undefined),
+      unlockAllGallery: (legacyPreviewMode || queryMode === "preview") && params.get("unlockAllGallery") === "1",
+      presentationMode: "development",
       cartridgePath: params.get("cartridge") ?? undefined,
       previewRoot: params.get("previewRoot") ?? undefined,
     };
@@ -85,8 +108,10 @@ export async function getLaunchConfig(): Promise<LaunchConfig> {
     if (config.mode !== "library" || config.cartridgePath) {
       return {
         mode: normalizeMode(config.mode),
+        presentationMode: config.presentationMode === "release" ? "release" : presentationMode,
         cartridgePath: config.cartridgePath,
         previewRoot: config.previewRoot,
+        unlockAllGallery: config.mode === "preview" && config.unlockAllGallery === true,
       };
     }
   }
@@ -94,6 +119,8 @@ export async function getLaunchConfig(): Promise<LaunchConfig> {
   if (modeFromFile) {
     return {
       mode: modeFromFile,
+      unlockAllGallery: modeFromFile === "preview" && params.get("unlockAllGallery") === "1",
+      presentationMode,
       cartridgePath: params.get("cartridge") ?? undefined,
       previewRoot: params.get("previewRoot") ?? undefined,
     };
@@ -102,6 +129,8 @@ export async function getLaunchConfig(): Promise<LaunchConfig> {
   if (buildMode) {
     return {
       mode: buildMode,
+      unlockAllGallery: buildMode === "preview" && params.get("unlockAllGallery") === "1",
+      presentationMode,
       cartridgePath: params.get("cartridge") ?? undefined,
       previewRoot: params.get("previewRoot") ?? undefined,
     };
@@ -111,13 +140,16 @@ export async function getLaunchConfig(): Promise<LaunchConfig> {
     const config = await invoke<LaunchConfig>("get_launch_config");
     return {
       mode: normalizeMode(config.mode),
+      presentationMode: config.presentationMode === "release" ? "release" : presentationMode,
       cartridgePath: config.cartridgePath,
       previewRoot: config.previewRoot,
+      unlockAllGallery: config.mode === "preview" && config.unlockAllGallery === true,
     };
   }
 
   return {
     mode: "library",
+    presentationMode,
     cartridgePath: params.get("cartridge") ?? undefined,
     previewRoot: params.get("previewRoot") ?? undefined,
   };

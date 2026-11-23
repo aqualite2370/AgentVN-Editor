@@ -9,6 +9,7 @@ import { putImportedAssetsInFolder } from "../../../utils/assetLibraryInteractio
 import { assetStudioAssetTypePresets } from "../../../asset-studio/defaults";
 import { requestAdvancedTools } from "../advancedToolsBridge";
 import { RichSelect } from "../../common/RichSelect";
+import { reportFrontendError } from "../../../../../shared/logging/frontendErrorLogger";
 
 interface AssetStudioSaveDialogProps {
   candidates: GeneratedAssetCandidate[];
@@ -135,6 +136,7 @@ export function AssetStudioSaveDialog({
         });
       }
     } catch (saveError) {
+      reportFrontendError("editor.asset-studio-save", saveError, { operation: "save-generated-asset", jobId });
       setError(saveError instanceof Error ? saveError.message : String(saveError));
     } finally {
       setSaving(false);

@@ -1,0 +1,303 @@
+.renpy-role-custom-control[data-renpy-role-custom="true"] {
+  width: var(--renpy-role-width) !important;
+  height: var(--renpy-role-height) !important;
+  min-width: min(var(--renpy-role-min-width, 0px), 100%) !important;
+  min-height: var(--renpy-role-min-height, 0px) !important;
+  max-width: 100% !important;
+  padding: var(--renpy-role-padding-y) var(--renpy-role-padding-x) !important;
+  box-sizing: border-box !important;
+  flex: none !important;
+}
+.modal-panel[data-renpy-role-custom="true"] button {
+  width: var(--renpy-role-width) !important;
+  height: var(--renpy-role-height) !important;
+  min-width: min(var(--renpy-role-min-width, 0px), 100%) !important;
+  min-height: var(--renpy-role-min-height, 0px) !important;
+  max-width: 100% !important;
+  padding: var(--renpy-role-padding-y) var(--renpy-role-padding-x) !important;
+  box-sizing: border-box !important;
+  flex: none !important;
+  font-size: var(--renpy-role-font-size) !important;
+}
+/* Authored dimensions scale with the Runtime frame. Keep those dimensions
+   without overflowing a fixed-width confirmation panel or letting hover/focus
+   scroll its content sideways. The ordinary AgentVN actions keep their layout. */
+.modal-panel[data-layout-type="renpy"][data-renpy-role-custom="true"] .modal-actions {
+  flex-wrap: wrap;
+}
+.modal-panel[data-renpy-role-styled="true"] button {
+  color: var(--renpy-role-normal-text, inherit) !important;
+  background-color: var(--renpy-role-normal-background, transparent) !important;
+}
+.modal-panel[data-renpy-role-styled="true"] button:is(:hover, :focus-visible) {
+  color: var(--renpy-role-hover-text, var(--renpy-role-normal-text, inherit)) !important;
+  background-color: var(--renpy-role-hover-background, var(--renpy-role-normal-background, transparent)) !important;
+}
+.modal-panel[data-renpy-role-styled="true"] button:is([aria-current="page"], [aria-current="true"], [aria-selected="true"], [aria-pressed="true"], .active) {
+  color: var(--renpy-role-selected-text, var(--renpy-role-hover-text, var(--renpy-role-normal-text, inherit))) !important;
+  background-color: var(--renpy-role-selected-background, var(--renpy-role-hover-background, var(--renpy-role-normal-background, transparent))) !important;
+}
+.modal-panel[data-renpy-role-styled="true"] button:disabled {
+  color: var(--renpy-role-disabled-text, var(--renpy-role-normal-text, inherit)) !important;
+  background-color: var(--renpy-role-disabled-background, var(--renpy-role-normal-background, transparent)) !important;
+  opacity: var(--renpy-role-disabled-opacity, .55) !important;
+}
+.modal-panel[data-renpy-role-bordered="true"] button {
+  border-style: solid;
+  border-width: var(--renpy-role-normal-border-width, 1px);
+  border-color: var(--renpy-role-normal-border, currentColor);
+}
+.modal-panel[data-renpy-role-bordered="true"] button:is(:hover, :focus-visible) {
+  border-width: var(--renpy-role-hover-border-width, var(--renpy-role-normal-border-width, 1px));
+  border-color: var(--renpy-role-hover-border, var(--renpy-role-normal-border, currentColor));
+}
+.modal-panel[data-renpy-role-bordered="true"] button:is([aria-current="page"], [aria-current="true"], [aria-selected="true"], [aria-pressed="true"], .active) {
+  border-width: var(--renpy-role-selected-border-width, var(--renpy-role-hover-border-width, var(--renpy-role-normal-border-width, 1px)));
+  border-color: var(--renpy-role-selected-border, var(--renpy-role-hover-border, var(--renpy-role-normal-border, currentColor)));
+}
+.modal-panel[data-renpy-role-bordered="true"] button:disabled {
+  border-width: var(--renpy-role-disabled-border-width, var(--renpy-role-normal-border-width, 1px));
+  border-color: var(--renpy-role-disabled-border, var(--renpy-role-normal-border, currentColor));
+}
+
+.renpy-role-custom-control[data-renpy-role-styled="true"][data-renpy-role-state="normal"] {
+  color: var(--renpy-role-normal-text, inherit) !important;
+  background-color: var(--renpy-role-normal-background, transparent) !important;
+}
+.ui-skin-scope[data-layout-type="renpy"] .choice-panel .ui-button.choice-option.renpy-role-custom-control[data-renpy-role-styled="true"][data-renpy-role-state="normal"] {
+  color: var(--renpy-role-normal-text, var(--renpy-button-text-normal, var(--runtime-choice-local-text, var(--runtime-choice-text, #07111f)))) !important;
+  background-color: var(--renpy-role-normal-background, transparent) !important;
+}
+.renpy-role-custom-control[data-renpy-role-styled="true"]:is(:hover, :focus-visible) {
+  color: var(--renpy-role-hover-text, var(--renpy-role-normal-text, var(--runtime-control-text, var(--accent)))) !important;
+  background-color: var(--renpy-role-hover-background, color-mix(in srgb,
+    var(--runtime-control-active-solid, var(--accent)) 13%,
+    var(--runtime-control-solid, var(--surface-2)))) !important;
+}
+.ui-skin-scope[data-layout-type="renpy"] .choice-panel .ui-button.choice-option.renpy-role-custom-control[data-renpy-role-styled="true"]:is(:hover, :focus-visible):not(:disabled) {
+  color: var(--renpy-role-hover-text, var(--renpy-role-normal-text, var(--renpy-button-text-hover, var(--runtime-choice-local-text, var(--runtime-choice-text, #07111f))))) !important;
+  background-color: var(--renpy-role-hover-background, var(--renpy-role-normal-background, transparent)) !important;
+}
+.renpy-role-custom-control[data-renpy-role-styled="true"]:is([aria-current="page"], [aria-current="true"], [aria-selected="true"], [aria-pressed="true"], .active) {
+  color: var(--renpy-role-selected-text, var(--renpy-role-hover-text, var(--renpy-role-normal-text, var(--runtime-control-text, var(--ink))))) !important;
+  background-color: var(--renpy-role-selected-background, color-mix(in srgb,
+    var(--runtime-control-active-solid, var(--accent)) 21%,
+    var(--runtime-control-solid, var(--surface-2)))) !important;
+}
+.ui-skin-scope[data-layout-type="renpy"] .choice-panel .ui-button.choice-option.renpy-role-custom-control[data-renpy-role-styled="true"]:is([aria-current="page"], [aria-current="true"], [aria-selected="true"], [aria-pressed="true"], .active) {
+  color: var(--renpy-role-selected-text, var(--renpy-role-hover-text, var(--renpy-role-normal-text, var(--renpy-button-text-selected, var(--runtime-choice-local-text, var(--runtime-choice-text, #07111f)))))) !important;
+  background-color: var(--renpy-role-selected-background, var(--renpy-role-hover-background, var(--renpy-role-normal-background, transparent))) !important;
+}
+.renpy-role-custom-control[data-renpy-role-styled="true"]:disabled {
+  color: var(--renpy-role-disabled-text, var(--renpy-role-normal-text, inherit)) !important;
+  background-color: var(--renpy-role-disabled-background, var(--renpy-role-normal-background, transparent)) !important;
+  opacity: var(--renpy-role-disabled-opacity, .55) !important;
+}
+.ui-skin-scope[data-layout-type="renpy"] .choice-panel .ui-button.choice-option.renpy-role-custom-control[data-renpy-role-styled="true"]:disabled {
+  color: var(--renpy-role-disabled-text, var(--renpy-role-normal-text, var(--renpy-button-text-disabled, var(--runtime-choice-local-text, var(--runtime-choice-text, #07111f))))) !important;
+  background-color: var(--renpy-role-disabled-background, var(--renpy-role-normal-background, transparent)) !important;
+  opacity: var(--renpy-role-disabled-opacity, .55) !important;
+}
+
+.renpy-role-custom-control[data-renpy-role-bordered="true"][data-renpy-role-state="normal"] {
+  border-style: solid !important;
+  border-width: var(--renpy-role-normal-border-width, 1px) !important;
+  border-color: var(--renpy-role-normal-border, currentColor) !important;
+  border-image: none !important;
+}
+.renpy-role-custom-control[data-renpy-role-bordered="true"]:is(:hover, :focus-visible) {
+  border-width: var(--renpy-role-hover-border-width, var(--renpy-role-normal-border-width, 1px)) !important;
+  border-color: var(--renpy-role-hover-border, var(--renpy-role-normal-border, currentColor)) !important;
+}
+.renpy-role-custom-control[data-renpy-role-bordered="true"]:is([aria-current="page"], [aria-current="true"], [aria-selected="true"], [aria-pressed="true"], .active) {
+  border-width: var(--renpy-role-selected-border-width, var(--renpy-role-hover-border-width, var(--renpy-role-normal-border-width, 1px))) !important;
+  border-color: var(--renpy-role-selected-border, var(--renpy-role-hover-border, var(--renpy-role-normal-border, currentColor))) !important;
+}
+.renpy-role-custom-control[data-renpy-role-bordered="true"]:disabled {
+  border-width: var(--renpy-role-disabled-border-width, var(--renpy-role-normal-border-width, 1px)) !important;
+  border-color: var(--renpy-role-disabled-border, var(--renpy-role-normal-border, currentColor)) !important;
+}
+.renpy-role-custom-control[data-renpy-role-custom="true"] {
+  font-size: var(--renpy-role-font-size);
+  transition: color 120ms cubic-bezier(.23, 1, .32, 1),
+    background-color 120ms cubic-bezier(.23, 1, .32, 1),
+    border-color 120ms cubic-bezier(.23, 1, .32, 1),
+    opacity 120ms cubic-bezier(.23, 1, .32, 1);
+}
+/* Apply only an explicitly configured opacity role. Color/geometry-only
+   overrides retain their existing theme opacity. Keep this state factor
+   separate from the choice entry/exit animation's presentation opacity. */
+:is(.renpy-role-custom-control, .modal-panel)[data-renpy-role-opacity="true"] {
+  --renpy-role-current-opacity: var(--renpy-role-normal-opacity, 1);
+}
+.renpy-role-custom-control[data-renpy-role-opacity="true"]:is(:hover, :focus-visible):not(:disabled),
+.modal-panel[data-renpy-role-opacity="true"] button:is(:hover, :focus-visible):not(:disabled) {
+  --renpy-role-current-opacity: var(--renpy-role-hover-opacity, var(--renpy-role-normal-opacity, 1));
+}
+.renpy-role-custom-control[data-renpy-role-opacity="true"]:is([aria-current="page"], [aria-current="true"], [aria-selected="true"], [aria-pressed="true"], .active),
+.modal-panel[data-renpy-role-opacity="true"] button:is([aria-current="page"], [aria-current="true"], [aria-selected="true"], [aria-pressed="true"], .active) {
+  --renpy-role-current-opacity: var(--renpy-role-selected-opacity, var(--renpy-role-normal-opacity, 1));
+}
+:is(.renpy-title-action, .renpy-menu-navigation-action)[data-renpy-role-opacity="true"]:is(:hover, :focus-visible):not(:disabled) {
+  --renpy-role-current-opacity: var(--renpy-role-hover-opacity, var(--renpy-role-normal-opacity, 1));
+}
+.renpy-role-custom-control[data-renpy-role-opacity="true"]:disabled,
+.modal-panel[data-renpy-role-opacity="true"] button:disabled {
+  --renpy-role-current-opacity: var(--renpy-role-disabled-opacity, .55);
+}
+.renpy-role-custom-control[data-renpy-role-opacity="true"]:not(.choice-option),
+.modal-panel[data-renpy-role-opacity="true"] button,
+.modal-panel[data-renpy-role-opacity="true"] button:focus-visible {
+  opacity: var(--renpy-role-current-opacity, 1) !important;
+}
+.ui-skin-scope[data-layout-type="renpy"] .choice-panel .ui-button.choice-option[data-renpy-role-opacity="true"] {
+  opacity: var(--renpy-role-current-opacity, 1);
+}
+.modal-panel[data-renpy-role-opacity="true"] button {
+  transition-property: opacity, border-color, background, box-shadow;
+}
+/* Navigation inherits the pinned template's text-only states. A partial role
+   override must not borrow the filled control theme from preferences/slots. */
+:is(.renpy-title-action, .renpy-menu-navigation-action).renpy-role-custom-control[data-renpy-role-styled="true"][data-renpy-role-state="normal"] {
+  color: var(--renpy-role-normal-text, var(--renpy-button-text-normal, var(--renpy-idle))) !important;
+  background-color: var(--renpy-role-normal-background, transparent) !important;
+}
+:is(.renpy-title-action, .renpy-menu-navigation-action):is(:hover, :focus-visible):not(:disabled) {
+  color: var(--renpy-button-text-hover, var(--renpy-navigation-hover));
+}
+:is(.renpy-title-action, .renpy-menu-navigation-action).renpy-role-custom-control[data-renpy-role-styled="true"]:is([aria-current="page"], [aria-current="true"]) {
+  color: var(--renpy-role-selected-text, var(--renpy-button-text-selected, var(--renpy-ink))) !important;
+  background-color: var(--renpy-role-selected-background, var(--renpy-role-normal-background, transparent)) !important;
+}
+:is(.renpy-title-action, .renpy-menu-navigation-action).renpy-role-custom-control[data-renpy-role-styled="true"]:is(:hover, :focus-visible):not(:disabled) {
+  color: var(--renpy-role-hover-text, var(--renpy-button-text-hover, var(--renpy-navigation-hover))) !important;
+  background-color: var(--renpy-role-hover-background, var(--renpy-role-normal-background, transparent)) !important;
+}
+:is(.renpy-title-action, .renpy-menu-navigation-action).renpy-role-custom-control[data-renpy-role-styled="true"]:disabled {
+  color: var(--renpy-role-disabled-text, var(--renpy-button-text-disabled, #55555580)) !important;
+  background-color: var(--renpy-role-disabled-background, var(--renpy-role-normal-background, transparent)) !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  .renpy-role-custom-control[data-renpy-role-custom="true"] { transition: none; }
+  .renpy-role-custom-control[data-renpy-role-opacity="true"],
+  .modal-panel[data-renpy-role-opacity="true"] button {
+    transition: opacity 80ms cubic-bezier(.23, 1, .32, 1);
+  }
+}
+
+/* Ren'Py's ordinary shell actions are text controls, not filled web buttons.
+   Save-slot cards are intentionally excluded, and authored button roles keep
+   their complete configured state styling. */
+.ui-skin-scope[data-layout-type="renpy"] :is(
+  .settings-screen .settings-tabs > button,
+  .settings-screen .settings-footer-actions > button,
+  .settings-screen .settings-footer > button,
+  [data-ui-screen="history"] header > button,
+  .help-screen-shell header > button,
+  .about-screen-shell header > button,
+  [data-testid="gallery-screen"] header > button
+):not([data-renpy-role-custom="true"]) {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  outline: none !important;
+  color: var(--renpy-idle, var(--runtime-control-text, var(--ink))) !important;
+  text-decoration: none;
+  text-decoration-color: currentColor;
+  text-underline-offset: 0.2em;
+  transition:
+    color 180ms var(--ease-out),
+    text-decoration-color 180ms var(--ease-out),
+    opacity 120ms var(--ease-out);
+}
+
+.ui-skin-scope[data-layout-type="renpy"] :is(
+  .settings-screen .settings-tabs > button,
+  .settings-screen .settings-footer-actions > button,
+  .settings-screen .settings-footer > button,
+  [data-ui-screen="history"] header > button,
+  .help-screen-shell header > button,
+  .about-screen-shell header > button,
+  [data-testid="gallery-screen"] header > button
+):not([data-renpy-role-custom="true"]):is(:hover, :focus-visible, .active, .is-active, [aria-current="page"], [aria-pressed="true"]) {
+  color: var(--renpy-hover, var(--runtime-control-active, var(--accent))) !important;
+  text-decoration-line: underline;
+  text-decoration-thickness: 2px;
+}
+
+.ui-skin-scope[data-layout-type="renpy"] :is(
+  .settings-screen .settings-tabs > button,
+  .settings-screen .settings-footer-actions > button,
+  .settings-screen .settings-footer > button,
+  [data-ui-screen="history"] header > button,
+  .help-screen-shell header > button,
+  .about-screen-shell header > button,
+  [data-testid="gallery-screen"] header > button
+):not([data-renpy-role-custom="true"]):disabled {
+  color: var(--renpy-idle, var(--runtime-control-text, var(--ink))) !important;
+  text-decoration: none;
+  opacity: 0.58;
+}
+
+.ui-skin-scope[data-layout-type="renpy"] :is(
+  .settings-screen .settings-tabs > button,
+  .settings-screen .settings-footer-actions > button,
+  .settings-screen .settings-footer > button,
+  [data-ui-screen="history"] header > button,
+  .help-screen-shell header > button,
+  .about-screen-shell header > button,
+  [data-testid="gallery-screen"] header > button
+):not([data-renpy-role-custom="true"]):focus-visible {
+  text-decoration-line: underline;
+  text-decoration-style: double;
+  text-decoration-thickness: 2px;
+}
+
+.modal-panel[data-layout-type="renpy"]:not([data-runtime-screen="save_load"]):not([data-renpy-role-custom="true"])
+.modal-actions > .ui-button {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  filter: none !important;
+  color: var(--renpy-idle, var(--runtime-control-text, var(--ink))) !important;
+  text-decoration: none;
+  text-decoration-color: currentColor;
+  text-underline-offset: 0.2em;
+  transition:
+    color 180ms var(--ease-out),
+    text-decoration-color 180ms var(--ease-out),
+    opacity 120ms var(--ease-out);
+}
+
+.modal-panel[data-layout-type="renpy"]:not([data-runtime-screen="save_load"]):not([data-renpy-role-custom="true"])
+.modal-actions > .ui-button.exit-confirm-button {
+  color: var(--danger) !important;
+}
+
+.modal-panel[data-layout-type="renpy"]:not([data-runtime-screen="save_load"]):not([data-renpy-role-custom="true"])
+.modal-actions > .ui-button:not(:disabled):is(:hover, :focus-visible) {
+  color: var(--renpy-hover, var(--runtime-control-active, var(--accent))) !important;
+  text-decoration-line: underline !important;
+  text-decoration-thickness: 2px;
+}
+
+.modal-panel[data-layout-type="renpy"]:not([data-runtime-screen="save_load"]):not([data-renpy-role-custom="true"])
+.modal-actions > .ui-button.exit-confirm-button:not(:disabled):is(:hover, :focus-visible) {
+  color: var(--danger) !important;
+}
+
+.modal-panel[data-layout-type="renpy"]:not([data-runtime-screen="save_load"]):not([data-renpy-role-custom="true"])
+.modal-actions > .ui-button:focus-visible {
+  text-decoration-style: double;
+}
+
+.modal-panel[data-layout-type="renpy"]:not([data-runtime-screen="save_load"]):not([data-renpy-role-custom="true"])
+.modal-actions > .ui-button:disabled {
+  color: var(--renpy-idle, var(--runtime-control-text, var(--ink))) !important;
+  text-decoration: none !important;
+  opacity: 0.58;
+}

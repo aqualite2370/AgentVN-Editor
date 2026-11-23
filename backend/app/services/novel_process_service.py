@@ -4,19 +4,22 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 import hashlib
+import errno
 import logging
 import os
 import re
 import sqlite3
 from threading import Event, RLock, Thread
+from typing import BinaryIO
 import json
 import time
 from datetime import datetime, timedelta, timezone
 
-from app.ai.context_budget import estimate_tokens
+from app.ai.context_budget import available_input_tokens, estimate_tokens, tokens_to_approx_chars
 from app.ai.novel_dialogue_semantics import (
     build_character_candidates,
     detect_speaker_names,
@@ -24,6 +27,11 @@ from app.ai.novel_dialogue_semantics import (
     validate_dialogue_semantics,
 )
 from app.ai.provider import AIProvider
+from app.ai.runtime_event_policy import (
+    SUBAGENT_RUNTIME_EVENT_PROMPT_RULES,
+    filter_unauthorized_rollback_commands,
+    guard_scene_ai_operations,
+)
 from app.core.error_logging import log_exception
 from app.models.novel_import import CharacterCandidate
 from app.models.novel_process import (
@@ -50,6 +58,7 @@ from app.models.novel_process import (
 from app.schemas.requests import ProviderSelectionParameters, ProviderSelectionRequest
 from app.db.init_db import init_db
 from app.models.scene import SceneBeat
+from app.services.novel_retry import retry_scope_active, retryable
 from app.utils.ids import new_id
 
 
@@ -69,11 +78,18 @@ MAX_RETRY_BACKOFF_SECONDS = 3.0
 FRAGMENT_PROMPT_VERSION = "novel-process-v3"
 MAX_AUTO_SPLIT_DEPTH = 2
 MIN_AUTO_SPLIT_CHARS = 1500
+STRUCTURED_OUTPUT_SOURCE_CHARS_PER_TOKEN = 0.9
+STRUCTURED_INPUT_SAFETY_TOKENS = 256
+DEFAULT_STRUCTURED_OUTPUT_TOKENS = 4096
 ROUTE_COMMAND_TYPES = {"choice", "jump", "conditional_jump"}
 
 
 class TaskCancelled(RuntimeError):
     """Raised when a task is cancelled before its model call starts."""
+
+
+class NovelProcessConflict(ValueError):
+    """The existing submission or runner owns this job."""
 
 
 @dataclass
@@ -156,17 +172,29 @@ class NovelProcessJobRepository:
         return conn
 
     def load_job(self, job_id: str) -> NovelProcessJob | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT value FROM novel_processing_records WHERE kind = ? AND id = ?",
-                ("executor_job", job_id),
-            ).fetchone()
+        if not self.database_path.is_file():
+            return None
+        with closing(sqlite3.connect(f"{self.database_path.resolve().as_uri()}?mode=ro", uri=True)) as conn:
+            try:
+                row = conn.execute(
+                    "SELECT value FROM novel_processing_records WHERE kind = ? AND id = ?",
+                    ("executor_job", job_id),
+                ).fetchone()
+            except sqlite3.OperationalError as exc:
+                if str(exc) != "no such table: novel_processing_records":
+                    raise
+                return None
             if row is None:
                 return None
-            return NovelProcessJob.model_validate(json.loads(row["value"]))
+            return NovelProcessJob.model_validate_json(row[0])
 
     def save_job(self, job: NovelProcessJob) -> None:
-        payload = json.dumps(job.model_dump(mode="json"), ensure_ascii=False)
+        data = job.model_dump(mode="json")
+        if job.submissionFingerprint:
+            data["submissionFingerprint"] = job.submissionFingerprint
+        if data.get("providerSelection"):
+            data["providerSelection"]["api_key"] = ""
+        payload = json.dumps(data, ensure_ascii=False)
         with self._connect() as conn:
             conn.execute(
                 """
@@ -272,6 +300,17 @@ class NovelProcessJobRepository:
                 )
             conn.commit()
 
+    def get_connection_key(self, connection_id: str) -> str:
+        with self._connect() as conn:
+            row = conn.execute("SELECT value FROM editor_shared_state WHERE key = 'provider_secrets'").fetchone()
+        if row is None:
+            return ""
+        secrets = json.loads(row["value"])
+        if not isinstance(secrets, dict):
+            return ""
+        key = secrets.get(connection_id)
+        return key if isinstance(key, str) else ""
+
 
 class NovelProcessService:
     """Run one model subagent per chunk while the job owns scheduling state."""
@@ -290,70 +329,113 @@ class NovelProcessService:
         self._locks: dict[str, RLock] = {}
         self._cancel_events: dict[str, Event] = {}
         self._runners: dict[str, Thread] = {}
+        self._execution_locks: dict[str, BinaryIO] = {}
 
     def create_job(self, request: NovelProcessJobCreateRequest) -> NovelProcessJob:
+        job_id = request.requestId or new_id("novel_job")
+        identity = request.model_dump(mode="json", exclude={"requestId"})
+        if identity["providerSelection"]:
+            identity["providerSelection"].pop("api_key", None)
+        fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+        with self._lock_for(job_id):
+            if request.requestId:
+                try:
+                    existing = self._read_job(job_id)
+                except KeyError:
+                    pass
+                else:
+                    return self._submission_receipt(existing, fingerprint)
+            with self._execution_owner(job_id):
+                # Recheck after acquiring the OS lock in case a prior owner
+                # already committed and released the same job.
+                if request.requestId:
+                    try:
+                        existing = self._load_job_unlocked(job_id)
+                    except KeyError:
+                        pass
+                    else:
+                        return self._submission_receipt(existing, fingerprint)
+                return self._create_job_unlocked(request, job_id, fingerprint)
+
+    def _create_job_unlocked(self, request: NovelProcessJobCreateRequest, job_id: str, fingerprint: str) -> NovelProcessJob:
         now = utc_now()
-        job_id = new_id("novel_job")
-        chunks = [
-            self._chunk_from_input(item, now)
-            for item in sorted(request.chunks, key=lambda chunk: (chunk.chapterIndex, chunk.chunkIndex))
-        ]
+        chunks = [self._chunk_from_input(item, now)
+                  for item in sorted(request.chunks, key=lambda chunk: (chunk.chapterIndex, chunk.chunkIndex))]
         job = NovelProcessJob(
-            jobId=job_id,
-            bookId=request.bookId,
-            title=request.title,
-            status="created",
-            userInstruction=request.userInstruction,
-            outputFormat=request.outputFormat,
-            promptVersion=request.promptVersion,
-            maxConcurrency=request.maxConcurrency,
-            maxRetries=request.maxRetries,
-            providerSelection=request.providerSelection,
-            chunks=chunks,
-            totalChunks=len(chunks),
-            createdAt=now,
-            updatedAt=now,
+            jobId=job_id, submissionFingerprint=fingerprint if request.requestId else None,
+            bookId=request.bookId, title=request.title, userInstruction=request.userInstruction,
+            outputFormat=request.outputFormat, promptVersion=request.promptVersion,
+            maxConcurrency=request.maxConcurrency, maxRetries=request.maxRetries,
+            providerSelection=request.providerSelection, chunks=chunks, totalChunks=len(chunks),
+            createdAt=now, updatedAt=now,
         )
-        lock = self._lock_for(job_id)
-        with lock:
-            self._jobs[job_id] = job
-            self._cancel_events[job_id] = Event()
-            self._append_event(job, "job_created", f"Job created with {len(chunks)} chunks.")
+        self._append_event(job, "job_created", f"Job created with {len(chunks)} requested chunks.")
+        self._pre_split_oversized_chunks(job)
+        self._jobs[job_id] = job
+        try:
             self._refresh_progress(job)
             self._save_job_unlocked(job)
-        self.start_job(job_id)
-        return self.get_job(job_id)
+            return self._start_job_unlocked(job)
+        except Exception:
+            if job_id not in self._runners:
+                self._jobs.pop(job_id, None)
+            raise
+
+    def _submission_receipt(self, job: NovelProcessJob, fingerprint: str) -> NovelProcessJob:
+        if job.submissionFingerprint != fingerprint:
+            raise NovelProcessConflict("任务编号已属于另一份提交，请查询原任务。")
+        return self._observation(job)
 
     def get_job(self, job_id: str) -> NovelProcessJob:
-        lock = self._lock_for(job_id)
-        with lock:
-            job = self._load_job_unlocked(job_id)
-            if self._recover_interrupted_job_unlocked(job):
-                self._save_job_unlocked(job)
-            return self._public_job(job)
+        with self._lock_for(job_id):
+            job = self._jobs.get(job_id) if job_id in self._execution_locks else self._read_job(job_id)
+            if job is None:
+                job = self._read_job(job_id)
+            return self._observation(job)
+
+    def _observation(self, job: NovelProcessJob) -> NovelProcessJob:
+        public = self._public_job(job)
+        if public.status in {"created", "running", "retrying"} and not self._execution_is_owned(job.jobId):
+            self._recover_interrupted_job_unlocked(public)
+            public.status = "paused"
+        return public
 
     def start_job(self, job_id: str) -> NovelProcessJob:
-        lock = self._lock_for(job_id)
-        with lock:
+        with self._lock_for(job_id), self._execution_owner(job_id):
             job = self._load_job_unlocked(job_id)
             if job.status in TERMINAL_JOB_STATUSES:
                 return self._public_job(job)
-            now = utc_now()
-            was_paused = job.status == "paused"
-            job.status = "running"
-            job.activePhase = "chunk_parse"
-            job.startedAt = job.startedAt or now
-            job.updatedAt = now
-            self._cancel_events.setdefault(job_id, Event()).clear()
-            self._append_event(job, "job_resumed" if was_paused else "job_started", "Job scheduler is running.")
-            self._save_job_unlocked(job)
-            self._ensure_runner_unlocked(job_id)
+            if job_id not in self._runners:
+                self._recover_interrupted_job_unlocked(job)
+            return self._start_job_unlocked(job)
+
+    def _start_job_unlocked(self, job: NovelProcessJob) -> NovelProcessJob:
+        if job.status in {"running", "retrying"} and job.jobId in self._runners:
             return self._public_job(job)
+        if (job.providerSelection is not None and not job.providerSelection.api_key
+                and self.repository is not None):
+            key = self.repository.get_connection_key(job.providerSelection.connection_id)
+            if not key:
+                raise NovelProcessConflict("原任务的模型连接缺少密钥。请在模型设置中恢复该连接后手动继续。")
+            job.providerSelection = job.providerSelection.model_copy(update={"api_key": key})
+        now = utc_now()
+        was_paused = job.status == "paused"
+        job.status = "running"
+        job.activePhase = "chunk_parse"
+        job.startedAt = job.startedAt or now
+        job.updatedAt = now
+        self._cancel_events.setdefault(job.jobId, Event()).clear()
+        self._append_event(job, "job_resumed" if was_paused else "job_started", "Job scheduler is running.")
+        self._save_job_unlocked(job)
+        self._ensure_runner_unlocked(job.jobId)
+        return self._public_job(job)
 
     def pause_job(self, job_id: str) -> NovelProcessJob:
         lock = self._lock_for(job_id)
-        with lock:
+        with lock, self._execution_owner(job_id):
             job = self._load_job_unlocked(job_id)
+            if job_id not in self._runners:
+                self._recover_interrupted_job_unlocked(job)
             if job.status in {"running", "retrying"}:
                 job.status = "paused"
                 job.updatedAt = utc_now()
@@ -366,10 +448,12 @@ class NovelProcessService:
 
     def cancel_job(self, job_id: str) -> NovelProcessJob:
         lock = self._lock_for(job_id)
-        with lock:
+        with lock, self._execution_owner(job_id):
             job = self._load_job_unlocked(job_id)
             if job.status in TERMINAL_JOB_STATUSES and job.status != "cancelled":
                 return self._public_job(job)
+            if job_id not in self._runners:
+                self._recover_interrupted_job_unlocked(job)
             job.status = "cancelled"
             job.updatedAt = utc_now()
             cancel_event = self._cancel_events.setdefault(job_id, Event())
@@ -390,10 +474,12 @@ class NovelProcessService:
 
     def rerun_failed(self, job_id: str) -> NovelProcessJob:
         lock = self._lock_for(job_id)
-        with lock:
+        with lock, self._execution_owner(job_id):
             job = self._load_job_unlocked(job_id)
             now = utc_now()
             failed_ids = {chunk.chunkId for chunk in self._leaf_chunks(job) if chunk.status == "failed"}
+            if not failed_ids:
+                return self._observation(job)
             for chunk in job.chunks:
                 if chunk.chunkId in failed_ids:
                     chunk.status = "pending"
@@ -406,20 +492,17 @@ class NovelProcessService:
                 result for result in job.chunkResults
                 if not (result.chunkId in failed_ids and result.status == "failed")
             ]
-            job.status = "running"
+            job.status = "paused"
             job.completedAt = None
             job.updatedAt = now
-            self._cancel_events.setdefault(job_id, Event()).clear()
             self._append_event(job, "job_resumed", f"Rerunning {len(failed_ids)} failed chunks.")
             self._refresh_progress(job)
-            self._save_job_unlocked(job)
-            self._ensure_runner_unlocked(job_id)
-            return self._public_job(job)
+            return self._start_job_unlocked(job)
 
     def get_results(self, job_id: str) -> NovelProcessJobResults:
         lock = self._lock_for(job_id)
         with lock:
-            job = self._load_job_unlocked(job_id)
+            job = self.get_job(job_id)
             job.chapterResults = self._chapter_results(job)
             chunk_offsets = {chunk.chunkId: chunk.startOffset for chunk in job.chunks}
             ordered = sorted(
@@ -490,12 +573,15 @@ class NovelProcessService:
                     self._refresh_progress(job)
                     if job.status == "cancelled":
                         self._mark_queued_cancelled_unlocked(job)
+                    claimed: list[tuple[AgentTask, SubagentModelInput]] = []
                     if job.status in {"running", "retrying"}:
                         free_agents = self._free_agent_indexes(job)
                         for agent_index, chunk in zip(free_agents, self._eligible_chunks(job)[:len(free_agents)]):
-                            task, model_input = self._start_agent_task_unlocked(job, chunk, agent_index)
-                            futures[executor.submit(self._execute_agent_task, job_id, task.taskId, model_input, job.providerSelection)] = task.taskId
+                            claimed.append(self._start_agent_task_unlocked(job, chunk, agent_index))
                     self._save_job_unlocked(job)
+                    for task, model_input in claimed:
+                        future = executor.submit(self._execute_agent_task, job_id, task.taskId, model_input, job.providerSelection)
+                        futures[future] = task.taskId
 
                 if not futures:
                     with self._lock_for(job_id):
@@ -541,37 +627,42 @@ class NovelProcessService:
         partial: list[str] = []
         semantic_quality_issues: list[QualityIssue] = []
 
-        def call_model(prompt: str, *, max_tool_attempts: int) -> SubagentModelOutput:
+        def call_model(prompt: str) -> SubagentModelOutput:
             final: SubagentModelOutput | None = None
-            for event, payload in self.provider.stream_with_tools(
-                SubagentModelOutput,
-                system_prompt,
-                prompt,
-                temperature=0.2,
-                selection=selection,
-                max_tool_attempts=max_tool_attempts,
-            ):
-                if event == "delta" and isinstance(payload, str):
-                    partial.append(payload)
-                    self._record_partial(job_id, task_id, payload)
-                elif event == "status" and isinstance(payload, str):
-                    self._record_task_status(job_id, task_id, payload)
-                elif event == "final":
-                    final = payload if isinstance(payload, SubagentModelOutput) else SubagentModelOutput.model_validate(payload)
-                if cancel_event.is_set():
-                    if final is None:
-                        raise TaskCancelled("Task was cancelled while the model stream was active.")
-                    break
+            scope = retry_scope_active.set(True)
+            try:
+                with closing(self.provider.stream_with_tools(
+                    SubagentModelOutput,
+                    system_prompt,
+                    prompt,
+                    temperature=0.2,
+                    selection=selection,
+                    max_tool_attempts=1,
+                )) as stream:
+                    while True:
+                        if cancel_event.is_set() and final is None:
+                            raise TaskCancelled("Task was cancelled while the model stream was active.")
+                        item = next(stream, None)
+                        if item is None:
+                            break
+                        event, payload = item
+                        if event == "delta" and isinstance(payload, str):
+                            partial.append(payload)
+                            self._record_partial(job_id, task_id, payload)
+                        elif event == "status" and isinstance(payload, str):
+                            self._record_task_status(job_id, task_id, payload)
+                        elif event == "final":
+                            final = payload if isinstance(payload, SubagentModelOutput) else SubagentModelOutput.model_validate(payload)
+                            break
+            finally:
+                retry_scope_active.reset(scope)
             if final is None:
                 raise RuntimeError(f"Subagent did not return a structured final payload. Raw output: {''.join(partial)[:2000]}")
             if final.status == "failed":
                 raise RuntimeError(final.errorMessage or f"Subagent returned failed status. Raw output: {''.join(partial)[:2000]}")
             return final
 
-        final_output = call_model(
-            user_prompt,
-            max_tool_attempts=2 if model_input.promptVersion in {"novel-process-v2", FRAGMENT_PROMPT_VERSION} else 3,
-        )
+        final_output = call_model(user_prompt)
         semantic_repair_count = 0
         semantic_validation_status = "passed"
         speaker_names = model_input.speakerCandidates or []
@@ -581,11 +672,11 @@ class NovelProcessService:
                 speaker_names,
                 model_input.chunkText,
             )
-            if semantic_issues:
+            if semantic_issues and self._reserve_semantic_retry(job_id, task_id):
                 self._record_task_status(job_id, task_id, "对白语义校验失败，正在请求模型纠正")
                 correction_prompt = semantic_correction_prompt(user_prompt, semantic_issues, speaker_names)
                 input_tokens += estimate_tokens(f"{system_prompt}\n{correction_prompt}")
-                final_output = call_model(correction_prompt, max_tool_attempts=1)
+                final_output = call_model(correction_prompt)
                 semantic_issues = validate_dialogue_semantics(
                     final_output,
                     speaker_names,
@@ -598,6 +689,7 @@ class NovelProcessService:
                     f" {evidence}"
                 )
 
+        final_output = self._guard_subagent_runtime_controls(final_output, model_input.userInstruction)
         if model_input.promptVersion == FRAGMENT_PROMPT_VERSION and self._fragment_from_output(final_output) is None:
             raise RuntimeError("structured fragment missing from chunk output")
 
@@ -627,6 +719,97 @@ class NovelProcessService:
             semantic_repair_count=semantic_repair_count,
             semantic_validation_status=semantic_validation_status,
             semantic_quality_issues=semantic_quality_issues,
+        )
+
+    def _reserve_semantic_retry(self, job_id: str, task_id: str) -> bool:
+        with self._lock_for(job_id):
+            job = self._load_job_unlocked(job_id)
+            if job.status == "cancelled" or self._cancel_events[job_id].is_set():
+                raise TaskCancelled("Task was cancelled before the semantic correction.")
+            task = self._find_task(job, task_id)
+            chunk = self._find_chunk(job, task.chunkId)
+            if job.status == "paused" or chunk.retryCount >= self._retry_limit(job, chunk):
+                return False
+            chunk.retryCount += 1
+            task.retryCount = chunk.retryCount
+            self._save_job_unlocked(job)
+            return True
+
+    @staticmethod
+    def _retry_limit(job: NovelProcessJob, chunk: ChunkRecord) -> int:
+        return job.maxRetries if chunk.retryLimit is None else chunk.retryLimit
+
+    @staticmethod
+    def _guard_subagent_runtime_controls(
+        output: SubagentModelOutput,
+        user_instruction: str,
+    ) -> SubagentModelOutput:
+        rollback_removed = 0
+        protected_changes = 0
+        fragment = output.fragment
+        if fragment is not None:
+            fragment_guard = guard_scene_ai_operations(
+                SceneBeat(
+                    scene_id="subagent_fragment_guard",
+                    title="Subagent fragment guard",
+                    summary=fragment.summary,
+                    commands=fragment.commands,
+                    chapter=0,
+                )
+            )
+            protected_changes += (
+                fragment_guard.removed_commands
+                + fragment_guard.stripped_fields
+                + fragment_guard.restored_commands
+                + fragment_guard.restored_fields
+            )
+            commands, fragment_removed = filter_unauthorized_rollback_commands(
+                fragment_guard.scene.commands,
+                user_instruction=user_instruction,
+            )
+            rollback_removed += fragment_removed
+            if fragment_removed or fragment_guard.changed:
+                fragment = fragment.model_copy(update={"commands": commands})
+
+        scenes: list[SceneBeat] = []
+        for scene in output.scenes:
+            scene_guard = guard_scene_ai_operations(scene)
+            protected_changes += (
+                scene_guard.removed_commands
+                + scene_guard.stripped_fields
+                + scene_guard.restored_commands
+                + scene_guard.restored_fields
+            )
+            commands, scene_removed = filter_unauthorized_rollback_commands(
+                scene_guard.scene.commands,
+                user_instruction=user_instruction,
+            )
+            rollback_removed += scene_removed
+            scenes.append(
+                scene_guard.scene
+                if scene_removed == 0
+                else scene_guard.scene.model_copy(update={"commands": commands})
+            )
+
+        if rollback_removed == 0 and protected_changes == 0:
+            return output
+        warnings = list(output.warnings)
+        if protected_changes:
+            warnings.append(
+                "Removed AI-generated asset-reference events, camera commands, protected asset fields, "
+                "or choice button styles because subagents cannot operate author-managed assets or camera."
+            )
+        if rollback_removed:
+            warnings.append(
+                f"Removed {rollback_removed} rollback command(s): "
+                "userInstruction did not explicitly authorize runtime controls."
+            )
+        return output.model_copy(
+            update={
+                "fragment": fragment,
+                "scenes": scenes,
+                "warnings": warnings,
+            }
         )
 
     def _handle_task_completed(self, job_id: str, task_id: str, result: AgentExecutionResult) -> None:
@@ -768,11 +951,14 @@ class NovelProcessService:
             chunk = self._find_chunk(job, task.chunkId)
             now = utc_now()
             failure_category = self._failure_category(message)
+            retry_limit = self._retry_limit(job, chunk)
+            remaining = retry_limit - chunk.retryCount
+            may_retry = failure_category != "speaker_structure_unresolved" and retryable(message)
             task.status = "failed"
             task.phase = "failed"
             task.currentStepLabel = (
                 "Failed; retry scheduled"
-                if failure_category != "speaker_structure_unresolved" and chunk.retryCount < job.maxRetries
+                if may_retry and remaining > 0
                 else "Failed"
             )
             task.completedAt = now
@@ -791,9 +977,9 @@ class NovelProcessService:
                 self._save_job_unlocked(job)
                 return
 
-            if self._should_auto_split_chunk(chunk, failure_category, message):
-                self._split_failed_chunk_unlocked(job, chunk, task, message)
-            elif failure_category != "speaker_structure_unresolved" and chunk.retryCount < job.maxRetries:
+            if may_retry and remaining >= 2 and self._should_auto_split_chunk(chunk, failure_category, message):
+                self._split_failed_chunk_unlocked(job, chunk, task, message, remaining)
+            elif may_retry and remaining > 0:
                 chunk.retryCount += 1
                 backoff_seconds = self._retry_backoff_seconds(chunk.retryCount)
                 chunk.status = "retrying"
@@ -804,7 +990,7 @@ class NovelProcessService:
                 self._append_event(
                     job,
                     "agent_task_retrying",
-                    f"Retry {chunk.retryCount}/{job.maxRetries} scheduled after {task.retryBackoffMs}ms.",
+                    f"Retry {chunk.retryCount}/{retry_limit} scheduled after {task.retryBackoffMs}ms.",
                     task.taskId,
                     chunk.chunkId,
                     {"failureCategory": failure_category, "retryBackoffMs": task.retryBackoffMs},
@@ -995,9 +1181,8 @@ class NovelProcessService:
             (
                 "Return JSON matching SubagentModelOutput. Populate exactly one `fragment` with summary, tags, commands, continuityNotes, warnings, and errorMessage; "
                 "keep `scenes` empty. Every fragment command must be a legal AgentVN GameCommand with a type discriminator. "
-                "Use exact command types: `background` (not `show_background`), `sprite` (not `show_character`), "
-                "and `dialog` (not `dialogue`). For sprite entry effects, put the object in `animation_config`; "
-                "`animation` itself is only a string preset ID. "
+                "Use exact `dialog` rather than `dialogue`. Do not emit asset-reference events or camera commands; "
+                "those remain author-managed outside the subagent. "
                 "Do not emit choice, jump, or conditional_jump commands: routes are built only after all chapter fragments merge. "
                 "Do not return scene IDs, scene titles, planner beats, locations, or characters outside legal commands. "
             )
@@ -1007,9 +1192,8 @@ class NovelProcessService:
                 "scenes, inputTokens, outputTokens, warnings, errorMessage. "
                 "When possible, include one or more complete AgentVN SceneBeat objects in scenes. "
                 "Use these exact snake_case SceneBeat fields only: scene_id, scene_display_name, title, summary, commands, tags, chapter. "
-                "`chapter` must be an integer. Use exact command types: `background` (not `show_background`), "
-                "`sprite` (not `show_character`), and `dialog` (not `dialogue`). For sprite entry effects, "
-                "put the object in `animation_config`; `animation` itself is only a string preset ID. "
+                "`chapter` must be an integer. Use exact `dialog` rather than `dialogue`. "
+                "Do not emit asset-reference events or camera commands; those remain author-managed outside the subagent. "
                 "Every commands item must be a legal AgentVN GameCommand with a type discriminator; do not return sceneId, sceneTitle, "
                 "sceneType, dialogue, actions, beats, location, characters, or other prose-planner fields inside scenes. "
             )
@@ -1018,6 +1202,7 @@ class NovelProcessService:
             "Subagent input JSON follows. The only source text you may transform is chunkText in this object.\n"
             f"{model_input.model_dump_json(exclude_none=True)}\n\n"
             f"{output_instructions}"
+            f"\n\n{SUBAGENT_RUNTIME_EVENT_PROMPT_RULES}\n"
             "continuityNotes and warnings must always be JSON arrays of strings, even when there is only one item. "
             "Set status to completed unless the chunk cannot be processed."
         )
@@ -1330,6 +1515,8 @@ class NovelProcessService:
             return "cancelled"
         if "timeout" in lower or "timed out" in lower or "abort" in lower or "超时" in message:
             return "provider_timeout"
+        if "模型连接中断" in message:
+            return "provider_connection_interrupted"
         if any(
             marker in lower
             for marker in (
@@ -1376,6 +1563,149 @@ class NovelProcessService:
     @staticmethod
     def _leaf_chunks(job: NovelProcessJob) -> list[ChunkRecord]:
         return [chunk for chunk in job.chunks if chunk.status != "superseded"]
+
+    def _pre_split_oversized_chunks(self, job: NovelProcessJob) -> None:
+        original_chunks = list(job.chunks)
+        created_children: list[ChunkRecord] = []
+        for chunk in original_chunks:
+            model_input = self._model_input_for_chunk(job, chunk)
+            maximum_chars, budget_details = self._safe_chunk_text_chars(job, model_input)
+            if len(chunk.chunkText) <= maximum_chars:
+                continue
+            parts = self._split_text_to_limit(chunk.chunkText, maximum_chars)
+            if len(parts) <= 1:
+                continue
+            now = utc_now()
+            chunk.status = "superseded"
+            chunk.updatedAt = now
+            relative_offset = 0
+            children: list[ChunkRecord] = []
+            for index, text in enumerate(parts):
+                child_start = chunk.startOffset + relative_offset
+                relative_offset += len(text)
+                previous_hint = (
+                    chunk.previousContextSummary
+                    if index == 0
+                    else clip_text(f"Previous fragment ends: {parts[index - 1][-360:]}", SUMMARY_LIMIT)
+                )
+                next_hint = (
+                    chunk.nextContextHint
+                    if index == len(parts) - 1
+                    else clip_text(f"Next fragment begins: {parts[index + 1][:360]}", NEXT_HINT_LIMIT)
+                )
+                children.append(
+                    ChunkRecord(
+                        chunkId=new_id("chunk"),
+                        chapterTitle=chunk.chapterTitle,
+                        chapterIndex=chunk.chapterIndex,
+                        chunkIndex=chunk.chunkIndex,
+                        chunkText=text,
+                        parentChunkId=chunk.chunkId,
+                        splitDepth=min(MAX_AUTO_SPLIT_DEPTH, chunk.splitDepth + 1),
+                        startOffset=child_start,
+                        endOffset=child_start + len(text),
+                        previousContextSummary=previous_hint,
+                        nextContextHint=next_hint,
+                        contextChars=len(previous_hint) + len(next_hint),
+                        updatedAt=now,
+                    )
+                )
+            created_children.extend(children)
+            self._append_event(
+                job,
+                "chunk_pre_split",
+                f"Pre-split one oversized chunk into {len(children)} structured-request checkpoints.",
+                chunk_id=chunk.chunkId,
+                details={
+                    "parentChunkId": chunk.chunkId,
+                    "childChunkIds": [child.chunkId for child in children],
+                    "sourceChars": len(chunk.chunkText),
+                    "maximumChunkChars": maximum_chars,
+                    **budget_details,
+                },
+            )
+        if created_children:
+            job.chunks.extend(created_children)
+            for chapter_index in {chunk.chapterIndex for chunk in created_children}:
+                chapter_leaves = sorted(
+                    (chunk for chunk in self._leaf_chunks(job) if chunk.chapterIndex == chapter_index),
+                    key=lambda item: (item.startOffset, item.endOffset, item.chunkId),
+                )
+                for index, leaf in enumerate(chapter_leaves):
+                    leaf.chunkIndex = index
+        job.totalChunks = len(self._leaf_chunks(job))
+
+    def _safe_chunk_text_chars(
+        self,
+        job: NovelProcessJob,
+        model_input: SubagentModelInput,
+    ) -> tuple[int, dict[str, object]]:
+        empty_input = model_input.model_copy(update={"chunkText": ""})
+        system_prompt, user_prompt = self._agent_prompts(empty_input)
+        prompt_overhead_tokens = estimate_tokens(f"{system_prompt}\n{user_prompt}")
+        context_budget, reserved_tokens, available_tokens = available_input_tokens(job.providerSelection)
+        input_limited_tokens = max(
+            1,
+            available_tokens - prompt_overhead_tokens - STRUCTURED_INPUT_SAFETY_TOKENS,
+        )
+        configured_output_tokens = (
+            int(job.providerSelection.parameters.max_tokens)
+            if job.providerSelection
+            and job.providerSelection.parameters
+            and job.providerSelection.parameters.max_tokens
+            else DEFAULT_STRUCTURED_OUTPUT_TOKENS
+        )
+        output_limited_chars = int(configured_output_tokens * STRUCTURED_OUTPUT_SOURCE_CHARS_PER_TOKEN)
+        input_limited_chars = tokens_to_approx_chars(input_limited_tokens)
+        maximum_chars = max(
+            MIN_AUTO_SPLIT_CHARS,
+            min(input_limited_chars, output_limited_chars),
+        )
+        return maximum_chars, {
+            "contextBudgetTokens": context_budget,
+            "reservedTokens": reserved_tokens,
+            "availableInputTokens": available_tokens,
+            "promptOverheadTokens": prompt_overhead_tokens,
+            "configuredOutputTokens": configured_output_tokens,
+            "inputLimitedChars": input_limited_chars,
+            "outputLimitedChars": output_limited_chars,
+        }
+
+    @classmethod
+    def _split_text_to_limit(cls, text: str, maximum_chars: int) -> list[str]:
+        if len(text) <= maximum_chars:
+            return [text]
+        parts: list[str] = []
+        cursor = 0
+        while len(text) - cursor > maximum_chars:
+            remaining = len(text) - cursor
+            minimum_end = cursor + min(MIN_AUTO_SPLIT_CHARS, maximum_chars)
+            ideal_end = cursor + maximum_chars
+            maximum_end = min(len(text), ideal_end)
+            split_at = cls._preferred_split_before(text, minimum_end, maximum_end)
+            if split_at is None or split_at <= cursor:
+                split_at = maximum_end
+            tail_length = len(text) - split_at
+            if 0 < tail_length < MIN_AUTO_SPLIT_CHARS and remaining > MIN_AUTO_SPLIT_CHARS * 2:
+                balanced_end = cursor + (remaining // 2)
+                split_at = cls._preferred_split_before(
+                    text,
+                    minimum_end,
+                    min(maximum_end, balanced_end),
+                ) or balanced_end
+            parts.append(text[cursor:split_at])
+            cursor = split_at
+        parts.append(text[cursor:])
+        return [part for part in parts if part]
+
+    @staticmethod
+    def _preferred_split_before(text: str, minimum_end: int, maximum_end: int) -> int | None:
+        window = text[minimum_end:maximum_end]
+        for pattern in (r"\n\s*\n", r"(?<=[。！？!?])(?:[”’」』】）》]*)\s*", r"\n"):
+            matches = list(re.finditer(pattern, window))
+            if matches:
+                return minimum_end + matches[-1].end()
+        return None
 
     @staticmethod
     def _fragment_from_output(output: SubagentModelOutput) -> SceneFragment | None:
@@ -1517,6 +1847,7 @@ class NovelProcessService:
         chunk: ChunkRecord,
         task: AgentTask,
         message: str,
+        remaining: int,
     ) -> None:
         split_offset = self._split_offset(chunk.chunkText)
         if split_offset is None:
@@ -1528,6 +1859,9 @@ class NovelProcessService:
         now = utc_now()
         left_text = chunk.chunkText[:split_offset]
         right_text = chunk.chunkText[split_offset:]
+        # Each child uses one call. Divide the remaining retries without
+        # allowing the split to multiply the original paid request budget.
+        left_retries, extra = divmod(remaining - 2, 2)
         left = ChunkRecord(
             chunkId=new_id("chunk"),
             chapterTitle=chunk.chapterTitle,
@@ -1536,6 +1870,7 @@ class NovelProcessService:
             chunkText=left_text,
             parentChunkId=chunk.chunkId,
             splitDepth=chunk.splitDepth + 1,
+            retryLimit=left_retries,
             startOffset=chunk.startOffset,
             endOffset=chunk.startOffset + len(left_text),
             previousContextSummary=chunk.previousContextSummary,
@@ -1551,6 +1886,7 @@ class NovelProcessService:
             chunkText=right_text,
             parentChunkId=chunk.chunkId,
             splitDepth=chunk.splitDepth + 1,
+            retryLimit=left_retries + extra,
             startOffset=left.endOffset,
             endOffset=chunk.endOffset,
             previousContextSummary=clip_text(f"Previous fragment ends: {left_text[-360:]}", SUMMARY_LIMIT),
@@ -1684,9 +2020,89 @@ class NovelProcessService:
         runner = self._runners.get(job_id)
         if runner and runner.is_alive():
             return
-        thread = Thread(target=self._run_job, args=(job_id,), name=f"novel-process-{job_id}", daemon=True)
+        thread = Thread(target=self._run_owned_job, args=(job_id,), name=f"novel-process-{job_id}", daemon=True)
         self._runners[job_id] = thread
-        thread.start()
+        try:
+            thread.start()
+        except Exception:
+            self._runners.pop(job_id, None)
+            raise
+
+    def _run_owned_job(self, job_id: str) -> None:
+        try:
+            self._run_job(job_id)
+        except Exception as exc:
+            log_exception(logger, f"小说任务运行器中断：job={job_id}", exc)
+        finally:
+            with self._lock_for(job_id):
+                self._runners.pop(job_id, None)
+                self._execution_locks.pop(job_id).close()
+
+    def _execution_lock_path(self, job_id: str) -> Path:
+        if self.repository is not None:
+            db = self.repository.database_path.resolve()
+            root = db.parent / f"{db.name}.novel-executors"
+        else:
+            root = self.storage_dir / ".execution"
+        digest = hashlib.sha256(job_id.encode()).hexdigest()
+        return root / f"{digest}.lock"
+
+    def _try_execution_lock(self, job_id: str, *, create: bool) -> BinaryIO | None:
+        path = self._execution_lock_path(job_id)
+        if create:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            handle = path.open("a+b" if create else "r+b")
+        except FileNotFoundError:
+            if create:
+                raise
+            return None
+        handle.seek(0)
+        try:
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            handle.close()
+            if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                raise
+            return None
+        return handle
+
+    def _execution_is_owned(self, job_id: str) -> bool:
+        if job_id in self._execution_locks:
+            return True
+        if not self._execution_lock_path(job_id).is_file():
+            return False
+        probe = self._try_execution_lock(job_id, create=False)
+        if probe is None:
+            return True
+        probe.close()
+        return False
+
+    @contextmanager
+    def _execution_owner(self, job_id: str):
+        if job_id in self._execution_locks:
+            yield
+            return
+        handle = self._try_execution_lock(job_id, create=True)
+        if handle is None:
+            raise NovelProcessConflict("该任务由另一个后端实例处理，请返回原实例操作或稍后查询任务状态。")
+        self._execution_locks[job_id] = handle
+        prior = self._jobs.pop(job_id, None)
+        try:
+            if prior is not None and prior.providerSelection and prior.providerSelection.api_key:
+                latest = self._read_job(job_id)
+                if latest.providerSelection and latest.providerSelection.connection_id == prior.providerSelection.connection_id:
+                    latest.providerSelection = latest.providerSelection.model_copy(update={"api_key": prior.providerSelection.api_key})
+                self._jobs[job_id] = latest
+            yield
+        finally:
+            if job_id not in self._runners:
+                self._execution_locks.pop(job_id).close()
 
     def _find_task(self, job: NovelProcessJob, task_id: str) -> AgentTask:
         for task in job.agentTasks:
@@ -1708,23 +2124,26 @@ class NovelProcessService:
         return lock
 
     def _job_path(self, job_id: str) -> Path:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", job_id):
+            raise KeyError("Novel process job not found")
         return self.storage_dir / f"{job_id}.json"
+
+    def _read_job(self, job_id: str) -> NovelProcessJob:
+        if self.repository is not None:
+            repo_job = self.repository.load_job(job_id)
+            if repo_job is not None:
+                return repo_job
+        path = self._job_path(job_id)
+        try:
+            return NovelProcessJob.model_validate_json(path.read_bytes())
+        except FileNotFoundError as exc:
+            raise KeyError(f"Novel process job not found: {job_id}") from exc
 
     def _load_job_unlocked(self, job_id: str) -> NovelProcessJob:
         job = self._jobs.get(job_id)
         if job is not None:
             return job
-        if self.repository is not None:
-            repo_job = self.repository.load_job(job_id)
-            if repo_job is not None:
-                self._jobs[job_id] = repo_job
-                self._cancel_events.setdefault(job_id, Event())
-                return repo_job
-        path = self._job_path(job_id)
-        if not path.exists():
-            raise KeyError(f"Novel process job not found: {job_id}")
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        job = NovelProcessJob.model_validate(payload)
+        job = self._read_job(job_id)
         self._jobs[job_id] = job
         self._cancel_events.setdefault(job_id, Event())
         return job
@@ -1732,9 +2151,20 @@ class NovelProcessService:
     def _save_job_unlocked(self, job: NovelProcessJob) -> None:
         path = self._job_path(job.jobId)
         payload = self._public_job(job).model_dump(mode="json")
+        if job.submissionFingerprint:
+            payload["submissionFingerprint"] = job.submissionFingerprint
         if self.repository is not None:
             self.repository.save_job(job)
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary = path.with_suffix(".writing")
+        try:
+            temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.replace(path)
+        except OSError:
+            if self.repository is None:
+                raise
+            logger.warning("小说任务 JSON 镜像写入失败，已保留 SQLite 记录：job=%s", job.jobId)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def _public_job(self, job: NovelProcessJob) -> NovelProcessJob:
         public = job.model_copy(deep=True)
@@ -1743,10 +2173,7 @@ class NovelProcessService:
         return public
 
     def _recover_interrupted_job_unlocked(self, job: NovelProcessJob) -> bool:
-        if job.status not in {"running", "retrying", "failed_partial"}:
-            return False
-        runner = self._runners.get(job.jobId)
-        if runner and runner.is_alive():
+        if job.status not in {"running", "retrying", "paused"}:
             return False
         changed = False
         now = utc_now()
@@ -1777,10 +2204,8 @@ class NovelProcessService:
             job.status = "retrying"
             job.completedAt = None
             job.updatedAt = now
-            self._cancel_events.setdefault(job.jobId, Event()).clear()
             self._append_event(job, "job_recovered", "Recovered unfinished subagent job from persistent storage.")
             self._refresh_progress(job)
-        self._ensure_runner_unlocked(job.jobId)
         return changed
 
     @staticmethod

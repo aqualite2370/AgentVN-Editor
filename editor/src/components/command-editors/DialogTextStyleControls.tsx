@@ -1,3 +1,4 @@
+import { NumberInput } from "../common/NumberInput";
 import type { DialogVisualStyle } from "../../../../shared/cartridge/types";
 import { RichSelect } from "../common/RichSelect";
 
@@ -49,7 +50,7 @@ export function DialogTextStyleControls({
       <strong>{title}</strong>
       <label>
         {"\u5b57\u53f7"}
-        <input
+        <NumberInput emptyValue=""
           type="number"
           min={10}
           max={96}

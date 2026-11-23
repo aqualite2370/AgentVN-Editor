@@ -4,7 +4,7 @@ import logging
 import re
 
 from fastapi import FastAPI, Request
-from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -88,7 +88,6 @@ def create_app() -> FastAPI:
                     sanitize_log_text(request.url.path),
                     response.status_code,
                 )
-            return response
         except Exception as exc:
             log_exception(
                 logger,
@@ -97,11 +96,18 @@ def create_app() -> FastAPI:
             )
             ai_error = _find_nested_exception(exc, AIProviderError)
             if ai_error is not None:
-                return _error_response(502, "ai_provider_error", str(ai_error))
-            agent_error = _find_nested_exception(exc, AgentVNError)
-            if agent_error is not None:
-                return _error_response(400, "agentvn_error", str(agent_error))
-            return _error_response(500, "internal_error", "后端服务异常，请查看后端日志。")
+                response = _error_response(502, "ai_provider_error", str(ai_error))
+            else:
+                agent_error = _find_nested_exception(exc, AgentVNError)
+                response = (_error_response(400, "agentvn_error", str(agent_error))
+                            if agent_error is not None else
+                            _error_response(500, "internal_error", "后端服务异常，请查看后端日志。"))
+        # API payloads can carry local credentials or private model context.
+        # Apply this to errors too. Immutable project media keeps its caching.
+        if request.url.path.startswith("/api/") and not request.url.path.startswith("/api/project/assets/"):
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Pragma"] = "no-cache"
+        return response
 
     app.add_middleware(
         CORSMiddleware,
@@ -129,15 +135,28 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(RequestValidationError)
     async def handle_request_validation_error(request: Request, exc: RequestValidationError):
+        # Pydantic's raw errors include input/ctx, which can contain an entire
+        # provider selection (including its key). Use the same bounded metadata
+        # shape for both the public response and logs; never log the raw error.
+        detail = [
+            {
+                "type": error["type"],
+                "loc": list(error["loc"]),
+                "msg": sanitize_log_text(error["msg"]),
+            }
+            for error in exc.errors()
+        ]
         logger.warning(
             "接口参数校验失败：%s %s detail=%s",
             request.method,
             sanitize_log_text(request.url.path),
-            sanitize_log_text(str(exc.errors()))[:8000],
+            str(detail)[:8000],
         )
-        response = await request_validation_exception_handler(request, exc)
-        response.headers["X-AgentVN-Error-Logged"] = "1"
-        return response
+        return JSONResponse(
+            status_code=422,
+            headers={"X-AgentVN-Error-Logged": "1"},
+            content={"detail": detail},
+        )
 
     @app.exception_handler(StarletteHTTPException)
     async def handle_http_error(request: Request, exc: StarletteHTTPException):

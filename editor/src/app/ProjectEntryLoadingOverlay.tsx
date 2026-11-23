@@ -4,32 +4,50 @@ import { RoseTwoLoader } from "../components/common/RoseTwoLoader";
 type ProjectEntryLoadingState = "loading" | "ready" | "closing";
 
 interface ProjectEntryLoadingOverlayProps {
+  kind: "home-hydration" | "project-entry";
   state: ProjectEntryLoadingState;
   onReadyCycleComplete?: () => void;
 }
 
-export function ProjectEntryLoadingOverlay({ state, onReadyCycleComplete }: ProjectEntryLoadingOverlayProps) {
+export function ProjectEntryLoadingOverlay({ kind, state, onReadyCycleComplete }: ProjectEntryLoadingOverlayProps) {
   const stateRef = useRef(state);
+  const onReadyRef = useRef(onReadyCycleComplete);
 
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
 
   useEffect(() => {
-    if (state !== "ready" || !onReadyCycleComplete || typeof window === "undefined") return;
-    if (!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
-    const timer = window.setTimeout(onReadyCycleComplete, 40);
+    onReadyRef.current = onReadyCycleComplete;
+  }, [onReadyCycleComplete]);
+
+  useEffect(() => {
+    if (state !== "ready" || !onReadyRef.current || typeof window === "undefined") return;
+    const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    if (reduced) {
+      let firstFrame = 0;
+      let secondFrame = 0;
+      firstFrame = window.requestAnimationFrame(() => {
+        secondFrame = window.requestAnimationFrame(() => onReadyRef.current?.());
+      });
+      return () => {
+        window.cancelAnimationFrame(firstFrame);
+        window.cancelAnimationFrame(secondFrame);
+      };
+    }
+    const timer = window.setTimeout(() => onReadyRef.current?.(), 320);
     return () => window.clearTimeout(timer);
-  }, [onReadyCycleComplete, state]);
+  }, [state]);
 
   function handleCycleIteration(event: AnimationEvent<HTMLSpanElement>) {
-    if (event.animationName !== "project-entry-rose-cycle") return;
+    if (event.animationName !== "project-entry-flow-sentinel" && event.animationName !== "project-entry-rose-cycle") return;
     if (stateRef.current === "ready") onReadyCycleComplete?.();
   }
 
   return (
     <div
       className={`project-entry-loading-overlay is-${state}`}
+      data-overlay-kind={kind}
       aria-live="polite"
       aria-label="正在装载项目"
       role="status"

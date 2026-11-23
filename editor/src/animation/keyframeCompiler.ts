@@ -18,7 +18,7 @@ export function compileKeyframe(keyframe: AnimationKeyframe): Keyframe {
   };
 }
 
-export function compileAnimationPreset(preset: AnimationPreset): CompiledAnimation {
+export function compileAnimationPreset(preset: Pick<AnimationPreset, "keyframes" | "duration_ms" | "easing" | "loop" | "direction">): CompiledAnimation {
   return {
     keyframes: preset.keyframes.map(compileKeyframe),
     options: {

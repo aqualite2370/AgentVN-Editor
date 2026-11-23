@@ -21,7 +21,7 @@ from app.models.novel_processing import (
     ChapterResult,
 )
 from app.services.novel_processing_service import NovelProcessingService
-from app.api.routes_novel_process import service as executor_service, _panel_job, _panel_event
+from app.api.routes_novel_process import service as executor_service, _execute, _panel_job, _panel_event
 from app.models.novel_process import (
     NovelProcessJob as ExecutorNovelProcessJob,
     NovelProcessJobCreateRequest as ExecutorNovelProcessJobCreateRequest,
@@ -212,7 +212,7 @@ def export_job_result(
 
 @router.post("/execute/jobs", response_model=ExecutorNovelProcessJob)
 def create_executor_novel_process_job(request: ExecutorNovelProcessJobCreateRequest) -> ExecutorNovelProcessJob:
-    return executor_service.create_job(request)
+    return _execute(executor_service.create_job, request)
 
 
 @router.get("/execute/jobs/{job_id}", response_model=ExecutorNovelProcessJob)
@@ -243,7 +243,7 @@ def get_executor_novel_process_events(job_id: str, limit: int = Query(default=50
 @router.post("/execute/jobs/{job_id}/pause")
 def pause_executor_novel_process_job(job_id: str) -> dict[str, object]:
     try:
-        return _panel_job(executor_service.pause_job(job_id))
+        return _panel_job(_execute(executor_service.pause_job, job_id))
     except KeyError as exc:
         raise _not_found(exc) from exc
 
@@ -251,7 +251,7 @@ def pause_executor_novel_process_job(job_id: str) -> dict[str, object]:
 @router.post("/execute/jobs/{job_id}/resume")
 def resume_executor_novel_process_job(job_id: str) -> dict[str, object]:
     try:
-        return _panel_job(executor_service.resume_job(job_id))
+        return _panel_job(_execute(executor_service.resume_job, job_id))
     except KeyError as exc:
         raise _not_found(exc) from exc
 
@@ -259,7 +259,7 @@ def resume_executor_novel_process_job(job_id: str) -> dict[str, object]:
 @router.post("/execute/jobs/{job_id}/cancel")
 def cancel_executor_novel_process_job(job_id: str) -> dict[str, object]:
     try:
-        return _panel_job(executor_service.cancel_job(job_id))
+        return _panel_job(_execute(executor_service.cancel_job, job_id))
     except KeyError as exc:
         raise _not_found(exc) from exc
 
@@ -267,7 +267,7 @@ def cancel_executor_novel_process_job(job_id: str) -> dict[str, object]:
 @router.post("/execute/jobs/{job_id}/retry_failed_chunks")
 def retry_executor_novel_process_failed_chunks(job_id: str) -> dict[str, object]:
     try:
-        return _panel_job(executor_service.rerun_failed(job_id))
+        return _panel_job(_execute(executor_service.rerun_failed, job_id))
     except KeyError as exc:
         raise _not_found(exc) from exc
 

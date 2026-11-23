@@ -15,6 +15,8 @@
   AssistantChatRequest,
   AssistantChatResponse,
   AssistantCitationResponse,
+  AssistantComponentDraftRequest,
+  AssistantComponentDraftResponse,
   ProjectSummary,
   SharedEditorState,
   SharedEditorStateUpdate,
@@ -29,6 +31,10 @@ const defaultModelRequestTimeoutSeconds = 300;
 const modelRequestTimeoutBufferSeconds = 30;
 const minModelRequestTimeoutSeconds = 30;
 const maxModelRequestTimeoutSeconds = 900;
+// An older backend can save before checking the graph. Never fall back to
+// those routes, even when the new Editor is used with a stale desktop helper.
+const validatedProjectUploadRoute = "/api/project/projects/import-validated";
+const validatedProjectTicketRoute = "/api/project/projects/import-ticket-validated";
 
 export const PROVIDER_API_ROUTES = {
   testConnection: "/api/providers/test_connection",
@@ -41,9 +47,17 @@ export interface BackendClientOptions {
   timeoutMs?: number;
 }
 
+export class BackendProjectImportUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BackendProjectImportUnavailableError";
+  }
+}
+
 export class BackendClient {
   private baseUrl: string;
   private timeoutMs: number;
+  private projectStateWrites: Promise<void> = Promise.resolve();
 
   constructor(options: BackendClientOptions = {}) {
     this.baseUrl = options.baseUrl ?? import.meta.env.VITE_BACKEND_URL ?? "http://127.0.0.1:8278";
@@ -52,6 +66,23 @@ export class BackendClient {
 
   setBaseUrl(baseUrl: string): void {
     this.baseUrl = baseUrl.replace(/\/$/, "");
+  }
+
+  getBaseUrl(): string {
+    return this.baseUrl;
+  }
+
+  resolveProjectAssetUrl(source: string): string {
+    try {
+      const url = new URL(source, this.baseUrl);
+      if (!url.pathname.startsWith("/api/project/assets/")) return source;
+      const backend = new URL(this.baseUrl);
+      url.protocol = backend.protocol;
+      url.host = backend.host;
+      return url.href;
+    } catch {
+      return source;
+    }
   }
 
   async healthCheck(): Promise<HealthResponse> {
@@ -113,12 +144,27 @@ export class BackendClient {
     return response.memory_mode;
   }
 
-  async saveProjectState(data: SharedEditorStateUpdate | Record<string, unknown>): Promise<SharedEditorState> {
-    const response = await this.request<{ ok: boolean; data: SharedEditorState }>("/api/project/state", {
-      method: "POST",
-      body: JSON.stringify(data),
-    }, { timeoutMs: 180000 });
-    return response.data;
+  saveProjectState(
+    data: SharedEditorStateUpdate | Record<string, unknown> | (() => SharedEditorStateUpdate | Record<string, unknown>),
+    options: { onPersisted?: (state: SharedEditorState) => void } = {},
+  ): Promise<SharedEditorState> {
+    return this.enqueueProjectWrite(async () => {
+      const payload = typeof data === "function" ? data() : data;
+      const response = await this.request<{ ok: boolean; data: SharedEditorState }>("/api/project/state", {
+        method: "POST",
+        cache: "no-store",
+        body: JSON.stringify(payload),
+      }, { timeoutMs: 180000 });
+      // Commit local state before a queued autosave takes its fresh snapshot.
+      options.onPersisted?.(response.data);
+      return response.data;
+    });
+  }
+
+  private enqueueProjectWrite<T>(operation: () => Promise<T>): Promise<T> {
+    const write = this.projectStateWrites.then(operation);
+    this.projectStateWrites = write.then(() => undefined, () => undefined);
+    return write;
   }
 
   async loadProjectState(options: { includeProject?: boolean; includeRecentProjects?: boolean } = {}): Promise<SharedEditorState | null> {
@@ -126,7 +172,12 @@ export class BackendClient {
     if (options.includeProject === false) params.set("include_project", "false");
     if (options.includeRecentProjects === false) params.set("include_recent_projects", "false");
     const suffix = params.toString() ? `?${params}` : "";
-    const response = await this.request<{ ok: boolean; data: SharedEditorState | null }>(`/api/project/state${suffix}`);
+    const response = await this.request<{ ok: boolean; data: SharedEditorState | null }>(`/api/project/state${suffix}`, { cache: "no-store" });
+    return response.data;
+  }
+
+  async loadProviderSecrets(): Promise<Record<string, string>> {
+    const response = await this.request<{ ok: boolean; data: Record<string, string> }>("/api/providers/secrets", { cache: "no-store" });
     return response.data;
   }
 
@@ -140,12 +191,90 @@ export class BackendClient {
     return response.data;
   }
 
-  async saveProject(project: import("../types/nodes").EditorProjectFile): Promise<import("../types/nodes").EditorProjectFile> {
-    const response = await this.request<{ ok: boolean; data: import("../types/nodes").EditorProjectFile }>(`/api/project/projects/${encodeURIComponent(project.project_id)}`, {
-      method: "PUT",
-      body: JSON.stringify(project),
-    }, { timeoutMs: 180000 });
-    return response.data;
+  async saveProject(
+    project: import("../types/nodes").EditorProjectFile,
+    options: { sourceSizeBytes?: number } = {},
+  ): Promise<import("../types/nodes").EditorProjectFile> {
+    return this.enqueueProjectWrite(async () => {
+      const response = await this.request<{ ok: boolean; data: import("../types/nodes").EditorProjectFile }>(`/api/project/projects/${encodeURIComponent(project.project_id)}`, {
+        method: "PUT",
+        headers: options.sourceSizeBytes !== undefined
+          ? { "X-AgentVN-Source-Size-Bytes": String(Math.max(0, Math.round(options.sourceSizeBytes))) }
+          : undefined,
+        body: JSON.stringify(project),
+      }, { timeoutMs: 180000 });
+      return response.data;
+    });
+  }
+
+  async importProjectFile(file: File): Promise<import("../types/nodes").EditorProjectFile> {
+    const timeoutMs = 30 * 60 * 1000;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(`${this.baseUrl}${validatedProjectUploadRoute}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "X-AgentVN-Filename": encodeURIComponent(file.name),
+        },
+        body: file,
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        const detail = parseBackendErrorText(text) || response.statusText;
+        if (response.status === 404 || response.status === 405) {
+          throw new BackendProjectImportUnavailableError("当前后端版本不支持安全工程导入。请更新桌面版并重新打开。");
+        }
+        throw new Error(`后端导入工程失败 ${response.status}：${detail}`);
+      }
+      const payload = await response.json() as {
+        ok: boolean;
+        data: import("../types/nodes").EditorProjectFile;
+      };
+      return payload.data;
+    } catch (error) {
+      let reportedError = error;
+      if (error instanceof DOMException && error.name === "AbortError") {
+        reportedError = new Error("工程上传超过 30 分钟仍未完成，已停止导入。");
+      } else if (error instanceof TypeError && /failed to fetch/i.test(error.message)) {
+        reportedError = new Error("工程导入未收到后端确认。请先刷新项目库核对工程是否已导入，再决定是否重试。");
+      }
+      if (!(reportedError instanceof BackendProjectImportUnavailableError)) {
+        reportFrontendError("editor.backend-api", reportedError, {
+          path: validatedProjectUploadRoute,
+          method: "POST",
+          fileName: file.name,
+          fileSize: file.size,
+          timeoutMs,
+        });
+      }
+      throw reportedError;
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+
+  async importProjectTicket(token: string): Promise<import("../types/nodes").EditorProjectFile> {
+    try {
+      const response = await this.request<{
+        ok: boolean;
+        data: import("../types/nodes").EditorProjectFile;
+      }>(validatedProjectTicketRoute, {
+        method: "POST",
+        body: JSON.stringify({ token }),
+      }, { timeoutMs: 30 * 60 * 1000 });
+      return response.data;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/后端请求失败\s+(404[：:]\s*Not Found|405\b)/i.test(message)) {
+        throw new BackendProjectImportUnavailableError(
+          "后端版本不匹配：当前运行的 creator-backend 不支持工程导入。请退出 AgentVN 后重新安装最新版，再重新打开。",
+        );
+      }
+      throw error;
+    }
   }
 
   async deleteProject(projectId: string): Promise<boolean> {
@@ -185,8 +314,66 @@ export class BackendClient {
     );
   }
 
-  async getNovelProcessJob(jobId: string): Promise<NovelProcessJob> {
-    return this.request<NovelProcessJob>(`/api/novel/processing/execute/jobs/${encodeURIComponent(jobId)}/panel`);
+  async createAssistantComponentDraft(
+    payload: AssistantComponentDraftRequest,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<AssistantComponentDraftResponse> {
+    return this.request<AssistantComponentDraftResponse>(
+      "/api/assistant/creation/component",
+      {
+        method: "POST",
+        body: JSON.stringify(stripBackendIncompatibleProviderFields(payload)),
+        signal: options.signal,
+      },
+      { timeoutMs: modelRequestTimeoutMs(payload.provider_selection) },
+    );
+  }
+
+  async enqueueAssistantCreationProcess(payload: {
+    id: string;
+    project_id: string;
+    project_title: string;
+    conversation_id: string;
+    request: AssistantComponentDraftRequest;
+  }): Promise<import("./types").AssistantCreationProcess> {
+    return this.request<import("./types").AssistantCreationProcess>(
+      "/api/assistant/creation/processes",
+      { method: "POST", body: JSON.stringify(payload) },
+      { allowLegacyRetry: false },
+    );
+  }
+
+  async listAssistantCreationProcesses(): Promise<import("./types").AssistantCreationProcess[]> {
+    const response = await this.request<{ processes: import("./types").AssistantCreationProcess[] }>(
+      "/api/assistant/creation/processes",
+    );
+    return response.processes;
+  }
+
+  async getAssistantCreationProcess(id: string, timeoutMs?: number): Promise<import("./types").AssistantCreationProcess> {
+    return this.request<import("./types").AssistantCreationProcess>(
+      `/api/assistant/creation/processes/${encodeURIComponent(id)}`,
+      {}, { timeoutMs },
+    );
+  }
+
+  async cancelAssistantCreationProcess(id: string): Promise<import("./types").AssistantCreationProcess> {
+    return this.request<import("./types").AssistantCreationProcess>(
+      `/api/assistant/creation/processes/${encodeURIComponent(id)}/cancel`,
+      { method: "POST" },
+    );
+  }
+
+  async submitAssistantCreationLocalResult(id: string, payload: {
+    request_id: string; project_id: string; conversation_id: string;
+    result: import("./types").AssistantCreationLocalToolResult;
+  }): Promise<{ ok: boolean }> {
+    return this.request(`/api/assistant/creation/processes/${encodeURIComponent(id)}/local-result`,
+      { method: "POST", body: JSON.stringify(payload) });
+  }
+
+  async getNovelProcessJob(jobId: string, signal?: AbortSignal): Promise<NovelProcessJob> {
+    return this.request<NovelProcessJob>(`/api/novel/processing/execute/jobs/${encodeURIComponent(jobId)}/panel`, { signal });
   }
 
   async createNovelProcessJob(payload: NovelProcessJobCreatePayload): Promise<NovelProcessJobApiResponse> {
@@ -194,6 +381,17 @@ export class BackendClient {
       method: "POST",
       body: JSON.stringify(stripBackendIncompatibleProviderFields(payload)),
     }, { timeoutMs: 60000 });
+  }
+
+  async readNovelProcessReceipt(jobId: string): Promise<NovelProcessJobApiResponse | undefined> {
+    try {
+      return await this.request<NovelProcessJobApiResponse>(
+        `/api/novel/processing/execute/jobs/${encodeURIComponent(jobId)}`,
+      );
+    } catch (error) {
+      if (error instanceof Error && /^后端请求失败 404[：:]/.test(error.message)) return undefined;
+      throw error;
+    }
   }
 
   async getNovelProcessJobResults(jobId: string): Promise<NovelProcessJobResultsResponse> {
@@ -207,8 +405,8 @@ export class BackendClient {
     }, { timeoutMs: modelRequestTimeoutMs(payload.providerSelection) });
   }
 
-  async getJobEvents(jobId: string, limit = 50): Promise<NovelProcessEvent[]> {
-    return this.request<NovelProcessEvent[]>(`/api/novel/processing/execute/jobs/${encodeURIComponent(jobId)}/events?limit=${limit}`);
+  async getJobEvents(jobId: string, limit = 50, signal?: AbortSignal): Promise<NovelProcessEvent[]> {
+    return this.request<NovelProcessEvent[]>(`/api/novel/processing/execute/jobs/${encodeURIComponent(jobId)}/events?limit=${limit}`, { signal });
   }
 
   async retryFailedChunks(jobId: string): Promise<NovelProcessJob> {
@@ -227,8 +425,12 @@ export class BackendClient {
     return this.request<NovelProcessJob>(`/api/novel/processing/execute/jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST" });
   }
 
-  private async request<T>(path: string, init: RequestInit = {}, options: { timeoutMs?: number } = {}): Promise<T> {
+  private async request<T>(path: string, init: RequestInit = {}, options: { timeoutMs?: number; allowLegacyRetry?: boolean } = {}): Promise<T> {
     const controller = new AbortController();
+    const externalSignal = init.signal;
+    const abortExternal = () => controller.abort(externalSignal?.reason);
+    if (externalSignal?.aborted) abortExternal();
+    else externalSignal?.addEventListener("abort", abortExternal, { once: true });
     const timeoutMs = options.timeoutMs ?? this.timeoutMs;
     const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -242,7 +444,7 @@ export class BackendClient {
       });
       if (!response.ok) {
         const text = await response.text();
-        const retryBody = legacyTimeoutCompatibleBody(init.body, text);
+        const retryBody = options.allowLegacyRetry === false ? undefined : legacyTimeoutCompatibleBody(init.body, text);
         if (retryBody) {
           response = await fetch(`${this.baseUrl}${path}`, {
             ...init,
@@ -256,13 +458,14 @@ export class BackendClient {
           if (response.ok) return (await response.json()) as T;
           const retryText = await response.text();
           const retryDetail = parseBackendErrorText(retryText) || response.statusText;
-          throw new Error(`鍚庣璇锋眰澶辫触 ${response.status}锛?{retryDetail}`);
+          throw new Error(`后端请求失败 ${response.status}：${retryDetail}`);
         }
         const detail = parseBackendErrorText(text) || response.statusText;
         throw new Error(`后端请求失败 ${response.status}：${detail}`);
       }
       return (await response.json()) as T;
     } catch (error) {
+      if (externalSignal?.aborted) throw error;
       let reportedError = error;
       if (error instanceof DOMException && error.name === "AbortError") {
         reportedError = new Error(`后端请求超过 ${Math.round(timeoutMs / 1000)} 秒仍未完成，请稍后重试或检查模型服务是否响应过慢。`);
@@ -278,6 +481,7 @@ export class BackendClient {
       throw reportedError;
     } finally {
       window.clearTimeout(timeout);
+      externalSignal?.removeEventListener("abort", abortExternal);
     }
   }
 
@@ -414,6 +618,7 @@ export interface NovelProcessChunkPayload {
 }
 
 export interface NovelProcessJobCreatePayload {
+  requestId?: string;
   bookId: string;
   title: string;
   chunks: NovelProcessChunkPayload[];
@@ -428,6 +633,7 @@ export interface NovelProcessJobCreatePayload {
 export interface NovelProcessJobApiResponse extends NovelProcessJobCreatePayload {
   jobId: string;
   status: string;
+  totalChunks: number;
 }
 
 export interface NovelProcessChunkResult {

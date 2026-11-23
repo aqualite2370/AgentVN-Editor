@@ -1,3 +1,4 @@
+import { NumberInput } from "../common/NumberInput";
 import { SlidersHorizontal } from "lucide-react";
 import { useState } from "react";
 import type { CharacterSpriteAnimationConfig } from "../../../../shared/animation/characterAnimation";
@@ -101,7 +102,7 @@ export function CharacterAnimationControls({
         </label>
         <label>
           时长 ms
-          <input
+          <NumberInput
             type="number"
             data-help-key="command.sprite.animationConfig.duration"
             min={80}
@@ -118,7 +119,7 @@ export function CharacterAnimationControls({
         </label>
         <label>
           延迟 ms
-          <input
+          <NumberInput
             type="number"
             data-help-key="command.sprite.animationConfig.delay"
             min={0}

@@ -35,6 +35,8 @@ export interface ChunkRecord {
 
 export interface NovelProcessJob {
   jobId: string;
+  /** The provider used to create this backend job, independent of UI selection. */
+  modelName?: string;
   bookId: string;
   selectedChapterIds: string[];
   totalChapters: number;
@@ -116,7 +118,7 @@ export const defaultNovelProcessingConfig: NovelProcessingConfig = {
   chunkOverlapChars: 500,
   chunkMinChars: 2000,
   maxConcurrency: 3,
-  maxRetryCount: 2,
+  maxRetryCount: 5,
 };
 
 export const emptyNovelProcessingState: NovelProcessingState = {

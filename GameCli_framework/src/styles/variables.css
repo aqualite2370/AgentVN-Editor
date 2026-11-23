@@ -32,6 +32,7 @@
   --runtime-choice-text: #041013;
   --runtime-quick-menu: var(--surface);
   --runtime-focus: var(--accent);
+  --overlay-z-screen: 10;
   --overlay-z-player: 20;
   --overlay-z-quick-menu: 30;
   --overlay-z-debug: 40;
@@ -55,6 +56,8 @@
   --motion: 220ms;
   --motion-emphasis: 420ms;
   --motion-ai-flow: 1600ms;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
   --ease-emphasis: cubic-bezier(0.18, 0.9, 0.18, 1);
   --checkbox-size: 18px;
@@ -130,19 +133,16 @@ input[type="checkbox"] {
   margin: 0;
   padding: 0;
   border: 1px solid var(--checkbox-border);
-  border-radius: 5px;
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--checkbox-bg) 90%, white 10%), var(--checkbox-bg));
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.72),
-    0 0 0 0 var(--checkbox-glow);
+  border-radius: 7px;
+  background: transparent;
+  box-shadow: none;
   cursor: pointer;
-  transform: translateZ(0);
+  transform: none;
   transition:
-    background var(--motion-fast) var(--ease),
-    border-color var(--motion-fast) var(--ease),
-    box-shadow var(--motion) var(--ease),
-    transform 120ms var(--ease-emphasis);
+    background-color 160ms var(--ease-out),
+    border-color 140ms var(--ease),
+    opacity 140ms var(--ease),
+    transform 120ms var(--ease-out);
 }
 
 input[type="checkbox"]::before {
@@ -154,40 +154,66 @@ input[type="checkbox"]::before {
   border-bottom: 2px solid var(--checkbox-check);
   opacity: 0;
   clip-path: inset(0 100% 0 0);
-  transform: rotate(-45deg) scale(0.9);
+  transform: rotate(-45deg);
   transform-origin: 42% 58%;
   transition:
-    clip-path 180ms var(--ease-emphasis),
-    opacity 120ms ease;
+    clip-path 160ms var(--ease-out),
+    opacity 160ms var(--ease-out);
 }
 
-input[type="checkbox"]:hover {
-  border-color: color-mix(in srgb, var(--checkbox-accent) 70%, var(--checkbox-border));
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.82),
-    0 0 0 3px color-mix(in srgb, var(--checkbox-glow) 72%, transparent);
+.precision-icon {
+  display: block;
+  flex: 0 0 auto;
+  overflow: visible;
+  color: currentColor;
 }
 
-input[type="checkbox"]:focus,
+.precision-icon__guide {
+  opacity: 0.24;
+}
+
+.precision-icon__accent {
+  opacity: 0.5;
+  transform: scale(0.94);
+  transform-box: fill-box;
+  transform-origin: center;
+  transition:
+    opacity 160ms var(--ease-out),
+    transform 160ms var(--ease-out);
+}
+
+.ui-button.active .precision-icon__accent,
+.ui-button[aria-pressed="true"] .precision-icon__accent,
+.settings-tabs button.is-active .precision-icon__accent {
+  opacity: 1;
+  transform: scale(1);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  input[type="checkbox"]:hover:not(:disabled) {
+    border-color: var(--checkbox-accent);
+    opacity: 0.88;
+  }
+}
+
+input[type="checkbox"]:focus {
+  box-shadow: none;
+}
+
 input[type="checkbox"]:focus-visible {
-  outline: 2px solid transparent;
+  outline: 2px solid color-mix(in srgb, var(--runtime-focus, var(--checkbox-accent)) 72%, transparent);
   outline-offset: 2px;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.76),
-    0 0 8px color-mix(in srgb, var(--checkbox-accent) 30%, transparent),
-    0 0 18px color-mix(in srgb, var(--checkbox-accent) 18%, transparent);
+  box-shadow: none;
 }
 
 input[type="checkbox"]:active {
-  transform: scale(0.94);
+  transform: scale(0.97);
 }
 
 input[type="checkbox"]:checked {
-  border-color: color-mix(in srgb, var(--checkbox-accent) 82%, var(--checkbox-accent-strong));
-  background: linear-gradient(135deg, var(--checkbox-accent), var(--checkbox-accent-strong));
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.34),
-    0 5px 12px color-mix(in srgb, var(--checkbox-accent) 18%, transparent);
+  border-color: var(--checkbox-accent);
+  background: var(--checkbox-accent);
+  box-shadow: none;
 }
 
 input[type="checkbox"]:checked::before {
@@ -222,8 +248,22 @@ input[type="checkbox"]:disabled {
     transition-duration: 1ms !important;
   }
 
-  input[type="checkbox"],
+  input[type="checkbox"] {
+    transform: none !important;
+    transition:
+      background-color 80ms linear !important,
+      border-color 80ms linear !important,
+      opacity 80ms linear !important;
+  }
+
   input[type="checkbox"]::before {
-    transition-duration: 1ms !important;
+    clip-path: inset(0 0 0 0);
+    transform: rotate(-45deg);
+    transition: opacity 80ms linear !important;
+  }
+
+  .precision-icon__accent {
+    transform: none !important;
+    transition: opacity 80ms linear !important;
   }
 }

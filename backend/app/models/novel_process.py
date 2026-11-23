@@ -106,6 +106,7 @@ class ChunkRecord(StrictBaseModel):
     endOffset: int = Field(default=0, ge=0)
     status: ChunkStatus = "pending"
     retryCount: int = Field(default=0, ge=0)
+    retryLimit: int | None = Field(default=None, ge=0, le=10)
     previousContextSummary: str = ""
     nextContextHint: str = ""
     contextChars: int = Field(default=0, ge=0)
@@ -217,6 +218,7 @@ class JobEventLog(StrictBaseModel):
 
 
 class NovelProcessJobCreateRequest(StrictBaseModel):
+    requestId: str | None = Field(default=None, pattern=r"^novel_request_[a-f0-9-]{36}$")
     bookId: str
     title: str = ""
     chunks: list[NovelProcessChunkInput]
@@ -236,6 +238,7 @@ class NovelProcessJobControlResponse(StrictBaseModel):
 
 class NovelProcessJob(StrictBaseModel):
     jobId: str
+    submissionFingerprint: str | None = Field(default=None, exclude=True)
     bookId: str
     title: str = ""
     status: JobStatus = "created"

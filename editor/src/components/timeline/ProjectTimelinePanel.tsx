@@ -1,6 +1,10 @@
-import { AlertTriangle, Clock3, RotateCcw, X } from "lucide-react";
-import { useEffect, useState } from "react";
-import { createPortal } from "react-dom";
+import { AlertTriangle, Clock3, RotateCcw } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { OperationResultDialog } from "../common/OperationResultDialog";
+import {
+  assertEditorProjectRevision, captureEditorProjectRevision, EditorSaveSupersededError,
+  editorProjectOwner, ownsEditorProject, restoreEditorTimelineProject,
+} from "../../utils/editorProjectPersistence";
 import { RoseTwoLoader } from "../common/RoseTwoLoader";
 import { useEditorStore } from "../../store/editorStore";
 import { useProjectStore } from "../../store/projectStore";
@@ -16,7 +20,7 @@ import {
 import { reportFrontendError } from "../../../../shared/logging/frontendErrorLogger";
 
 interface ProjectTimelinePanelProps {
-  onRestore: (project: EditorProjectFile, entry: ProjectBackupEntry) => void | Promise<void>;
+  onRestore?: (project: EditorProjectFile, entry: ProjectBackupEntry) => void | Promise<void>;
 }
 
 function formatDate(value: string | number): string {
@@ -28,28 +32,41 @@ function formatDate(value: string | number): string {
 function triggerLabel(trigger: string): string {
   if (trigger === "manual_save") return "保存工程";
   if (trigger === "return_home") return "返回主页";
+  if (trigger === "auto_save") return "自动恢复点";
+  if (trigger === "before_restore") return "恢复前保留";
   if (trigger === "legacy_animation_batch_migration") return "批量转换旧动画节点前";
   return trigger || "工程备份";
 }
 
-export function ProjectTimelinePanel({ onRestore }: ProjectTimelinePanelProps) {
+export function ProjectTimelinePanel({ onRestore = restoreEditorTimelineProject }: ProjectTimelinePanelProps) {
   const project = useProjectStore();
+  const generation = useEditorStore(state => state.projectLoadGeneration);
   const setNotice = useEditorStore((state) => state.setNotice);
   const [entries, setEntries] = useState<ProjectBackupEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [pendingRestore, setPendingRestore] = useState<ProjectBackupEntry>();
+  const [restoring, setRestoring] = useState(false);
+  const sequence = useRef(0);
+  const restoringRef = useRef<symbol | undefined>(undefined);
 
   async function refresh() {
+    const owner = editorProjectOwner();
+    const request = ++sequence.current;
+    const current = () => request === sequence.current && ownsEditorProject(owner);
     setLoading(true);
     setError(undefined);
     try {
-      setEntries(await listProjectBackups(project.projectId));
+      const next = await listProjectBackups(owner.projectId);
+      if (!current()) return;
+      if (next.some(entry => entry.project_id !== owner.projectId)) throw new Error("时间线记录的工程归属不匹配。");
+      setEntries(next);
     } catch (listError) {
       reportFrontendError("editor.timeline", listError, {
         operation: "list",
         projectId: project.projectId,
       });
+      if (!current()) return;
       const message = listError instanceof TimelineUnavailableError
         ? listError.message
         : listError instanceof Error
@@ -65,44 +82,71 @@ export function ProjectTimelinePanel({ onRestore }: ProjectTimelinePanelProps) {
         action: "文件式时间线需要桌面版，并且 backup-timeline 文件夹需要可读写。",
       });
     } finally {
-      setLoading(false);
+      if (current()) setLoading(false);
     }
   }
 
   useEffect(() => {
+    restoringRef.current = undefined;
+    setEntries([]);
+    setPendingRestore(undefined);
+    setRestoring(false);
     void refresh();
-  }, [project.projectId]);
+    return () => {
+      sequence.current += 1;
+      restoringRef.current = undefined;
+    };
+  }, [project.projectId, generation]);
 
   async function restore(entry: ProjectBackupEntry) {
+    if (restoringRef.current) return;
+    const owner = editorProjectOwner();
+    const confirmed = captureEditorProjectRevision();
+    const request = sequence.current;
+    const current = () => request === sequence.current && ownsEditorProject(owner);
+    const operation = Symbol("timeline-restore");
+    restoringRef.current = operation;
+    setRestoring(true);
     try {
+      if (entry.project_id !== owner.projectId) throw new Error("该记录不属于当前工程。");
       const raw = await readProjectBackup(entry.file_name);
+      if (!current()) return;
+      assertEditorProjectRevision(confirmed);
       const parsed = parseProjectJson(JSON.parse(raw));
       if (!parsed.project) {
-        setNotice({
-          tone: "error",
-          source: "项目时间线",
-          message: parsed.error ?? "时间线备份不可用。",
-          detail: `Backup file: ${entry.file_name}`,
-          action: "请确认 backup-timeline 文件夹中的工程备份没有被手动损坏。",
-        });
-        return;
+        throw new Error(parsed.error ?? "时间线备份不可用。");
       }
+      if (parsed.project.project_id !== owner.projectId) throw new Error("备份内容的工程归属不匹配。");
       await onRestore(parsed.project, entry);
-      setPendingRestore(undefined);
+      if (useProjectStore.getState().projectId === owner.projectId
+        && useEditorStore.getState().projectLoadGeneration === owner.generation + 1) {
+        setNotice(`已恢复 ${formatDate(entry.timestamp_ms)} 的工程快照。`, "success");
+      }
     } catch (restoreError) {
       reportFrontendError("editor.timeline", restoreError, {
         operation: "restore",
         projectId: project.projectId,
         backup: entry.file_name,
       });
+      if (!current()) return;
+      setError(restoreError instanceof Error ? restoreError.message : "恢复失败。");
       setNotice({
         tone: "error",
         source: "项目时间线",
         message: restoreError instanceof Error ? restoreError.message : "恢复时间线备份失败。",
         detail: restoreError instanceof Error ? restoreError.stack : undefined,
         error: restoreError,
-        action: "请检查 backup-timeline 文件夹权限，以及目标备份文件是否仍然存在。",
+        action: restoreError instanceof EditorSaveSupersededError
+          ? "当前内容已变化，请重新选择时间线记录后再恢复。"
+          : "请检查 backup-timeline 文件夹权限，以及目标备份文件是否仍然存在。",
       });
+    } finally {
+      // An old project's read may finish while the new project is restoring.
+      // It must neither hold nor release the new operation's guard.
+      if (restoringRef.current === operation) {
+        restoringRef.current = undefined;
+        if (request === sequence.current) setRestoring(false);
+      }
     }
   }
 
@@ -110,10 +154,9 @@ export function ProjectTimelinePanel({ onRestore }: ProjectTimelinePanelProps) {
     <section className="project-timeline-panel">
       <header>
         <div>
-          <span className="panel-kicker">项目时间线</span>
           <h3>时间线（最近 {projectTimelineRecentLimit} 次）</h3>
         </div>
-        <button type="button" data-help-key="timeline.refresh" onClick={() => void refresh()}>
+        <button type="button" disabled={restoring} data-help-key="timeline.refresh" onClick={() => void refresh()}>
           刷新
         </button>
       </header>
@@ -136,14 +179,14 @@ export function ProjectTimelinePanel({ onRestore }: ProjectTimelinePanelProps) {
         <div className="timeline-empty">
           <Clock3 size={24} />
           <strong>还没有时间线记录</strong>
-          <p>点击“保存工程”或返回项目主页后，桌面版会把当前工程写入 backup-timeline 文件夹。</p>
+          <p>导出工程或返回项目主页可以保留备份。恢复其他备份前，也会保留当前工程。桌面版最近保留 {projectTimelineRecentLimit} 次。</p>
         </div>
       )}
       {!loading && !error && entries.length > 0 && (
         <div className="timeline-list" aria-label="工程时间线记录">
           {entries.map((entry) => (
             <article className="timeline-entry" key={entry.file_name}>
-              <button type="button" data-help-key="timeline.entry" onClick={() => setPendingRestore(entry)}>
+              <button type="button" disabled={restoring} data-help-key="timeline.entry" onClick={() => setPendingRestore(entry)}>
                 <span className="timeline-entry-icon"><Clock3 size={16} /></span>
                 <span className="timeline-entry-main">
                   <strong>{entry.title || "未命名视觉小说"}</strong>
@@ -158,34 +201,13 @@ export function ProjectTimelinePanel({ onRestore }: ProjectTimelinePanelProps) {
         </div>
       )}
 
-      {pendingRestore && createPortal((
-        <div className="timeline-confirm-backdrop" role="presentation" onPointerDown={() => setPendingRestore(undefined)}>
-          <section className="timeline-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="timeline-confirm-title" onPointerDown={(event) => event.stopPropagation()}>
-            <button
-              type="button"
-              className="timeline-confirm-close"
-              aria-label="关闭恢复确认"
-              title="关闭恢复确认"
-              data-tooltip="关闭恢复确认"
-              data-help-key="timeline.restoreCancel"
-              onClick={() => setPendingRestore(undefined)}
-            >
-              <X size={16} aria-hidden="true" />
-            </button>
-            <span className="panel-kicker">恢复备份</span>
-            <h3 id="timeline-confirm-title">恢复这个时间点？</h3>
-            <p>
-              将用 <strong>{pendingRestore.title || "未命名视觉小说"}</strong> 在 {formatDate(pendingRestore.timestamp_ms)} 的备份覆盖当前工程。
-            </p>
-            <div className="timeline-confirm-actions">
-              <button type="button" data-help-key="timeline.restoreCancel" onClick={() => setPendingRestore(undefined)}>取消</button>
-              <button type="button" className="danger" data-help-key="timeline.restoreConfirm" onClick={() => void restore(pendingRestore)}>
-                <RotateCcw size={16} /> 恢复备份
-              </button>
-            </div>
-          </section>
-        </div>
-      ), document.body)}
+      <OperationResultDialog open={Boolean(pendingRestore)} tone="warning" label="时间线"
+        title="恢复这个时间点？" message={pendingRestore
+          ? `恢复 ${formatDate(pendingRestore.timestamp_ms)} 的工程。当前内容会先保存为恢复点。` : ""}
+        icon={<RotateCcw size={20} />} testId="timeline-restore-confirmation" confirmLabel="取消"
+        busy={restoring} inertBackground reducedMotionDurationMs={120}
+        contextAction={{ label: "恢复备份", onClick: () => pendingRestore ? restore(pendingRestore) : undefined }}
+        onDismiss={() => setPendingRestore(undefined)} />
     </section>
   );
 }

@@ -24,6 +24,7 @@ import type {
 import type { AgentTask, ChunkRecord, NovelProcessJob as LocalNovelProcessJob, NovelProcessingState } from "./novelProcessing";
 import { estimateTokensFromCjkCharCount } from "../utils/contextBudget";
 import { reportFrontendError } from "../../../shared/logging/frontendErrorLogger";
+import { readLargeNovelTaskCache, readSmallNovelTaskCache, writeNovelTaskCache } from "./taskCache";
 
 export const novelProcessTaskSnapshotKey = "agentvn.novelProcessTaskWorkbench.snapshot";
 
@@ -44,9 +45,26 @@ function projectSnapshotKey(projectId: string): string {
   return `${novelProcessTaskSnapshotKey}.${encodeURIComponent(projectId || "project_local")}`;
 }
 
+function isLocalFileOnlySnapshot(snapshot: NovelProcessTaskSnapshot): boolean {
+  if (snapshot.job.source !== "mock" || snapshot.job.status !== "running"
+    || snapshot.job.completedChunks !== 0 || snapshot.job.failedChunks !== 0
+    || snapshot.job.cancelledChunks !== 0) return false;
+  const isLocalProgress = (event: NovelProcessEvent): boolean => {
+    const payload = event?.payload;
+    return event?.type === "agent_output_updated" && payload !== null
+      && typeof payload === "object" && "phase" in payload && payload.phase === "import";
+  };
+  // Older adapters persisted file reads as unfinished model jobs. Ignore only
+  // that unambiguous local-only shape; keep the original cache bytes and all
+  // API jobs, real result events and ambiguous history available for recovery.
+  return snapshot.events.some(isLocalProgress)
+    && snapshot.events.every(event => event?.type === "job_created" || isLocalProgress(event));
+}
+
 function normalizeSnapshotForProject(snapshot: NovelProcessTaskSnapshot, projectId: string): NovelProcessTaskSnapshot | undefined {
   if (!snapshot?.job?.jobId || !Array.isArray(snapshot.events)) return undefined;
   if (snapshot.projectId && snapshot.projectId !== projectId) return undefined;
+  if (isLocalFileOnlySnapshot(snapshot)) return undefined;
   return { ...snapshot, projectId };
 }
 
@@ -83,11 +101,19 @@ function latestOutputPreview(results: NovelAiInspectableResult[], fallback: stri
 }
 
 function statusFromImportState(input: NovelProcessMockInput): NovelProcessJobStatus | undefined {
-  const { importJob, progress, errors, isProcessing } = input;
-  if (!importJob && !progress) return undefined;
+  const { importJob, progress, errors, isProcessing, session } = input;
+  if (!importJob && !progress) {
+    if (!session.document || session.chunks.length === 0) return undefined;
+    if (errors.length > 0 && !isProcessing)
+      return session.ai_chunk_analyses.length > 0 ? "failed_partial" : "failed";
+    if (isProcessing) return "running";
+    if (session.ai_outline) return "paused";
+    return undefined;
+  }
   if (importJob?.cancelRequested || importJob?.status === "cancelled") return "cancelled";
   if (importJob?.pauseRequested || importJob?.status === "paused") {
-    return errors.length > 0 ? "failed_partial" : "paused";
+    if (errors.length === 0) return "paused";
+    return session.adapted_scenes.length > 0 ? "failed_partial" : "failed";
   }
   if (importJob?.status === "completed") return "completed";
   if (importJob?.status === "running" || isProcessing || progress) return "running";
@@ -185,13 +211,12 @@ function buildTokenStats(chapters: NovelProcessChapterProgress[], agentRows: Nov
 function buildPhaseProgress(status: NovelProcessJobStatus, completedChunks: number, totalChunks: number, updatedAt: string): NovelProcessPhaseProgress[] {
   const finished = clamp(completedChunks, 0, Math.max(1, totalChunks));
   const chunkPercent = Math.round((finished / Math.max(1, totalChunks)) * 100);
-  const completed = status === "completed";
   const failed = status === "failed" || status === "failed_partial";
   return [
     {
       phase: "chunk_parse",
       label: "切片解析",
-      status: chunkPercent >= 100 ? "completed" : status === "paused" ? "paused" : status === "retrying" ? "retrying" : failed ? "failed" : "running",
+      status: status === "cancelled" ? "cancelled" : chunkPercent >= 100 && !failed ? "completed" : status === "paused" ? "paused" : status === "retrying" ? "retrying" : failed ? "failed" : "running",
       current: finished,
       total: Math.max(1, totalChunks),
       percent: chunkPercent,
@@ -199,10 +224,10 @@ function buildPhaseProgress(status: NovelProcessJobStatus, completedChunks: numb
       etaMs: chunkPercent < 100 ? Math.max(0, totalChunks - finished) * 12_000 : null,
       blockingReason: failed ? "本地恢复快照含失败项，需要重试或复核。" : null,
     },
-    { phase: "chapter_merge", label: "章节合并", status: completed ? "completed" : "waiting", current: completed ? 1 : 0, total: 1, percent: completed ? 100 : 0, updatedAt },
-    { phase: "continuity_review", label: "连续性复核", status: completed ? "completed" : "waiting", current: completed ? 1 : 0, total: 1, percent: completed ? 100 : 0, updatedAt },
-    { phase: "import_write", label: "写入蓝图", status: completed ? "completed" : "waiting", current: completed ? 1 : 0, total: 1, percent: completed ? 100 : 0, updatedAt },
-    { phase: "validation", label: "结构校验", status: failed ? "blocked" : completed ? "completed" : "waiting", current: completed ? 1 : 0, total: 1, percent: completed ? 100 : 0, updatedAt, blockingReason: failed ? "失败项未清理前不能视为最终通过。" : null },
+    { phase: "chapter_merge", label: "章节合并", status: "waiting", current: 0, total: 1, percent: 0, updatedAt, blockingReason: "恢复快照没有章节合并回执，等待实际阶段记录。" },
+    { phase: "continuity_review", label: "连续性复核", status: "waiting", current: 0, total: 1, percent: 0, updatedAt, blockingReason: "恢复快照没有连续性复核回执，等待实际阶段记录。" },
+    { phase: "import_write", label: "写入蓝图", status: status === "cancelled" ? "cancelled" : "waiting", current: 0, total: 1, percent: 0, updatedAt, blockingReason: "等待核对当前工程实际写入的节点。" },
+    { phase: "validation", label: "结构校验", status: status === "cancelled" ? "cancelled" : "waiting", current: 0, total: 1, percent: 0, updatedAt, blockingReason: "尚未核对当前工程节点的结构校验结果。" },
   ];
 }
 
@@ -374,8 +399,8 @@ function createProcessingSnapshot(input: NovelProcessMockInput): NovelProcessTas
     qualityIssues: failedChunks > 0 ? [{
       code: "local_snapshot_failed_chunks",
       severity: "danger",
-      message: "本地恢复快照包含失败切片，不能作为全量真实通过依据。",
-      action: "重试失败切片或切换到真实后端 job 快照。",
+      message: "本地恢复快照包含失败切片，不能作为完整通过依据。",
+      action: "重试失败切片或切换到后端 job 快照。",
     }] : [],
     tokenStats,
     agents,
@@ -397,14 +422,14 @@ function buildAgents(input: NovelProcessMockInput, status: NovelProcessJobStatus
   const runningCount = status === "running" || status === "retrying" ? Math.max(1, Math.min(4, totalChunks - completedChunks)) : Math.min(4, Math.max(1, totalChunks));
   const agentCount = Math.max(1, Math.min(4, runningCount));
   const heartbeatAt = input.progress?.updatedAt ? new Date(input.progress.updatedAt).toISOString() : input.importJob?.completedAt ?? nowIso();
-  const preview = latestOutputPreview(input.inspectableResults, "等待切片处理槽输出片段；真实执行接入后这里会显示最新结构化返回。");
+  const preview = latestOutputPreview(input.inspectableResults, "等待切片处理槽输出片段；后端接入后这里会显示最新结构化返回。");
   return Array.from({ length: agentCount }, (_, index) => {
     const scene = sceneForAgent(input.session, index, completedChunks);
     let agentStatus: NovelProcessAgentStatus = "waiting";
     if (status === "completed") agentStatus = "completed";
     else if (status === "cancelled") agentStatus = index === 0 ? "cancelled" : "completed";
     else if (status === "failed" || (status === "failed_partial" && index === 0)) agentStatus = "failed";
-    else if (status === "retrying" || (status === "failed_partial" && index === 1)) agentStatus = "retrying";
+    else if (status === "retrying") agentStatus = "retrying";
     else if (status === "running") agentStatus = index === 0 ? "running" : index % 3 === 0 ? "waiting" : "running";
     else if (status === "paused") agentStatus = "waiting";
     const chunkTotal = Math.max(1, Math.min(6, Math.ceil(totalChunks / agentCount)));
@@ -574,6 +599,12 @@ function buildEvents(input: NovelProcessMockInput, jobId: string, status: NovelP
 }
 
 export function createMockNovelProcessSnapshot(input: NovelProcessMockInput): NovelProcessTaskSnapshot | undefined {
+  // File inspection and local chapter splitting have their own wizard progress;
+  // neither is a model task. Preserve an existing job without borrowing this
+  // transient progress or persisting a fictitious running task for a fresh book.
+  if (input.progress?.phase === "import") {
+    input = { ...input, progress: undefined, isProcessing: false };
+  }
   const processingSnapshot = createProcessingSnapshot(input);
   if (processingSnapshot) return processingSnapshot;
   const status = statusFromImportState(input);
@@ -581,14 +612,16 @@ export function createMockNovelProcessSnapshot(input: NovelProcessMockInput): No
   const jobId = `mock_novel_process_${input.session.session_id}`;
   const plannedTotal = input.importJob?.total ?? (input.session.scenes.length || input.session.chunks.length || 1);
   const totalChunks = Math.max(1, plannedTotal);
-  const completedChunks = clamp(input.importJob?.generatedCount ?? input.session.adapted_scenes.length, 0, totalChunks);
+  // Old job snapshots could count skipped scenes as generated. Only written
+  // adaptation results count here; don't subtract skips from newer counts.
+  const completedChunks = clamp(Math.min(input.importJob?.generatedCount ?? totalChunks,
+    input.session.adapted_scenes.length), 0, totalChunks);
   const failedChunks = status === "failed_partial" || status === "failed"
     ? Math.max(1, input.importJob?.failedSceneIds.length ?? 0, input.errors.length > 0 ? 1 : 0)
     : input.importJob?.failedSceneIds.length ?? 0;
-  const cancelledChunks = status === "cancelled"
-    ? Math.max(0, totalChunks - completedChunks - failedChunks)
-    : input.importJob?.skippedSceneIds?.length ?? 0;
-  const finishedChunks = clamp(completedChunks + failedChunks + cancelledChunks, 0, totalChunks);
+  const skippedScenes = input.importJob?.skippedSceneIds?.length ?? 0;
+  const cancelledChunks = status === "cancelled" ? Math.max(0, totalChunks - completedChunks - failedChunks - skippedScenes) : 0;
+  const finishedChunks = clamp(completedChunks + failedChunks + cancelledChunks + skippedScenes, 0, totalChunks);
   const chapters = buildChapterRows(input.session, totalChunks, completedChunks, failedChunks);
   const agents = buildAgents(input, status, totalChunks, completedChunks, failedChunks);
   const retryExtraTokens = Math.max(0, failedChunks * 760 + agents.reduce((total, agent) => total + agent.retryCount * 320, 0));
@@ -603,17 +636,18 @@ export function createMockNovelProcessSnapshot(input: NovelProcessMockInput): No
     completedChunks,
     failedChunks,
     cancelledChunks,
+    skippedScenes,
     runningAgentCount: agents.filter((agent) => agent.status === "running" || agent.status === "retrying").length,
     estimatedRemainingChunks: Math.max(0, totalChunks - finishedChunks),
     promptVersion: input.processing?.promptVersion ?? "novel-process-v3",
-    phaseProgress: buildPhaseProgress(status, finishedChunks, totalChunks, input.progress?.updatedAt ? new Date(input.progress.updatedAt).toISOString() : nowIso()),
-    progressPercent: Math.round((finishedChunks / totalChunks) * 100),
+    phaseProgress: buildPhaseProgress(status, completedChunks, totalChunks, input.progress?.updatedAt ? new Date(input.progress.updatedAt).toISOString() : nowIso()),
+    progressPercent: Math.round((completedChunks / totalChunks) * 100),
     qualityDimensions: buildQualityDimensions(completedChunks, totalChunks, failedChunks, true),
     qualityIssues: failedChunks > 0 ? [{
       code: "mock_snapshot_failed_chunks",
       severity: "danger",
-      message: "mock adapter 快照包含失败项，不能作为全量真实通过依据。",
-      action: "继续等待真实后端 job，或重跑失败阶段。",
+      message: "解析尚有失败内容，已完成的结果仍然保留。",
+      action: "从保存的断点继续，或在导入工作台检查错误。",
     }] : [],
     tokenStats,
     agents,
@@ -629,16 +663,30 @@ export function createMockNovelProcessSnapshot(input: NovelProcessMockInput): No
 
 export function readPersistedNovelProcessTaskSnapshot(projectId: string): NovelProcessTaskSnapshot | undefined {
   try {
-    const scopedRaw = window.localStorage.getItem(projectSnapshotKey(projectId));
-    if (scopedRaw) {
-      return normalizeSnapshotForProject(JSON.parse(scopedRaw) as NovelProcessTaskSnapshot, projectId);
+    const scoped = readSmallNovelTaskCache<NovelProcessTaskSnapshot>(`workbench:${projectId}`, projectSnapshotKey(projectId));
+    if (scoped) {
+      return normalizeSnapshotForProject(scoped, projectId);
     }
+    // A locator is a verified scoped cache too. Its async restore must finish
+    // before considering a legacy global record; otherwise migration could
+    // overwrite the newer IndexedDB snapshot with obsolete task history.
+    if (window.localStorage.getItem(projectSnapshotKey(projectId))) return undefined;
     const legacyRaw = window.localStorage.getItem(novelProcessTaskSnapshotKey);
     if (!legacyRaw) return undefined;
-    const migrated = normalizeSnapshotForProject(JSON.parse(legacyRaw) as NovelProcessTaskSnapshot, projectId);
+    const legacy = JSON.parse(legacyRaw) as NovelProcessTaskSnapshot;
+    // A global legacy entry without a project identity cannot prove ownership.
+    // Leave it intact for recovery instead of attaching it to the next project.
+    if (legacy.projectId !== projectId) return undefined;
+    const migrated = normalizeSnapshotForProject(legacy, projectId);
     if (!migrated) return undefined;
-    persistNovelProcessTaskSnapshot(projectId, migrated);
-    window.localStorage.removeItem(novelProcessTaskSnapshotKey);
+    void writeNovelTaskCache(`workbench:${projectId}`, migrated, projectSnapshotKey(projectId)).then(() => {
+      // A large snapshot commits asynchronously. Retain the legacy recovery
+      // record until the scoped copy is durable, and never remove a newer one.
+      if (window.localStorage.getItem(novelProcessTaskSnapshotKey) === legacyRaw)
+        window.localStorage.removeItem(novelProcessTaskSnapshotKey);
+    }).catch(error => reportFrontendError("editor.novel-process", error, {
+      operation: "migrate-task-snapshot", projectId,
+    }));
     return migrated;
   } catch (error) {
     reportFrontendError("editor.novel-process", error, {
@@ -650,15 +698,17 @@ export function readPersistedNovelProcessTaskSnapshot(projectId: string): NovelP
 }
 
 export function persistNovelProcessTaskSnapshot(projectId: string, snapshot: NovelProcessTaskSnapshot): void {
-  try {
-    window.localStorage.setItem(projectSnapshotKey(projectId), JSON.stringify({ ...snapshot, projectId }));
-  } catch (error) {
+  void writeNovelTaskCache(`workbench:${projectId}`, { ...snapshot, projectId }, projectSnapshotKey(projectId)).catch(error => {
     reportFrontendError("editor.novel-process", error, {
       operation: "persist-task-snapshot",
       projectId,
     });
-    // Persistence is best-effort until session 6 wires the shared job store.
-  }
+  });
+}
+
+export async function readPersistedNovelProcessTaskSnapshotAsync(projectId: string): Promise<NovelProcessTaskSnapshot | undefined> {
+  const value = await readLargeNovelTaskCache<NovelProcessTaskSnapshot>(`workbench:${projectId}`, projectSnapshotKey(projectId));
+  return value ? normalizeSnapshotForProject(value, projectId) : readPersistedNovelProcessTaskSnapshot(projectId);
 }
 
 export function updateMockSnapshotStatus(snapshot: NovelProcessTaskSnapshot, status: NovelProcessJobStatus, message: string): NovelProcessTaskSnapshot {
@@ -685,6 +735,7 @@ export function updateMockSnapshotStatus(snapshot: NovelProcessTaskSnapshot, sta
     message,
   };
   return {
+    ...snapshot,
     job: {
       ...snapshot.job,
       status,

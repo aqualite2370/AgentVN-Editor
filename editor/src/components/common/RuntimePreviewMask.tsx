@@ -7,7 +7,7 @@ const phaseLabels: Record<RuntimePreviewTransitionPhase, string> = {
   masked: "正在调整预览",
   changing: "正在调整预览",
   settling: "正在确认预览尺寸",
-  reloading: "正在恢复真实预览",
+  reloading: "正在恢复预览",
 };
 
 export function RuntimePreviewMask({

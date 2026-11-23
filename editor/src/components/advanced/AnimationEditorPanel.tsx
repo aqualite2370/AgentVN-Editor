@@ -1,6 +1,6 @@
-import { type CSSProperties, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { type CSSProperties, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, Film, Play, Wand2 } from "lucide-react";
+import { Play, Save, Square, Wand2 } from "lucide-react";
 import {
   animationPresetCategories,
   animationPresetTemplates,
@@ -12,7 +12,7 @@ import {
   type AnimationPresetTemplate,
   type AnimationPresetTweakValues,
 } from "../../animation/presetLibrary";
-import { previewAnimation } from "../../animation/animationPreview";
+import { compileAnimationPreset } from "../../animation/keyframeCompiler";
 import { exportAnimationCommand } from "../../animation/exportAnimationCommand";
 import type { AnimationPreset } from "../../animation/types";
 import { useEditorStore } from "../../store/editorStore";
@@ -24,21 +24,20 @@ import {
   SPRITE_FOCUS_COMPANION_BRIGHTNESS,
   SPRITE_FOCUS_KEYFRAME_OFFSETS,
   SPRITE_FOCUS_PRESET_ID,
+  keyframesForCharacterAnimation,
+  type CharacterSpriteAnimationConfig,
 } from "../../../../shared/animation/characterAnimation";
 import type { AssetRef } from "../../types/assets";
 import { AnimationTimeline } from "./AnimationTimeline";
 import { AssetPicker } from "../common/AssetPicker";
+import { GlassSelectionGroup } from "../common/GlassSelectionGroup";
 import { RichSelect } from "../common/RichSelect";
 import { RangeControl } from "../common/RangeControl";
+import { OperationResultDialog } from "../common/OperationResultDialog";
+import { editorProjectOwner, ownsEditorProject, persistEditorProject } from "../../utils/editorProjectPersistence";
+import { spriteDefaultFromPreset, useGlobalSpriteAnimation, type SpriteDefaultPhase } from "../../utils/spriteAnimationDefaults";
 
 type PreviewAssetTarget = Extract<AnimationPreset["target_type"], "sprite" | "background">;
-
-function clonePreset(preset: AnimationPreset): AnimationPreset {
-  return {
-    ...preset,
-    keyframes: preset.keyframes.map((keyframe) => ({ ...keyframe })),
-  };
-}
 
 function createDefaultTarget(targetType: AnimationPreset["target_type"]): string {
   if (targetType === "sprite") return "sprite:selected";
@@ -51,6 +50,19 @@ function createDefaultTweakValues(template: AnimationPresetTemplate): AnimationP
 
 function createDraft(templateId: string, values: AnimationPresetTweakValues): AnimationPreset {
   return buildAnimationPresetFromTemplate(templateId, values);
+}
+
+function savedDraft(template: AnimationPresetTemplate, config?: CharacterSpriteAnimationConfig): AnimationPreset {
+  const preset = createDraft(template.template_id, template.defaults);
+  return config ? {...preset, name: config.display_name || preset.name, preset_id: config.preset_id || preset.preset_id,
+    duration_ms: config.duration_ms ?? preset.duration_ms, easing: config.easing || preset.easing,
+    keyframes: keyframesForCharacterAnimation(config), loop: false, direction: "normal"} : preset;
+}
+
+function savedTemplate(phase: SpriteDefaultPhase): AnimationPresetTemplate {
+  const config = useProjectStore.getState().settings.spriteAnimationDefaults?.[phase];
+  return animationPresetTemplates.find(template => template.category_id === `sprite_${phase}` && template.preset_id === config?.preset_id)
+    ?? animationPresetTemplates.find(template => template.category_id === `sprite_${phase}`)!;
 }
 
 function renderPreviewHint(targetType: AnimationPreset["target_type"]): string {
@@ -73,24 +85,38 @@ function scheduleIdleTask(callback: () => void, timeout = 180): () => void {
   return () => globalThis.clearTimeout(id);
 }
 
-export function AnimationEditorPanel() {
+export function AnimationEditorPanel({ active }: { active: boolean }) {
   const selectedNodeId = useEditorStore((state) => state.selectedNodeId);
   const updateNodeData = useEditorStore((state) => state.updateNodeData);
   const node = useEditorStore((state) => state.nodes.find((item) => item.id === state.selectedNodeId));
   const assetManifest = useProjectStore((state) => state.assetManifest);
+  const projectId = useProjectStore(state => state.projectId);
+  const loadGeneration = useEditorStore(state => state.projectLoadGeneration);
+  const spriteDefaults = useProjectStore(state => state.settings.spriteAnimationDefaults);
 
   const [categoryId, setCategoryId] = useState(animationPresetCategories[0].id);
-  const [detailPhase, setDetailPhase] = useState<"idle" | "leaving" | "entering">("idle");
+  const [playing, setPlaying] = useState(false);
+  const [previewError, setPreviewError] = useState("");
   const categoryTemplates = useMemo(
     () => animationPresetTemplates.filter((template) => template.category_id === categoryId),
     [categoryId],
   );
-  const [templateId, setTemplateId] = useState(categoryTemplates[0]?.template_id ?? animationPresetTemplates[0].template_id);
+  const [templateId, setTemplateId] = useState(() => savedTemplate("enter").template_id);
   const currentTemplate = useMemo(() => getAnimationTemplate(templateId) ?? animationPresetTemplates[0], [templateId]);
   const [tweaks, setTweaks] = useState<AnimationPresetTweakValues>(() => createDefaultTweakValues(currentTemplate));
-  const [draft, setDraft] = useState<AnimationPreset>(() => createDraft(currentTemplate.template_id, currentTemplate.defaults));
+  const [draft, setDraft] = useState<AnimationPreset>(() => savedDraft(currentTemplate, useProjectStore.getState().settings.spriteAnimationDefaults?.enter));
   const [target, setTarget] = useState(() => createDefaultTarget(currentTemplate.target_type));
   const [blocking, setBlocking] = useState(true);
+  const [applyExisting, setApplyExisting] = useState(true);
+  const [saveStatus, setSaveStatus] = useState("");
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
+  const mountedRef = useRef(true);
+  const [pendingSave, setPendingSave] = useState<{
+    owner: ReturnType<typeof editorProjectOwner>; nodes: ReturnType<typeof useEditorStore.getState>["nodes"];
+    settings: ReturnType<typeof useProjectStore.getState>["settings"];
+    phase: SpriteDefaultPhase; config: CharacterSpriteAnimationConfig; count: number;
+  }>();
   const [isAdvancedOpen, setAdvancedOpen] = useState(false);
   const [isExpertOpen, setExpertOpen] = useState(false);
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
@@ -101,11 +127,11 @@ export function AnimationEditorPanel() {
   const templatePickerTriggerRef = useRef<HTMLButtonElement | null>(null);
   const templatePickerPopoverRef = useRef<HTMLDivElement | null>(null);
   const previewStageRef = useRef<HTMLDivElement | null>(null);
+  const previewSceneRef = useRef<HTMLDivElement | null>(null);
+  const playbackRef = useRef<Animation[]>([]);
   const previewTargetRef = useRef<HTMLDivElement | null>(null);
   const previewFocusBackdropRef = useRef<HTMLDivElement | null>(null);
   const previewFocusCompanionRef = useRef<HTMLDivElement | null>(null);
-  const switchTimerRef = useRef<number | null>(null);
-  const enterTimerRef = useRef<number | null>(null);
   const currentCategory = useMemo(
     () => animationPresetCategories.find((category) => category.id === currentTemplate.category_id) ?? animationPresetCategories[0],
     [currentTemplate.category_id],
@@ -178,46 +204,35 @@ export function AnimationEditorPanel() {
     return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
   }
 
-  function clearSwitchTimers() {
-    if (switchTimerRef.current !== null) window.clearTimeout(switchTimerRef.current);
-    if (enterTimerRef.current !== null) window.clearTimeout(enterTimerRef.current);
-    switchTimerRef.current = null;
-    enterTimerRef.current = null;
-  }
+  const cancelPreview = useCallback(() => {
+    for (const animation of playbackRef.current) animation.cancel();
+    playbackRef.current = [];
+  }, []);
 
-  function applyTemplate(nextTemplate: AnimationPresetTemplate, nextCategoryId = nextTemplate.category_id) {
+  const stopPreview = useCallback(() => {
+    cancelPreview();
+    setPlaying(false);
+  }, [cancelPreview]);
+
+  function applyTemplate(nextTemplate: AnimationPresetTemplate, nextCategoryId = nextTemplate.category_id, restoreSaved = false) {
+    const phase = nextCategoryId === "sprite_enter" ? "enter" : nextCategoryId === "sprite_exit" ? "exit" : undefined;
+    const config = restoreSaved && phase ? useProjectStore.getState().settings.spriteAnimationDefaults?.[phase] : undefined;
+    stopPreview();
+    setPreviewError("");
     setCategoryId(nextCategoryId);
     setTemplateId(nextTemplate.template_id);
-    setTweaks(createDefaultTweakValues(nextTemplate));
-    setDraft(createDraft(nextTemplate.template_id, nextTemplate.defaults));
+    setTweaks({...createDefaultTweakValues(nextTemplate), ...(config?.duration_ms ? {duration_ms:config.duration_ms} : {})});
+    setDraft(savedDraft(nextTemplate, config));
+    setSaveStatus("");
+    setBlocking(config ? Boolean(config.blocking) : nextTemplate.template_id !== SPRITE_FOCUS_PRESET_ID);
     setTarget(createDefaultTarget(nextTemplate.target_type));
-    if (nextTemplate.template_id === SPRITE_FOCUS_PRESET_ID) setBlocking(false);
-  }
-
-  function switchTemplate(nextTemplate: AnimationPresetTemplate, nextCategoryId = nextTemplate.category_id) {
-    if (nextTemplate.template_id === templateId && nextCategoryId === categoryId) return;
-    clearSwitchTimers();
-    if (prefersReducedMotion()) {
-      applyTemplate(nextTemplate, nextCategoryId);
-      setDetailPhase("idle");
-      return;
-    }
-    setDetailPhase("leaving");
-    switchTimerRef.current = window.setTimeout(() => {
-      applyTemplate(nextTemplate, nextCategoryId);
-      setDetailPhase("entering");
-      enterTimerRef.current = window.setTimeout(() => {
-        setDetailPhase("idle");
-        enterTimerRef.current = null;
-      }, 220);
-      switchTimerRef.current = null;
-    }, 160);
   }
 
   function selectCategory(nextCategoryId: AnimationPresetCategoryId) {
     if (nextCategoryId === categoryId) return;
-    const next = animationPresetTemplates.find((template) => template.category_id === nextCategoryId) ?? animationPresetTemplates[0];
-    switchTemplate(next, nextCategoryId);
+    const next = nextCategoryId === "sprite_enter" ? savedTemplate("enter") : nextCategoryId === "sprite_exit" ? savedTemplate("exit")
+      : animationPresetTemplates.find((template) => template.category_id === nextCategoryId) ?? animationPresetTemplates[0];
+    applyTemplate(next, nextCategoryId, true);
   }
 
   function openTemplatePicker() {
@@ -230,12 +245,88 @@ export function AnimationEditorPanel() {
     openTemplatePicker();
   }
 
-  function chooseTemplate(template: AnimationPresetTemplate) {
-    switchTemplate(template);
+  function closeTemplatePicker(restoreFocus = false) {
     setTemplatePickerOpen(false);
+    if (restoreFocus) templatePickerTriggerRef.current?.focus({ preventScroll: true });
   }
 
-  useEffect(() => () => clearSwitchTimers(), []);
+  function chooseTemplate(template: AnimationPresetTemplate) {
+    if (template.template_id !== templateId) applyTemplate(template);
+    closeTemplatePicker(true);
+  }
+
+  useLayoutEffect(() => {
+    if (!active) {
+      stopPreview();
+      setTemplatePickerOpen(false);
+    }
+    return cancelPreview;
+  }, [active, cancelPreview, stopPreview]);
+
+  useLayoutEffect(() => {
+    const stage = previewStageRef.current;
+    const scene = previewSceneRef.current;
+    if (!active || !stage || !scene) return;
+    const fit = () => {
+      scene.style.transform = `scale(${Math.min(stage.clientWidth / 1280, stage.clientHeight / 720)})`;
+    };
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(stage);
+    return () => observer.disconnect();
+  }, [active]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  useEffect(() => {
+    setPendingSave(undefined);
+    setAdvancedOpen(false);
+    setExpertOpen(false);
+    applyTemplate(savedTemplate("enter"), "sprite_enter", true);
+  }, [projectId, loadGeneration]);
+
+  const defaultPhase: SpriteDefaultPhase | undefined = categoryId === "sprite_enter" ? "enter" : categoryId === "sprite_exit" ? "exit" : undefined;
+
+  async function commitGlobal(request: NonNullable<typeof pendingSave>, replaceExisting: boolean) {
+    if (savingRef.current) return;
+    if (!ownsEditorProject(request.owner)) return;
+    if (useEditorStore.getState().nodes !== request.nodes
+      || useProjectStore.getState().settings !== request.settings) {
+      setSaveStatus("工程内容已变化，请重新确认保存。"); return;
+    }
+    savingRef.current = true; setSaving(true); setSaveStatus("正在保存…");
+    try {
+      const project = useProjectStore.getState();
+      project.setSpriteAnimationDefaults({...project.settings.spriteAnimationDefaults, [request.phase]:request.config});
+      if (replaceExisting) {
+        const result = useGlobalSpriteAnimation(request.nodes, request.phase);
+        if (result.nodes.some((item, index) => item !== request.nodes[index])) useEditorStore.getState().setNodes(result.nodes);
+      }
+      await persistEditorProject();
+      if (mountedRef.current && ownsEditorProject(request.owner)) setSaveStatus(`全局${request.phase === "enter" ? "入场" : "退场"}已保存${replaceExisting ? `，已应用到 ${request.count} 个事件` : ""}。`);
+    } catch (error) {
+      if (mountedRef.current && ownsEditorProject(request.owner)) setSaveStatus(`保存失败，设置仍保留，可重试：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      savingRef.current = false;
+      if (mountedRef.current) setSaving(false);
+    }
+  }
+
+  function saveGlobal() {
+    if (!defaultPhase || savingRef.current) return;
+    try {
+      const config = spriteDefaultFromPreset(draft, defaultPhase, blocking);
+      if (!CSS.supports("animation-timing-function", config.easing || "ease-out")) throw new Error("缓动函数无效，请检查后保存。");
+      const nodes = useEditorStore.getState().nodes;
+      const request = {owner:editorProjectOwner(), nodes, settings:useProjectStore.getState().settings,
+        phase:defaultPhase, config, count:useGlobalSpriteAnimation(nodes, defaultPhase).count};
+      if (applyExisting && request.count) setPendingSave(request);
+      else void commitGlobal(request, false);
+    } catch (error) { setSaveStatus(error instanceof Error ? error.message : String(error)); }
+  }
 
   useEffect(() => {
     setPreviewAssetOverrides({});
@@ -250,13 +341,17 @@ export function AnimationEditorPanel() {
   useEffect(() => {
     if (!templatePickerOpen) return;
     updateTemplatePickerPosition();
+    templatePickerPopoverRef.current?.querySelector<HTMLElement>(".animation-template-card.is-active, .animation-template-card")?.focus({ preventScroll: true });
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target as Node | null;
       if (target && (templatePickerTriggerRef.current?.contains(target) || templatePickerPopoverRef.current?.contains(target))) return;
       setTemplatePickerOpen(false);
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setTemplatePickerOpen(false);
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      closeTemplatePicker(true);
     };
     window.addEventListener("resize", updateTemplatePickerPosition);
     window.addEventListener("scroll", updateTemplatePickerPosition, true);
@@ -273,15 +368,37 @@ export function AnimationEditorPanel() {
   function updateTweak<K extends keyof AnimationPresetTweakValues>(key: K, value: AnimationPresetTweakValues[K]) {
     const nextValues = { ...tweaks, [key]: value };
     setTweaks(nextValues);
-    setDraft(createDraft(currentTemplate.template_id, nextValues));
+    const next = createDraft(currentTemplate.template_id, nextValues);
+    if (key === "duration_ms") setDraft(current => ({ ...current, duration_ms: next.duration_ms }));
+    else if (key === "loop") setDraft(current => ({ ...current, loop: next.loop, direction: next.direction }));
+    else {
+      // Change only the generated properties affected by this template control.
+      // Keep custom metadata, frame offsets, extra frames and unrelated fields.
+      const previous = createDraft(currentTemplate.template_id, tweaks);
+      const fields = ["opacity", "x", "y", "scale", "rotate", "blur", "brightness"] as const;
+      setDraft(current => ({ ...current, keyframes: current.keyframes.map((frame, index) => {
+        const before = previous.keyframes[index];
+        const after = next.keyframes[index];
+        if (!before || !after || frame.offset !== before.offset) return frame;
+        const updated = { ...frame };
+        for (const field of fields) {
+          if (before[field] !== after[field]) updated[field] = after[field];
+        }
+        return updated;
+      }) }));
+    }
   }
 
   function selectPreviewAsset(targetType: PreviewAssetTarget, assetId: string) {
+    stopPreview();
     setPreviewAssetOverrides((current) => ({ ...current, [targetType]: assetId }));
   }
 
   function applyToNode() {
     if (!selectedNodeId) return;
+    if (draft.target_type === "sprite" && (categoryId === "sprite_enter" || categoryId === "sprite_exit")) {
+      useEditorStore.getState().setNotice("这只会插入一次演出；要统一每次入退场，请使用顶部的全局保存。", "info");
+    }
     const command = exportAnimationCommand({ preset: draft, target, blocking });
     if (node?.data.nodeKind === "animation") updateNodeData(selectedNodeId, { animation: command });
     if (node?.data.scene) {
@@ -294,28 +411,72 @@ export function AnimationEditorPanel() {
     }
   }
 
-  function previewCurrentPreset() {
-    const targetElement =
-      draft.target_type === "sprite" || draft.target_type === "dialog" || draft.target_type === "ui"
-        ? previewTargetRef.current
-        : previewStageRef.current;
-    if (!targetElement) return;
-    if (!(prefersReducedMotion() && draft.preset_id === SPRITE_FOCUS_PRESET_ID)) {
-      previewAnimation(targetElement, draft);
+  const previewTiming = useMemo(() => ({
+    duration_ms: draft.duration_ms,
+    easing: draft.easing,
+    loop: draft.loop,
+    direction: draft.direction,
+    keyframes: draft.keyframes,
+  }), [draft.duration_ms, draft.easing, draft.loop, draft.direction, draft.keyframes]);
+
+  useLayoutEffect(() => {
+    const animations = playbackRef.current;
+    if (!animations.length) return;
+    if (!CSS.supports("animation-timing-function", previewTiming.easing)) {
+      setPreviewError("缓动函数无效，请在高级定制中修改后播放。");
+      return;
     }
-    if (draft.preset_id !== SPRITE_FOCUS_PRESET_ID) return;
-    previewFocusBackdropRef.current?.animate([
-      { offset: SPRITE_FOCUS_KEYFRAME_OFFSETS[0], opacity: 0 },
-      { offset: SPRITE_FOCUS_KEYFRAME_OFFSETS[1], opacity: SPRITE_FOCUS_BACKDROP_OPACITY },
-      { offset: SPRITE_FOCUS_KEYFRAME_OFFSETS[2], opacity: SPRITE_FOCUS_BACKDROP_OPACITY },
-      { offset: SPRITE_FOCUS_KEYFRAME_OFFSETS[3], opacity: 0 },
-    ], { duration: draft.duration_ms, easing: draft.easing, fill: "both" });
-    previewFocusCompanionRef.current?.animate([
-      { offset: SPRITE_FOCUS_KEYFRAME_OFFSETS[0], filter: "brightness(1)" },
-      { offset: SPRITE_FOCUS_KEYFRAME_OFFSETS[1], filter: `brightness(${SPRITE_FOCUS_COMPANION_BRIGHTNESS})` },
-      { offset: SPRITE_FOCUS_KEYFRAME_OFFSETS[2], filter: `brightness(${SPRITE_FOCUS_COMPANION_BRIGHTNESS})` },
-      { offset: SPRITE_FOCUS_KEYFRAME_OFFSETS[3], filter: "brightness(1)" },
-    ], { duration: draft.duration_ms, easing: draft.easing, fill: "both" });
+    const compiled = compileAnimationPreset(previewTiming);
+    // Keep the current cycle and phase if the duration changes during playback.
+    const lead = animations[0];
+    const oldDuration = Number(lead.effect?.getTiming().duration) || 1;
+    const progress = Number(lead.currentTime ?? 0) / oldDuration;
+    try {
+      for (const animation of animations) {
+        const effect = animation.effect as KeyframeEffect;
+        if (effect.target === previewTargetRef.current) effect.setKeyframes(compiled.keyframes);
+        effect.updateTiming({ ...compiled.options, duration: previewTiming.duration_ms });
+        if (oldDuration !== previewTiming.duration_ms) animation.currentTime = progress * previewTiming.duration_ms;
+      }
+      setPreviewError("");
+    } catch {
+      setPreviewError("无法更新预览，请检查关键帧的进度顺序。");
+    }
+  }, [previewTiming]);
+
+  function previewCurrentPreset() {
+    const element = previewTargetRef.current;
+    if (!element) return;
+    if (!CSS.supports("animation-timing-function", draft.easing)) {
+      setPreviewError("缓动函数无效，请在高级定制中修改后播放。");
+      return;
+    }
+    stopPreview();
+    setPreviewError("");
+    const { keyframes, options } = compileAnimationPreset(draft);
+    const animations = playbackRef.current;
+    try {
+      const focusPreset = draft.preset_id === SPRITE_FOCUS_PRESET_ID;
+      if (!(focusPreset && prefersReducedMotion())) animations.push(element.animate(keyframes, options));
+      const backdrop = previewFocusBackdropRef.current;
+      const companion = previewFocusCompanionRef.current;
+      if (focusPreset && backdrop && companion) {
+        animations.push(backdrop.animate(SPRITE_FOCUS_KEYFRAME_OFFSETS.map((offset, index) => ({
+          offset, opacity: index === 1 || index === 2 ? SPRITE_FOCUS_BACKDROP_OPACITY : 0,
+        })), options));
+        animations.push(companion.animate(SPRITE_FOCUS_KEYFRAME_OFFSETS.map((offset, index) => ({
+          offset, filter: `brightness(${index === 1 || index === 2 ? SPRITE_FOCUS_COMPANION_BRIGHTNESS : 1})`,
+        })), options));
+      }
+      if (!animations.length) return;
+      setPlaying(true);
+      void Promise.all(animations.map(animation => animation.finished)).then(() => {
+        if (playbackRef.current === animations) stopPreview();
+      }, () => { /* A replay, stop or workspace change cancelled this run. */ });
+    } catch {
+      stopPreview();
+      setPreviewError("无法播放，请检查关键帧参数。");
+    }
   }
 
   function renderControl(control: AnimationPresetControlDefinition) {
@@ -324,7 +485,7 @@ export function AnimationEditorPanel() {
         <label className="check-row animation-control-card" key={control.key}>
           <input
             type="checkbox"
-            checked={tweaks[control.key] as boolean}
+            checked={control.key === "loop" ? draft.loop : Boolean(tweaks[control.key])}
             data-help-key={control.key === "loop" ? "animation.loop" : undefined}
             onChange={(event) => updateTweak(control.key, event.target.checked)}
           />
@@ -374,9 +535,25 @@ export function AnimationEditorPanel() {
       <header className="animation-editor-header">
         <div>
           <h3>动效工作室</h3>
-          <p>选择目标角色图像、挑选动作模板，再用真实预览确认效果后插入当前场景。</p>
+          {defaultPhase && <small>{spriteDefaults?.[defaultPhase] ? "已设全局默认" : "尚未设置全局默认"} · 单个事件可独立覆盖</small>}
         </div>
+        {defaultPhase && <div className="animation-global-actions">
+          <label className="check-row"><input type="checkbox" checked={applyExisting} disabled={saving}
+            onChange={event => setApplyExisting(event.target.checked)} />同步应用到现有{defaultPhase === "enter" ? "入场" : "退场"}事件</label>
+          <button type="button" onClick={saveGlobal} disabled={saving} data-help-key="animation.saveGlobal">
+            <Save size={16} /><span>{saving ? "正在保存…" : `保存全局${defaultPhase === "enter" ? "入场" : "退场"}`}</span>
+          </button>
+        </div>}
+        {saveStatus && <p className="animation-global-status" role="status">{saveStatus}</p>}
       </header>
+
+      <OperationResultDialog open={Boolean(pendingSave)} tone="warning" label="全局立绘动画"
+        title={`统一应用${pendingSave?.phase === "exit" ? "退场" : "入场"}动画？`}
+        message={`将 ${pendingSave?.count ?? 0} 个现有事件改为继承全局设置；另一阶段与强调动画保持原样。`}
+        icon={<Save size={20} />} testId="sprite-animation-default-confirmation" confirmLabel="取消" inertBackground suppressHoverHelp
+        contextAction={{label:"确认应用", dismissOnClick:true, onClick:() => {
+          if (pendingSave) void commitGlobal(pendingSave, true);
+        }}} onDismiss={() => setPendingSave(undefined)} />
 
       <div className="animation-editor-grid">
         <aside className="animation-template-sidebar">
@@ -397,7 +574,12 @@ export function AnimationEditorPanel() {
               <small>{currentCategory.title}</small>
             </span>
           </button>
-          <div className="animation-template-groups" role="tablist" aria-label="动画模板分类">
+          <GlassSelectionGroup
+            className="animation-template-groups"
+            role="tablist"
+            ariaLabel="动画模板分类"
+            selectedKey={categoryId}
+          >
             {animationPresetCategories.map((category) => {
               const Icon = category.icon;
               const isActive = category.id === categoryId;
@@ -406,6 +588,9 @@ export function AnimationEditorPanel() {
                   key={category.id}
                   type="button"
                   className={isActive ? "is-active" : ""}
+                  role="tab"
+                  aria-selected={isActive}
+                  data-glass-selected={isActive}
                   data-help-key="animation.category"
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => chooseCategory(category.id)}
@@ -416,7 +601,7 @@ export function AnimationEditorPanel() {
                 </button>
               );
             })}
-          </div>
+          </GlassSelectionGroup>
 
         </aside>
 
@@ -439,11 +624,11 @@ export function AnimationEditorPanel() {
                 <strong>{currentCategory.title}</strong>
                 <span>{currentCategory.summary}</span>
               </div>
-              <button type="button" aria-label="关闭动画模板选择" data-help-key="animation.templatePicker.close" onClick={() => setTemplatePickerOpen(false)}>
+              <button type="button" aria-label="关闭动画模板选择" data-help-key="animation.templatePicker.close" onClick={() => closeTemplatePicker(true)}>
                 ×
               </button>
             </header>
-            <div className={`animation-template-list is-${detailPhase}`}>
+            <div className="animation-template-list selection-scroll-region">
               {categoryTemplates.map((template) => {
                 const TemplateIcon =
                   animationPresetCategories.find((category) => category.id === template.category_id)?.icon ?? currentCategory.icon;
@@ -456,6 +641,7 @@ export function AnimationEditorPanel() {
                     data-template-id={template.template_id}
                     data-preset-id={template.preset_id}
                     onMouseDown={(event) => event.preventDefault()}
+                    onFocus={(event) => event.currentTarget.scrollIntoView({ block: "nearest" })}
                     onClick={() => chooseTemplate(template)}
                   >
                     <TemplateIcon size={16} />
@@ -472,29 +658,101 @@ export function AnimationEditorPanel() {
           document.body,
         )}
 
-        <div className={`animation-template-main is-${detailPhase}`}>
-          <section className="animation-template-summary">
+        <section className="animation-preview-panel">
+          <header className="animation-section-header">
             <div>
-              <span className="animation-template-kicker">
-                <CurrentCategoryIcon size={14} />
-                {currentTemplate.target_type === "sprite"
-                  ? "立绘模板"
-                  : currentTemplate.target_type === "background"
-                    ? "背景模板"
-                    : "镜头模板"}
-              </span>
-              <h4>{currentTemplate.title}</h4>
-              <p>{currentTemplate.summary}</p>
-              <small>推荐场景：{currentTemplate.recommended_scene}</small>
+              <h4>{currentTemplate.title} · 预览</h4>
+              <p>{currentTemplate.summary} {currentTemplate.recommended_scene}</p>
             </div>
+          </header>
+          <div className="animation-preview-fit">
+            <div className={`animation-preview-stage is-${draft.target_type}`} ref={previewStageRef}>
+              <div className="animation-preview-scene" ref={previewSceneRef}>
+                  {draft.preset_id === SPRITE_FOCUS_PRESET_ID && <div className="animation-preview-focus-backdrop" ref={previewFocusBackdropRef} aria-hidden="true" />}
+                  <span className="animation-preview-hint">{renderPreviewHint(draft.target_type)}</span>
+                  {draft.preset_id === SPRITE_FOCUS_PRESET_ID && <div className="animation-preview-focus-companion" ref={previewFocusCompanionRef} aria-hidden="true">陪衬角色</div>}
+                  <div className={`animation-preview-target is-${draft.target_type}`} ref={previewTargetRef}>
+                    {draft.target_type === "sprite" && previewAssetSource ? (
+                      <img src={previewAssetSource} alt={previewAsset?.metadata.filename ?? "角色图像预览"} />
+                    ) : draft.target_type === "sprite" ? (
+                      <span>角色图像</span>
+                    ) : draft.target_type === "background" && previewAssetSource ? (
+                      <img src={previewAssetSource} alt={previewAsset?.metadata.filename ?? "背景图预览"} />
+                    ) : draft.target_type === "background" ? (
+                      <span>背景图</span>
+                    ) : draft.target_type === "camera" ? (
+                      "镜头"
+                    ) : (
+                      "场景"
+                    )}
+                  </div>
+              </div>
+            </div>
+          </div>
+          <div className="row-actions animation-preview-actions">
+            <button type="button" data-help-key="animation.preview" onClick={previewCurrentPreset}>
+              <Play size={16} />
+              <span>{playing ? "重新播放" : "预览播放"}</span>
+            </button>
+            <button type="button" data-help-key="animation.stopPreview" onClick={stopPreview} disabled={!playing}>
+              <Square size={14} /><span>停止</span>
+            </button>
+            <button type="button" data-help-key="animation.insert" onClick={applyToNode} disabled={!selectedNodeId}>
+              <Wand2 size={16} />
+              <span>插入到当前节点</span>
+            </button>
+          </div>
+          {previewError && <p role="status" className="animation-panel-note">{previewError}</p>}
+          {!selectedNodeId && <p className="animation-panel-note">先选中场景节点；旧工程也可以选中旧版动画节点继续维护。</p>}
+          {node?.data.nodeKind === "animation" && <p className="animation-panel-note">当前会覆盖旧版动画节点里的动画指令；建议完成后使用节点上的转换入口迁移。</p>}
+          {node?.data.scene && <p className="animation-panel-note">当前会把动画追加到场景节点的命令列表末尾。</p>}
+        </section>
+        <div className="animation-property-panel">
+          <div className="animation-inspector-modes" role="group" aria-label="动画参数面板">
+            <button type="button" aria-pressed={!isAdvancedOpen} onClick={() => setAdvancedOpen(false)}>基础参数</button>
+            <button type="button" aria-pressed={isAdvancedOpen} onClick={() => setAdvancedOpen(true)}>高级定制</button>
+          </div>
+          {isAdvancedOpen ? (
+          <section className="animation-advanced-panel">
+            <div className="advanced-grid-2 animation-advanced-fields">
+              <label>
+                动画名称
+                <input value={draft.name} data-help-key="animation.name" onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
+              </label>
+              <label>
+                动画编号
+                <input value={draft.preset_id} data-help-key="animation.id" onChange={(event) => setDraft({ ...draft, preset_id: event.target.value })} />
+              </label>
+              <label>
+                缓动函数
+                <input
+                  value={draft.easing}
+                  data-help-key="animation.easing"
+                  onChange={(event) => setDraft({ ...draft, easing: event.target.value })}
+                />
+              </label>
+              <label className="check-row">
+                <input
+                  type="checkbox"
+                  checked={draft.loop}
+                  data-help-key="animation.loop"
+                  onChange={(event) => setDraft({ ...draft, loop: event.target.checked })}
+                />
+                循环播放
+              </label>
+            </div>
+            <AnimationTimeline
+              key={templateId}
+              keyframes={draft.keyframes}
+              showExpertCss={isExpertOpen}
+              onToggleExpertCss={() => setExpertOpen(current => !current)}
+              onChange={keyframes => setDraft(current => ({ ...current, keyframes }))}
+            />
           </section>
-
+          ) : (
           <section className="animation-quick-controls">
             <header className="animation-section-header">
-              <div>
-                <h4>快速微调</h4>
-                <p>只保留高频参数，够快也够稳。</p>
-              </div>
+              <h4>快速微调</h4>
             </header>
             <div className="animation-control-grid">{currentTemplate.controls.map(renderControl)}</div>
             <div className="advanced-grid-2 animation-target-row">
@@ -525,20 +783,7 @@ export function AnimationEditorPanel() {
               </label>
             </div>
           </section>
-
-          <section className="animation-preview-panel">
-            <header className="animation-section-header">
-              <div>
-                <h4>预览与插入</h4>
-                <p>
-                  {previewAsset
-                    ? `正在使用 ${previewAsset.metadata.filename ?? previewAsset.asset_id} 预览。`
-                    : previewAssetType
-                      ? `请选择${previewAssetType === "sprite" ? "角色图像" : "背景图"}素材进行真实预览。`
-                      : "当前模板使用内置舞台进行预览。"}
-                </p>
-              </div>
-            </header>
+          )}
             {draft.target_type === "sprite" && (
               <AssetPicker
                 label="预览立绘素材"
@@ -563,89 +808,6 @@ export function AnimationEditorPanel() {
                 onChange={(assetId) => selectPreviewAsset("background", assetId)}
               />
             )}
-            <div className={`animation-preview-stage is-${draft.target_type}`} ref={previewStageRef}>
-              {draft.preset_id === SPRITE_FOCUS_PRESET_ID && <div className="animation-preview-focus-backdrop" ref={previewFocusBackdropRef} aria-hidden="true" />}
-              <span className="animation-preview-hint">{renderPreviewHint(draft.target_type)}</span>
-              {draft.preset_id === SPRITE_FOCUS_PRESET_ID && <div className="animation-preview-focus-companion" ref={previewFocusCompanionRef} aria-hidden="true">陪衬角色</div>}
-              <div className={`animation-preview-target is-${draft.target_type}`} ref={previewTargetRef}>
-                {draft.target_type === "sprite" && previewAssetSource ? (
-                  <img src={previewAssetSource} alt={previewAsset?.metadata.filename ?? "角色图像预览"} />
-                ) : draft.target_type === "sprite" ? (
-                  <span>角色图像</span>
-                ) : draft.target_type === "background" && previewAssetSource ? (
-                  <img src={previewAssetSource} alt={previewAsset?.metadata.filename ?? "背景图预览"} />
-                ) : draft.target_type === "background" ? (
-                  <span>背景图</span>
-                ) : draft.target_type === "camera" ? (
-                  "镜头"
-                ) : (
-                  "场景"
-                )}
-              </div>
-            </div>
-            <div className="row-actions">
-              <button type="button" data-help-key="animation.preview" onClick={previewCurrentPreset}>
-                <Play size={16} />
-                <span>预览播放</span>
-              </button>
-              <button type="button" data-help-key="animation.insert" onClick={applyToNode} disabled={!selectedNodeId}>
-                <Wand2 size={16} />
-                <span>插入到当前节点</span>
-              </button>
-            </div>
-            {!selectedNodeId && <p className="animation-panel-note">先选中场景节点；旧工程也可以选中旧版动画节点继续维护。</p>}
-            {node?.data.nodeKind === "animation" && <p className="animation-panel-note">当前会覆盖旧版动画节点里的动画指令；建议完成后使用节点上的转换入口迁移。</p>}
-            {node?.data.scene && <p className="animation-panel-note">当前会把动画追加到场景节点的命令列表末尾。</p>}
-          </section>
-
-          <details className="animation-advanced-panel" open={isAdvancedOpen} onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}>
-            <summary>
-              <ChevronDown className="animation-advanced-chevron" size={16} />
-              <Film size={16} />
-              <span className="animation-advanced-title">
-                <strong>高级定制</strong>
-                <small>展开后用可视化控件微调名称、编号、缓动和关键帧；CSS 入口只在专家模式显示。</small>
-              </span>
-              <span>高级定制</span>
-            </summary>
-            <div className="advanced-grid-2 animation-advanced-fields">
-              <label>
-                动画名称
-                <input value={draft.name} data-help-key="animation.name" onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
-              </label>
-              <label>
-                动画编号
-                <input value={draft.preset_id} data-help-key="animation.id" onChange={(event) => setDraft({ ...draft, preset_id: event.target.value })} />
-              </label>
-              <label>
-                缓动函数
-                <input
-                  value={draft.easing}
-                  data-help-key="animation.easing"
-                  onChange={(event) => setDraft({ ...draft, easing: event.target.value })}
-                />
-              </label>
-              <label className="check-row">
-                <input
-                  type="checkbox"
-                  checked={draft.loop}
-                  data-help-key="animation.loop"
-                  onChange={(event) => setDraft({ ...draft, loop: event.target.checked })}
-                />
-                循环播放
-              </label>
-            </div>
-            <div className="animation-expert-toggle">
-              <div>
-                <strong>专家模式</strong>
-                <small>仅当模板和关键帧控件无法表达效果时，再启用自定义 CSS。</small>
-              </div>
-              <button type="button" className={isExpertOpen ? "is-active" : ""} data-help-key="animation.expertMode" onClick={() => setExpertOpen((current) => !current)}>
-                {isExpertOpen ? "隐藏 CSS 入口" : "显示 CSS 入口"}
-              </button>
-            </div>
-            <AnimationTimeline keyframes={draft.keyframes} showExpertCss={isExpertOpen} onChange={(keyframes) => setDraft({ ...draft, keyframes })} />
-          </details>
         </div>
       </div>
     </section>

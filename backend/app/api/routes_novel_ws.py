@@ -54,17 +54,22 @@ async def _send_event(websocket: WebSocket, event: dict[str, Any]) -> None:
 async def _replay_or_snapshot(websocket: WebSocket, job: NovelRealtimeJob, last_seq: int) -> None:
     events = job.replay_after(last_seq)
     if events is None:
+        # This is a subscription response, not job output. Recording it in
+        # the replay buffer rebroadcasts one observer's gap to every other
+        # observer and replays the same gap after a successful rewind.
         await _send_event(
             websocket,
-            job.next_event(
-                "snapshot_required",
-                {
+            {
+                "type": "snapshot_required", "seq": 0,
+                "jobId": job.job_id, "requestId": job.request_id,
+                "phase": job.phase, "agentId": job.agent_id, "timestamp": None,
+                "payload": {
                     "message": "Event buffer no longer contains the requested resume point.",
                     "oldestSeq": job.events[0]["seq"] if job.events else 0,
                     "latestSeq": job.seq,
                     "status": job.status,
                 },
-            ),
+            },
         )
         return
     for event in events:
@@ -142,13 +147,17 @@ async def novel_realtime_socket(websocket: WebSocket) -> None:
                 continue
             if command == "cancel_job":
                 job_id = str(message.get("jobId") or "")
-                if not novel_realtime_hub.cancel(job_id):
+                job = novel_realtime_hub.get(job_id)
+                accepted = novel_realtime_hub.cancel(job_id)
+                if not accepted:
                     logger.warning(
                         "小说长连接取消任务失败，任务不存在：connection_id=%s job_id=%s",
                         connection_id,
                         job_id,
                     )
-                    await websocket.send_json({"type": "error", "seq": 0, "jobId": job_id, "requestId": connection_id, "phase": "connection", "agentId": "realtime_hub", "timestamp": None, "payload": {"message": "Job not found."}})
+                await websocket.send_json({"type": "cancel_ack", "seq": 0, "jobId": job_id,
+                                           "requestId": str(message.get("requestId") or connection_id),
+                                           "payload": {"accepted": accepted, "status": job.status if job else None}})
                 continue
             if command in {"subscribe_job", "resume_job"}:
                 job_id = str(message.get("jobId") or "")

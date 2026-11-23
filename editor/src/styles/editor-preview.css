@@ -1,0 +1,168 @@
+.preview-panel.is-expanded { padding: 8px; }
+.preview-panel > .embedded-runtime-preview-header {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-areas: "heading refresh collapse" "toolbar toolbar toolbar";
+  gap: 2px 6px !important;
+  margin-bottom: 6px !important;
+  padding: 4px 6px 2px;
+}
+.embedded-runtime-preview-header .embedded-runtime-preview-heading { align-content: center; }
+.embedded-runtime-preview-heading .embedded-runtime-preview-status {
+  display: block;
+  grid-area: auto;
+  min-height: 0;
+  max-height: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 11px;
+}
+.embedded-runtime-preview-heading .embedded-runtime-preview-status.is-ready { color: var(--success); }
+.embedded-runtime-preview-heading .embedded-runtime-preview-status.is-error { color: var(--danger); }
+.embedded-runtime-preview-heading .embedded-runtime-preview-status.is-replaying { color: var(--accent); }
+.embedded-runtime-preview-heading .embedded-runtime-preview-status.has-compatibility-warning { color: var(--warning); }
+.embedded-runtime-preview-header .embedded-runtime-refresh { grid-area: refresh; margin: 0; }
+.embedded-runtime-preview-header > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 32px;
+  padding: 4px 7px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.embedded-runtime-preview-toolbar.glass-selection-group[data-glass-scroll-axis=x] > .glass-selection-viewport {
+  padding-block: 2px;
+}
+.preview-rail-button strong { display: inline-flex; align-items: center; gap: 6px; }
+
+/* Keep usable space for the real preview and properties in a short desktop
+   window. Only the edit body scrolls; navigation and status remain pinned. */
+@media (min-width: 641px) and (max-height: 600px) {
+  .editor-workspace-body:has(.scene-editor-pane:not(.is-preview-collapsed)) { overflow-y: auto; }
+  .editor-workspace:not(:has(.scene-editor-pane.is-preview-collapsed)) {
+    grid-template-rows: minmax(500px, 1fr);
+  }
+  .editor-workspace > .scene-editor-pane:not(.is-preview-collapsed) {
+    height: auto;
+    grid-template-rows: minmax(0, var(--preview-split-ratio, 40%)) 10px minmax(0, 1fr);
+  }
+}
+@media (min-width: 641px) and (max-width: 900px) and (min-height: 481px) and (max-height: 600px) {
+  .editor-workspace:not(:has(.scene-editor-pane.is-preview-collapsed)) {
+    grid-template-rows: auto minmax(300px, 1fr) minmax(450px, auto);
+  }
+  .editor-workspace > .scene-editor-pane:not(.is-preview-collapsed) { height: 720px; }
+}
+@media (min-width: 821px) {
+  @container embedded-preview (min-width: 670px) {
+    .preview-panel > .embedded-runtime-preview-header {
+      grid-template-columns: minmax(124px, 1fr) minmax(0, auto) auto auto;
+      grid-template-areas: "heading toolbar refresh collapse";
+    }
+  }
+}
+
+.toolbar-popover.workspace-task-panel.preview {
+  padding: 0;
+  border-radius: var(--editor-panel-radius);
+  background: var(--editor-panel-surface), var(--bg);
+  overflow: hidden;
+  bottom: auto;
+  height: min(660px, calc(100dvh - var(--workspace-task-top, 100px) - 16px));
+}
+
+.preview-launch-panel {
+  --preview-content-inset: 16px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 0;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  box-sizing: border-box;
+}
+
+.preview-launch-header,
+.preview-launch-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px var(--preview-content-inset);
+  box-sizing: border-box;
+}
+
+.preview-launch-header { border-bottom: 1px solid var(--line); }
+
+.preview-gallery-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  flex: 0 0 auto;
+  color: var(--ink);
+  font-size: 12px;
+  cursor: pointer;
+}
+.preview-gallery-option input { flex: 0 0 auto; margin: 0; }
+.preview-gallery-option:has(input:disabled) { cursor: default; opacity: .6; }
+
+.preview-launch-header h3 { margin: 0; font-size: 17px; }
+.preview-launch-header p,
+.preview-launch-hint { margin: 4px 0; color: var(--muted); font-size: 12px; }
+.preview-launch-header > div { min-width: 0; }
+.preview-launch-header button { flex-shrink: 0; }
+.preview-launch-body {
+  min-height: 0;
+  padding: 16px var(--preview-content-inset);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  box-sizing: border-box;
+}
+.preview-launch-summary { display: grid; grid-template-columns: 1fr 1fr auto; gap: 12px; margin: 4px 0 16px; }
+.preview-launch-summary > div { min-width: 0; }
+.preview-launch-summary dt { color: var(--muted); font-size: 12px; }
+.preview-launch-summary dd { margin: 5px 0 0; overflow-wrap: anywhere; font-weight: 600; }
+.preview-launch-panel .gamecli-preview-log ol { height: 190px; max-height: none; overflow: auto; }
+.preview-launch-panel .gamecli-preview-log { margin-top: 12px; }
+.preview-launch-panel .gamecli-preview-log li { overflow-wrap: anywhere; }
+.preview-launch-panel .gamecli-preview-detail p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.preview-launch-panel button { min-height: 44px; padding: 8px 12px; font-size: 13px; }
+.preview-launch-panel .preview-launch-primary {
+  background: color-mix(in srgb, var(--accent) 25%, var(--surface-2));
+  border-color: var(--accent);
+  color: var(--ink-strong);
+  font-weight: 650;
+}
+.preview-launch-actions { justify-content: flex-start; border-top: 1px solid var(--line); }
+.preview-launch-maintenance { margin: 12px 0; color: var(--muted); font-size: 12px; }
+.preview-launch-maintenance summary { cursor: pointer; padding: 10px 0; }
+
+@media (max-width: 640px) {
+  .preview-launch-panel { --preview-content-inset: 12px; }
+  .preview-launch-summary { grid-template-columns: 1fr; gap: 8px; }
+  .preview-launch-actions button { flex: 1; }
+}
+
+/* A short window cannot fit a fixed header, footer and useful log viewport.
+   Scroll the whole task instead of shrinking its middle track to zero. */
+@media (max-height: 520px) {
+  .toolbar-popover.workspace-task-panel.preview { overflow-y: auto; }
+  .preview-launch-panel {
+    height: auto;
+    min-height: 100%;
+    grid-template-rows: auto auto auto;
+    align-content: start;
+    overflow: visible;
+  }
+  .preview-launch-body { overflow: visible; }
+}

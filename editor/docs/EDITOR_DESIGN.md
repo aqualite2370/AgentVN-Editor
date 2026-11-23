@@ -65,6 +65,8 @@ The toolbar controls global MemoryMode. Inspector controls per-node MemoryMode. 
 
 ## project.vnproj vs script.json
 
-`project.vnproj` preserves editor state, node positions, viewport, AI settings, preview state, UI metadata, and legacy compatibility nodes. New saves use editor project format `1.1.0`; loading an older `1.0.0` project does not rewrite it until the author saves.
+`project.vnproj` preserves editor state, node positions, viewport, AI settings, preview state, UI metadata, legacy compatibility nodes, and project assets. New user saves are ZIP containers containing `project.json`, `format.json`, and `assets/...`; legacy UTF-8 JSON `.vnproj` files remain importable. Timeline backups are internal JSON snapshots and are not portable ZIP project bundles.
+
+The canonical container, integrity, UTF-8, error-code, and timeline rules are documented in `docs/PROJECT_FORMAT.md`. All scripts and import paths must use the shared container readers instead of assuming the `.vnproj` extension implies JSON.
 
 `script.json` is runtime-only and contains schema version, entry scene id, scenes, commands, choices, state updates, camera motions, and endings.

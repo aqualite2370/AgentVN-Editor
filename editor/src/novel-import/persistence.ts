@@ -20,7 +20,7 @@ import type {
   TextChunk,
   TokenUsageRecord,
 } from "./types";
-import { estimateTokens } from "./textChunker";
+import { chunkText, estimateTokens } from "./textChunker";
 
 export const novelPersistenceSchemaVersion = "1.0.0" as const;
 export const novelPromptVersion = "novel-import-v1";
@@ -117,6 +117,11 @@ function isJobEventLog(value: unknown): value is JobEventLog {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function combinedModelNames(names: Array<string | undefined>): string | undefined {
+  const known = [...new Set(names.filter((name): name is string => Boolean(name)))];
+  return known.length ? known.join(" + ") : undefined;
 }
 
 export function bookRecordFromDocument(document: SourceDocument, previous?: PersistentBookImportRecord): PersistentBookImportRecord {
@@ -396,12 +401,14 @@ export function deriveNovelPersistenceState(input: {
       tokenUsage: usage,
       generatedAt: analysis ? previousResult?.generatedAt ?? nowIso() : previousResult?.generatedAt,
       promptVersion: novelPromptVersion,
-      modelName: input.modelName ?? previousResult?.modelName,
+      modelName: analysis?.modelName ?? (!analysis ? partial?.modelName : undefined)
+        ?? (previousResult ? previousResult.modelName : input.modelName),
       retryCount: previousResult?.retryCount ?? 0,
       errorMessage: status === "failed" || status === "timeout_suspected" ? previousResult?.errorMessage : undefined,
     };
     tasks[taskId(jobId, "chunk", chunk.chunk_id)] = {
       ...taskBase(jobId, bookId, "chunk", chunk.chunk_id, input.modelName, previous.tasks[taskId(jobId, "chunk", chunk.chunk_id)]),
+      modelName: chunkResults[chunk.chunk_id].modelName,
       status,
       tokenUsage: usage,
       completedAt: analysis ? previous.tasks[taskId(jobId, "chunk", chunk.chunk_id)]?.completedAt ?? nowIso() : undefined,
@@ -426,6 +433,7 @@ export function deriveNovelPersistenceState(input: {
     tokenUsage = addTokenUsage(tokenUsage, usage);
     tasks[taskId(jobId, "scene", scene.scene_candidate_id)] = {
       ...taskBase(jobId, bookId, "scene", scene.scene_candidate_id, input.modelName, previousTask),
+      modelName: adapted?.modelName ?? (previousTask ? previousTask.modelName : input.modelName),
       status,
       tokenUsage: usage,
       completedAt: adapted ? previousTask?.completedAt ?? nowIso() : previousTask?.completedAt,
@@ -452,6 +460,11 @@ export function deriveNovelPersistenceState(input: {
       chunkIds.reduce((total, chunkId) => addTokenUsage(total, chunkResults[chunkId]?.tokenUsage), emptyTokenUsage()),
       estimateTokenUsage("", resultText),
     );
+    const sourcesChanged = adaptedScenes.some(scene => scene.modelName
+      && scene.modelName !== previous.sessionSnapshot?.adapted_scenes
+        .find(old => old.source_scene_candidate_id === scene.source_scene_candidate_id)?.modelName)
+      || chunkIds.some(chunkId => chunkResults[chunkId]?.modelName !== previous.chunkResults[chunkId]?.modelName);
+    const keepRecordedSource = previousResult && previousResult.resultText === resultText && !sourcesChanged;
     chapterResults[chapter.chapter_id] = {
       chapterId: chapter.chapter_id,
       bookId,
@@ -470,7 +483,11 @@ export function deriveNovelPersistenceState(input: {
       tokenUsage: usage,
       generatedAt: resultText ? previousResult?.generatedAt ?? nowIso() : previousResult?.generatedAt,
       promptVersion: novelPromptVersion,
-      modelName: input.modelName ?? previousResult?.modelName,
+      modelName: keepRecordedSource ? previousResult.modelName : combinedModelNames([
+        ...adaptedScenes.map(scene => scene.modelName
+          ?? previous.tasks[taskId(jobId, "scene", scene.source_scene_candidate_id)]?.modelName),
+        ...chunkIds.map(chunkId => chunkResults[chunkId]?.modelName),
+      ]) ?? (previousResult ? previousResult.modelName : input.modelName),
       retryCount: previousResult?.retryCount ?? 0,
       errorMessage: status === "failed" || status === "timeout_suspected" ? previousResult?.errorMessage : undefined,
     };
@@ -484,6 +501,8 @@ export function deriveNovelPersistenceState(input: {
     const processingTasksByChunkId = new Map(input.processing.tasks.map((task) => [task.chunkId, task]));
     for (const chunk of input.processing.chunks) {
       const task = processingTasksByChunkId.get(chunk.chunkId);
+      const processingJob = input.processing.jobs.find(job => job.jobId === task?.jobId
+        || (!task && job.bookId === chunk.bookId && job.selectedChapterIds.includes(chunk.chapterId)));
       const resultText = input.processing.chunkResults[chunk.chunkId] ?? previous.chunkResults[chunk.chunkId]?.resultText ?? "";
       const usage: TokenUsageRecord = {
         prompt_tokens: task?.inputTokens ?? chunk.estimatedTokens,
@@ -515,7 +534,7 @@ export function deriveNovelPersistenceState(input: {
         tokenUsage: usage,
         generatedAt: task?.finishedAt ?? previous.chunkResults[chunk.chunkId]?.generatedAt,
         promptVersion: input.processing.promptVersion || novelPromptVersion,
-        modelName: input.modelName ?? previous.chunkResults[chunk.chunkId]?.modelName,
+        modelName: processingJob?.modelName ?? previous.chunkResults[chunk.chunkId]?.modelName,
         retryCount: task?.retryCount ?? chunk.retryCount,
         errorMessage: task?.errorMessage ?? previous.chunkResults[chunk.chunkId]?.errorMessage,
       };
@@ -536,7 +555,8 @@ export function deriveNovelPersistenceState(input: {
         targetId: task.chunkId,
         status: mapProcessingStatus(task.status),
         promptVersion: input.processing.promptVersion || novelPromptVersion,
-        modelName: input.modelName ?? previous.tasks[task.agentTaskId]?.modelName,
+        modelName: input.processing.jobs.find(job => job.jobId === task.jobId)?.modelName
+          ?? previous.tasks[task.agentTaskId]?.modelName,
         agentParams: { agentIndex: task.agentIndex, chapterId: task.chapterId },
         retryCount: task.retryCount,
         tokenUsage: usage,
@@ -567,7 +587,7 @@ export function deriveNovelPersistenceState(input: {
         failed: processingJob.failedChunks,
         skipped: processingJob.skippedChunks,
         promptVersion: processingJob.promptVersion || input.processing.promptVersion || novelPromptVersion,
-        modelName: input.modelName ?? previous.jobs[processingJob.jobId]?.modelName,
+        modelName: processingJob.modelName ?? previous.jobs[processingJob.jobId]?.modelName,
         agentParams: {
           selectedChapterIds: processingJob.selectedChapterIds,
           maxConcurrency: processingJob.maxConcurrency,
@@ -609,7 +629,8 @@ export function deriveNovelPersistenceState(input: {
         tokenUsage: usage,
         generatedAt: resultText ? previous.chapterResults[chapter.chapter_id]?.generatedAt ?? nowIso() : previous.chapterResults[chapter.chapter_id]?.generatedAt,
         promptVersion: input.processing.promptVersion || novelPromptVersion,
-        modelName: input.modelName ?? previous.chapterResults[chapter.chapter_id]?.modelName,
+        modelName: input.processing.jobs.find(job => job.selectedChapterIds.includes(chapter.chapter_id))?.modelName
+          ?? chapterResults[chapter.chapter_id]?.modelName,
         retryCount: chapterChunks.reduce((sum, chunk) => sum + chunk.retryCount, 0),
         errorMessage: failedChunkIds.length > 0 ? `${failedChunkIds.length} chunk(s) failed or unfinished.` : undefined,
       };
@@ -632,7 +653,7 @@ export function deriveNovelPersistenceState(input: {
     failed,
     skipped,
     promptVersion: novelPromptVersion,
-    modelName: input.modelName ?? existingJob?.modelName,
+    modelName: existingJob?.modelName ?? input.session.modelName ?? (existingJob ? undefined : input.modelName),
     agentParams: { importOptions: input.session.import_options },
     tokenUsage,
     retryCount: existingJob?.retryCount ?? 0,
@@ -695,7 +716,7 @@ function taskBase(
     targetId,
     status: previous?.status ?? "pending",
     promptVersion: novelPromptVersion,
-    modelName: modelName ?? previous?.modelName,
+    modelName: previous ? previous.modelName : modelName,
     agentParams: previous?.agentParams ?? {},
     retryCount: previous?.retryCount ?? 0,
     tokenUsage: previous?.tokenUsage ?? emptyTokenUsage(),
@@ -817,10 +838,36 @@ export function findSameNameDifferentHash(persistence: NovelPersistenceState, do
 }
 
 export function chunksMatchDocument(chunks: TextChunk[], document: SourceDocument): boolean {
-  return chunks.length > 0 && chunks.every((chunk) =>
+  if (!chunks.length || !chunks.every((chunk) =>
     chunk.document_id === document.document_id &&
+    Number.isInteger(chunk.start_offset) &&
+    Number.isInteger(chunk.end_offset) &&
     chunk.start_offset >= 0 &&
-    chunk.end_offset <= document.normalized_text.length &&
-    textHash(document.normalized_text.slice(chunk.start_offset, chunk.end_offset)) === textHash(chunk.text)
-  );
+    chunk.end_offset >= chunk.start_offset &&
+    chunk.end_offset <= document.normalized_text.length
+  )) return false;
+  if (chunks.every((chunk) =>
+    document.normalized_text.slice(chunk.start_offset, chunk.end_offset) === chunk.text
+  )) return true;
+
+  // The paragraph producer joins paragraphs and its overlap with "\n\n".
+  // Therefore its saved text is not necessarily a literal source slice.
+  // Verify legacy chunks by reproducing the WHOLE partition, including every
+  // offset and character, instead of weakening the comparison to whitespace.
+  const overlap = chunks.length > 1 ? chunks[0].end_offset - chunks[1].start_offset : 240;
+  if (!Number.isInteger(overlap) || overlap < 0 || overlap > 720) return false;
+  const sizes = new Set([2600, 6000, 8000]);
+  // Workspace chunk budgets used floor(size * .08) for the overlap. Infer
+  // the bounded range; do not depend on the currently selected model budget.
+  for (let size = Math.max(2600, Math.ceil(overlap / .08));
+    size <= Math.min(8000, Math.ceil((overlap + 1) / .08) - 1); size += 1) sizes.add(size);
+  return [...sizes].some((size) => {
+    const recreated = chunkText(document.document_id, document.normalized_text, size, overlap);
+    return recreated.length === chunks.length && recreated.every((chunk, index) =>
+      chunk.index === chunks[index].index &&
+      chunk.start_offset === chunks[index].start_offset &&
+      chunk.end_offset === chunks[index].end_offset &&
+      chunk.text === chunks[index].text
+    );
+  });
 }

@@ -111,6 +111,58 @@ def init_db(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_novel_processing_chunk
             ON novel_processing_records (kind, chunk_id);
+
+        CREATE TABLE IF NOT EXISTS assistant_creation_processes (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            project_id TEXT NOT NULL,
+            project_title TEXT NOT NULL,
+            conversation_id TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN (
+                'queued', 'running', 'cancelling', 'completed', 'failed', 'cancelled'
+            )),
+            submitted_at INTEGER NOT NULL,
+            started_at INTEGER,
+            finished_at INTEGER,
+            worker_id TEXT,
+            lease_until INTEGER,
+            payload_json TEXT NOT NULL,
+            result_json TEXT,
+            error_code TEXT,
+            error_message TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_assistant_creation_status_sequence
+            ON assistant_creation_processes (status, sequence);
+        CREATE INDEX IF NOT EXISTS idx_assistant_creation_project
+            ON assistant_creation_processes (project_id, status);
+
+        CREATE TABLE IF NOT EXISTS assistant_creation_tool_events (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            process_id TEXT NOT NULL,
+            tool TEXT NOT NULL,
+            status TEXT NOT NULL,
+            time INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_assistant_creation_tools
+            ON assistant_creation_tool_events (process_id, sequence);
+        CREATE TABLE IF NOT EXISTS assistant_creation_local_tools (
+            id TEXT PRIMARY KEY,
+            process_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            status TEXT NOT NULL,
+            draft_json TEXT NOT NULL,
+            result_json TEXT,
+            created_at INTEGER NOT NULL
+        );
         """
     )
+    summary_columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(editor_project_summaries)").fetchall()
+    }
+    if "size_bytes" not in summary_columns:
+        conn.execute(
+            "ALTER TABLE editor_project_summaries ADD COLUMN size_bytes INTEGER NOT NULL DEFAULT 0"
+        )
     conn.commit()

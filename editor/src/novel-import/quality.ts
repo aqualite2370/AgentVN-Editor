@@ -1,5 +1,6 @@
 import type { AdaptedScene, NovelImportQualityIssue, NovelImportQualityMetric, NovelImportQualityReport, NovelImportSession, SceneCandidate } from "./types";
 import type { GameCommand } from "../types/commands";
+import { auditChapterPlanningSource } from "./planningSource";
 
 const QUALITY_THRESHOLD = 70;
 
@@ -138,12 +139,15 @@ function metric(input: NovelImportQualityMetric): NovelImportQualityMetric {
   return input;
 }
 
-export function evaluateNovelImportQuality(session: NovelImportSession): NovelImportQualityReport {
+export function evaluateNovelImportQuality(session: NovelImportSession, scope: "current" | "planning" = "current"): NovelImportQualityReport {
+  // A paused import may have only its first few adapted scenes. Planning
+  // readiness must use the full validated plan, not that partial progress.
+  const scoringSession = scope === "planning" ? { ...session, adapted_scenes: [] } : session;
   const totalChars = session.document?.total_chars ?? 0;
   const maxSceneChars = session.import_options.max_scene_chars || 2200;
   const suggestedSceneCount = suggestedSceneCountForText(totalChars, maxSceneChars);
   const sceneSpans = session.scenes.map(sceneSpan);
-  const adaptedSpans = session.adapted_scenes.map(adaptedSpan);
+  const adaptedSpans = scoringSession.adapted_scenes.map(adaptedSpan);
   const allSpans = adaptedSpans.length > 0 ? adaptedSpans : sceneSpans;
   const sceneCoverage = coverageRatio(allSpans, totalChars);
   const unparsedRatio = unparsedParagraphRatio(session.document?.normalized_text ?? "", allSpans, totalChars);
@@ -151,7 +155,7 @@ export function evaluateNovelImportQuality(session: NovelImportSession): NovelIm
   const branchSuggestionCount = session.branch_suggestions.length;
   const usableBranchSuggestionCount = session.branch_suggestions.filter((suggestion) => suggestion.confidence >= 0.6).length;
   const characterCount = session.characters.length;
-  const commands = collectCommands(session);
+  const commands = collectCommands(scoringSession);
   const dialogueCommandCount = commands.filter((command) => command.type === "dialog").length;
   const narrationCommandCount = commands.filter((command) => command.type === "narration").length;
   const backgroundCommandCount = commands.filter((command) => command.type === "background").length;
@@ -165,7 +169,20 @@ export function evaluateNovelImportQuality(session: NovelImportSession): NovelIm
     return false;
   }).length;
   const spokenCommandCount = dialogueCommandCount + narrationCommandCount;
-  const lowQualityIssues = collectLowQualityIssues(session);
+  const lowQualityIssues = collectLowQualityIssues(scoringSession);
+  if (scope === "planning" && session.adapted_scenes.length) {
+    lowQualityIssues.push(...collectLowQualityIssues(session));
+  }
+  for (const chapter of session.chapters) {
+    if (!session.scenes.some(scene => scene.chapter_id === chapter.chapter_id)) continue;
+    const issues = auditChapterPlanningSource(chapter, session.scenes, session.document?.normalized_text ?? "");
+    if (issues.length) lowQualityIssues.push({
+      code: "planning_source_mismatch", severity: "blocked",
+      message: `第${chapter.index + 1}章「${chapter.title}」原文校验失败：${issues.slice(0, 2).join("；")}`,
+      action: "继续解析时仅重规划不完整的章节；已有改编结果的章节需先审核。",
+      sourceSceneId: session.scenes.find(scene => scene.chapter_id === chapter.chapter_id)?.scene_candidate_id,
+    });
+  }
   const dialogueNarrationRatio = spokenCommandCount > 0 ? dialogueCommandCount / spokenCommandCount : null;
   const ratioScore = dialogueNarrationRatio === null
     ? 0.5
@@ -202,7 +219,10 @@ export function evaluateNovelImportQuality(session: NovelImportSession): NovelIm
   if (dialogueNarrationRatio !== null && dialogueNarrationRatio > 0.9) reasons.push(`旁白占比偏低：对白/旁白比例失衡，当前对白 ${percent(dialogueNarrationRatio)}。`);
   if (unparsedRatio > 0.15) reasons.push(`未解析段落偏高：当前 ${percent(unparsedRatio)}。`);
   if (brokenCommandCount > 0) reasons.push(`命令字段不完整：发现 ${brokenCommandCount} 条对白、旁白或素材命令缺字段。`);
-  if (lowQualityIssues.length > 0) reasons.push(`玩家可见文本存在 ${lowQualityIssues.length} 处低质量诊断话术，必须修复后再发布。`);
+  const visibleIssueCount = lowQualityIssues.filter(issue => issue.code === "player_visible_low_quality_text").length;
+  const sourceIssueCount = lowQualityIssues.filter(issue => issue.code === "planning_source_mismatch").length;
+  if (visibleIssueCount > 0) reasons.push(`玩家可见文本存在 ${visibleIssueCount} 处低质量诊断话术，必须修复后再发布。`);
+  if (sourceIssueCount > 0) reasons.push(`${sourceIssueCount}章旧规划的摘录或覆盖未通过原文校验，需修复后再改编。`);
 
   const hasBlockedIssue = lowQualityIssues.some((issue) => issue.severity === "blocked");
   const riskFlag = score < QUALITY_THRESHOLD || reasons.length > 0 || hasBlockedIssue;

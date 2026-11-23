@@ -1,6 +1,6 @@
 import type { Edge, Node, Viewport } from "@xyflow/react";
 import type { AnimationCommand, ChoiceCommand, Condition, ConditionOperator, GameCommand, JsonValue, StateUpdateCommand } from "./commands";
-import type { DialogVisualStyle, LoadingAnimationConfig, SpeakerFocusConfig } from "../../../shared/cartridge/types";
+import type { DialogPresentationMode, DialogVisualStyle, LoadingAnimationConfig, OpeningAudioTrack, SpeakerFocusConfig } from "../../../shared/cartridge/types";
 import type { MemoryMode } from "./memory";
 import type { SceneBeat } from "./scene";
 import type { PendingVisualAsset } from "./assets";
@@ -88,6 +88,7 @@ export interface EditorNodeData extends Record<string, unknown> {
   loop?: LoopData;
   animation?: AnimationCommand;
   loadingAnimation?: LoadingAnimationConfig;
+  openingAudio?: OpeningAudioTrack[];
   ending?: EndData;
 }
 
@@ -133,13 +134,23 @@ export interface RuntimeScript {
   schema_version: string;
   entry_scene_id: string;
   default_sprite_scale?: number;
+  default_dialog_presentation?: DialogPresentationMode;
   speaker_focus?: SpeakerFocusConfig;
   loading_animation?: LoadingAnimationConfig;
+  opening_audio?: OpeningAudioTrack[];
+  rollback?: {
+    enabled?: boolean;
+    hard_limit?: number;
+    log_length?: number;
+    pause_as_checkpoint?: boolean;
+    fixed_choice_mode?: "selected_only" | "selected_marked";
+  };
   characters?: Array<{
     character_id: string;
     name: string;
     aliases?: string[];
     dialog_style?: DialogVisualStyle | null;
+    dialog_presentation?: DialogPresentationMode;
   }>;
   scenes: RuntimeScene[];
 }

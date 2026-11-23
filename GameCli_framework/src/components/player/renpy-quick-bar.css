@@ -1,0 +1,79 @@
+.story-player .renpy-quick-bar {
+  position: absolute;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  justify-content: center;
+  gap: var(--renpy-quick-gap);
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  min-height: 0;
+  max-width: none;
+  transform: none;
+  overflow: visible;
+  z-index: 25;
+  pointer-events: auto;
+}
+.renpy-quick-bar .renpy-quick-action {
+  flex: 0 0 var(--renpy-quick-button-width);
+  box-sizing: border-box;
+  width: var(--renpy-quick-button-width);
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 0;
+  font-family: inherit;
+  font-size: var(--renpy-role-font-size, var(--renpy-quick-font));
+  font-weight: 560;
+  line-height: 1;
+  white-space: nowrap;
+  color: var(--renpy-button-text-normal, var(--muted));
+  background-color: transparent;
+  background-image: var(--renpy-button-image-normal, none);
+  background-size: var(--renpy-button-background-size, 100% 100%);
+  background-repeat: var(--renpy-button-background-repeat, no-repeat);
+  border-image-source: var(--renpy-button-image-normal, none);
+  border-image-slice: var(--renpy-button-border-slice, 0) fill;
+  border-image-width: var(--renpy-button-border-width, 0);
+  border-image-repeat: var(--renpy-button-border-repeat, stretch);
+  box-shadow: none;
+  cursor: pointer;
+  transition:
+    color 120ms cubic-bezier(0.23, 1, 0.32, 1),
+    background-color 120ms cubic-bezier(0.23, 1, 0.32, 1),
+    border-color 120ms cubic-bezier(0.23, 1, 0.32, 1),
+    box-shadow 120ms cubic-bezier(0.23, 1, 0.32, 1),
+    opacity 120ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.renpy-quick-action:hover:not(:disabled), .renpy-quick-action:focus-visible {
+  color: var(--renpy-button-text-hover, var(--accent));
+  background-color: transparent;
+  background-image: var(--renpy-button-image-hover, none);
+  border-image-source: var(--renpy-button-image-hover, none);
+  border-color: transparent;
+  box-shadow: none;
+}
+.renpy-quick-action[aria-pressed="true"] {
+  color: var(--renpy-button-text-selected, var(--ink));
+  background-color: transparent;
+  background-image: var(--renpy-button-image-selected, none);
+  border-image-source: var(--renpy-button-image-selected, none);
+  border-color: transparent;
+  box-shadow: none;
+}
+.renpy-quick-action:disabled {
+  color: var(--renpy-button-text-disabled, var(--muted));
+  background-color: transparent;
+  background-image: var(--renpy-button-image-disabled, none);
+  border-image-source: var(--renpy-button-image-disabled, none);
+  opacity: 0.5;
+  cursor: default;
+}
+.renpy-quick-action:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+@media (prefers-reduced-motion: reduce) {
+  .renpy-quick-bar .renpy-quick-action { transition-duration: 0ms; }
+}

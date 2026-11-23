@@ -10,6 +10,7 @@ interface RangeControlProps {
   helpKey?: string;
   className?: string;
   onChange: (value: number) => void;
+  onCommit?: () => void;
 }
 
 function rangeProgress(value: number, min: number, max: number): string {
@@ -17,6 +18,17 @@ function rangeProgress(value: number, min: number, max: number): string {
   const progress = ((value - min) / (max - min)) * 100;
   return `${Math.max(0, Math.min(100, progress))}%`;
 }
+
+const adjustmentKeys = new Set([
+  "ArrowLeft",
+  "ArrowRight",
+  "ArrowUp",
+  "ArrowDown",
+  "Home",
+  "End",
+  "PageUp",
+  "PageDown",
+]);
 
 export function RangeControl({
   value,
@@ -28,12 +40,16 @@ export function RangeControl({
   helpKey,
   className,
   onChange,
+  onCommit,
 }: RangeControlProps) {
   const style = { "--range-progress": rangeProgress(value, min, max) } as CSSProperties;
   const classes = ["range-control", className ?? ""].filter(Boolean).join(" ");
 
   return (
     <span className={classes} style={style}>
+      <span className="range-control-track" aria-hidden="true">
+        <span className="range-control-fill" />
+      </span>
       <input
         className="range-control-input"
         disabled={disabled}
@@ -45,6 +61,10 @@ export function RangeControl({
         value={value}
         data-help-key={helpKey}
         onChange={(event) => onChange(Number(event.currentTarget.value))}
+        onPointerUp={() => onCommit?.()}
+        onKeyUp={(event) => {
+          if (adjustmentKeys.has(event.key)) onCommit?.();
+        }}
       />
     </span>
   );

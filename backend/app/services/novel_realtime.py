@@ -15,6 +15,7 @@ from typing import Any
 
 from pydantic import BaseModel
 from app.core.errors import AIProviderError
+from app.services.novel_retry import retry_cancelled
 
 
 NovelStreamFactory = Callable[[], Iterator[tuple[str, object]]]
@@ -126,7 +127,7 @@ class NovelRealtimeJob:
                 pass
             queue.put_nowait(event)
             return
-        merged = str(event.get("payload", {}).get("delta", ""))
+        deltas: list[str] = []
         retained: list[dict[str, Any]] = []
         while True:
             try:
@@ -135,12 +136,13 @@ class NovelRealtimeJob:
                 # error-log-ignore: 已读完待合并事件，用空队列作为循环结束条件。
                 break
             if existing["type"] in {"message_delta", "agent_delta"}:
-                merged = f"{existing.get('payload', {}).get('delta', '')}{merged}"
+                deltas.append(str(existing.get("payload", {}).get("delta", "")))
             else:
                 retained.append(existing)
         for existing in retained[-max(0, queue.maxsize - 1):]:
             queue.put_nowait(existing)
-        queue.put_nowait({**event, "payload": {**event.get("payload", {}), "delta": merged}})
+        deltas.append(str(event.get("payload", {}).get("delta", "")))
+        queue.put_nowait({**event, "payload": {**event.get("payload", {}), "delta": "".join(deltas)}})
 
     def replay_after(self, last_seq: int) -> list[dict[str, Any]] | None:
         with self.lock:
@@ -176,6 +178,8 @@ class NovelRealtimeHub:
         job = self.get(job_id)
         if not job:
             return False
+        if job.status in {"completed", "failed", "cancelled", "cancelling"}:
+            return True
         job.cancel_requested.set()
         job.status = "cancelling"
         job.next_event("lifecycle", {"status": "cancelling", "message": "Cancel requested."})
@@ -205,6 +209,7 @@ class NovelRealtimeHub:
         return job
 
     def _run_stream(self, job: NovelRealtimeJob, stream_factory: NovelStreamFactory) -> None:
+        cancel_token = retry_cancelled.set(job.cancel_requested.is_set)
         started_at = datetime.now(UTC)
         try:
             job.status = "running"
@@ -230,6 +235,11 @@ class NovelRealtimeHub:
             job.status = "completed"
             job.next_event("agent_completed", {"status": "completed", "elapsedMs": elapsed_ms})
         except Exception as exc:
+            if job.cancel_requested.is_set():
+                job.status = "cancelled"
+                job.next_event("lifecycle", {"status": "cancelled", "message": "Job cancelled."})
+                job.next_event("agent_completed", {"status": "cancelled"})
+                return
             logger.error(
                 "Novel realtime job failed: job_id=%s operation=%s phase=%s\n%s",
                 job.job_id,
@@ -249,6 +259,8 @@ class NovelRealtimeHub:
             job.status = "failed"
             job.next_event("error", error_payload)
             job.next_event("agent_completed", {"status": "failed", **error_payload})
+        finally:
+            retry_cancelled.reset(cancel_token)
 
 
 novel_realtime_hub = NovelRealtimeHub()

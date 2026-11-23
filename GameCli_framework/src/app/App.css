@@ -7,6 +7,12 @@
   background: #000;
 }
 
+.runtime-boot-content {
+  width: 100%;
+  height: 100%;
+  outline: none;
+}
+
 .game-launch-blackout {
   position: fixed;
   inset: 0;
@@ -15,6 +21,31 @@
   place-items: center;
   pointer-events: auto;
   background: #000;
+  opacity: 1;
+  transition: opacity var(--game-launch-duration, 748ms) var(--ease-out);
+  will-change: opacity;
+}
+
+.game-launch-blackout[aria-hidden="true"] {
+  pointer-events: none;
+}
+
+.game-launch-blackout.is-arming {
+  opacity: 0;
+}
+
+.launch-feedback {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms var(--ease-out);
+}
+
+.launch-feedback.is-visible {
+  opacity: 1;
 }
 
 .launch-preparation {
@@ -41,20 +72,16 @@
   accent-color: #c7aa72;
 }
 
-.game-launch-blackout.is-covering {
-  animation: game-launch-cover var(--game-launch-duration, 450ms) ease-in both;
-}
-
 .game-launch-blackout.is-revealing {
-  animation: game-launch-reveal var(--game-launch-duration, 450ms) ease-out both;
+  opacity: 0;
 }
 
-@keyframes game-launch-cover {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
+@media (prefers-reduced-motion: reduce) {
+  .game-launch-blackout {
+    transition-duration: 408ms !important;
+  }
 
-@keyframes game-launch-reveal {
-  from { opacity: 1; }
-  to { opacity: 0; }
+  .launch-feedback {
+    transition-duration: 120ms !important;
+  }
 }

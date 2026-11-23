@@ -1,6 +1,6 @@
 """Novel import and adaptation contracts."""
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import Field, model_validator
 
@@ -229,6 +229,7 @@ class ExtractCharactersResponse(StrictBaseModel):
 
 
 class NovelAiChunkRequest(StrictBaseModel):
+    max_retries: int = Field(default=5, ge=0, le=10)
     document_id: str
     chunk_id: str
     index: int = Field(..., ge=0)
@@ -276,7 +277,14 @@ class NovelAiChunkTimelineNotes(StrictBaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class NovelAiOutlineBatchCheckpoint(StrictBaseModel):
+    key: str = Field(..., pattern=r"^[a-f0-9]{64}$")
+    stage: Literal["mainline", "structure", "index"]
+    payload: dict[str, Any]
+
+
 class NovelAiOutlineRequest(StrictBaseModel):
+    max_retries: int = Field(default=5, ge=0, le=10)
     document_id: str
     title: str
     total_chars: int = Field(..., ge=0)
@@ -285,6 +293,8 @@ class NovelAiOutlineRequest(StrictBaseModel):
     partial_mainline: "NovelAiOutlineMainline | None" = None
     partial_structure: "NovelAiOutlineStructure | None" = None
     partial_index: "NovelAiOutlineIndex | None" = None
+    partial_batches: list[NovelAiOutlineBatchCheckpoint] = Field(default_factory=list, max_length=4096)
+    partial_source_hash: str | None = None
     provider_selection: ProviderSelectionRequest | None = None
 
 
@@ -307,8 +317,8 @@ class NovelAiOutlineResponse(StrictBaseModel):
 class NovelAiOutlineMainline(StrictBaseModel):
     document_id: str
     title: str
-    summary: str
-    main_plot: str
+    summary: str = Field(max_length=300)
+    main_plot: str = Field(max_length=1200)
     needs_review: bool = False
     coverage_confidence: float = 0.5
     warnings: list[str] = Field(default_factory=list)
@@ -328,7 +338,13 @@ class NovelAiOutlineIndex(StrictBaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class NovelAiSceneBatchCheckpoint(StrictBaseModel):
+    key: str = Field(..., pattern=r"^[a-f0-9]{64}$")
+    payload: dict[str, Any]
+
+
 class NovelAiPlanChapterRequest(StrictBaseModel):
+    max_retries: int = Field(default=5, ge=0, le=10)
     document_id: str
     chapter: ChapterCandidate
     outline_summary: str
@@ -338,7 +354,27 @@ class NovelAiPlanChapterRequest(StrictBaseModel):
     min_scene_count: int | None = Field(default=None, ge=1)
     min_branch_suggestion_count: int = Field(default=1, ge=0)
     allow_branch_suggestions: bool = False
+    partial_batches: list[NovelAiSceneBatchCheckpoint] = Field(default_factory=list, max_length=4096)
     provider_selection: ProviderSelectionRequest | None = None
+
+
+class NovelAiPlannedScene(StrictBaseModel):
+    """Model-facing plan only. Source text and commands are restored locally."""
+    title: str = Field(min_length=1, max_length=48)
+    summary: str = Field(min_length=1, max_length=160)
+    start_offset: int = Field(ge=0)
+    end_offset: int = Field(ge=0)
+    start_quote: str = Field(min_length=1, max_length=32)
+    end_quote: str = Field(min_length=1, max_length=32)
+    location_hint: str | None = Field(default=None, max_length=40)
+    time_hint: str | None = Field(default=None, max_length=24)
+    characters: list[Annotated[str, Field(min_length=1, max_length=24)]] = Field(default_factory=list, max_length=8)
+    confidence: float = Field(default=.5, ge=0, le=1)
+
+class NovelAiChapterSceneBatch(StrictBaseModel):
+    scenes: list[NovelAiPlannedScene] = Field(min_length=1, max_length=2)
+    warnings: list[Annotated[str, Field(max_length=80)]] = Field(default_factory=list, max_length=3)
+    needs_review: bool = False
 
 
 class NovelAiScenePlanResponse(StrictBaseModel):
@@ -351,6 +387,12 @@ class NovelAiScenePlanResponse(StrictBaseModel):
 
 
 class NovelAiChapterScenePlan(StrictBaseModel):
+    @model_validator(mode="before")
+    @classmethod
+    def ground_source_ranges(cls, value: Any) -> Any:
+        from app.services.novel_scene_grounding import ground_chapter_plan
+        return ground_chapter_plan(value)
+
     chapter_id: str
     scenes: list[SceneCandidate]
     warnings: list[str] = Field(default_factory=list)
@@ -358,5 +400,8 @@ class NovelAiChapterScenePlan(StrictBaseModel):
 
 
 class NovelAiAdaptSceneRequest(AdaptSceneRequest):
+    max_retries: int = Field(default=5, ge=0, le=10)
     outline_summary: str | None = None
     previous_scene_summary: str | None = None
+    scene_beat_checkpoint: SceneBeat | None = None
+    scene_beat_warnings: list[str] = Field(default_factory=list)

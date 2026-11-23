@@ -11,6 +11,8 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronDown } from "lucide-react";
+import { GlassSelectionGroup } from "./GlassSelectionGroup";
+import { readViewportMetrics, subscribeToViewportChanges } from "../../utils/viewportMetrics";
 
 export interface RichSelectOption<T extends string = string> {
   value: T;
@@ -20,7 +22,8 @@ export interface RichSelectOption<T extends string = string> {
 }
 
 interface RichSelectPosition {
-  top: number;
+  top?: number;
+  bottom?: number;
   left: number;
   width: number;
   maxHeight: number;
@@ -39,6 +42,7 @@ export function RichSelect<T extends string>({
   placeholder = "请选择",
   variant = "default",
   className,
+  portalContainer,
 }: {
   value: T;
   options: ReadonlyArray<RichSelectOption<T>>;
@@ -51,10 +55,12 @@ export function RichSelect<T extends string>({
   placeholder?: string;
   variant?: "default" | "compact" | "hero";
   className?: string;
+  /** A modal may keep its popup inside its input-owned portal layer. */
+  portalContainer?: HTMLElement | null;
 }) {
   const id = useId();
   const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const listboxRef = useRef<HTMLDivElement | null>(null);
+  const listboxRef = useRef<HTMLElement | null>(null);
   const [mounted, setMounted] = useState(false);
   const [isOpen, setIsOpen] = useState(false);
   const selectedIndex = options.findIndex((option) => option.value === value);
@@ -77,20 +83,20 @@ export function RichSelect<T extends string>({
     const viewportGap = 12;
     const minWidth = variant === "hero" ? 280 : 180;
     const width = Math.max(rect.width, minWidth);
-    const belowSpace = window.innerHeight - rect.bottom - viewportGap;
-    const aboveSpace = rect.top - viewportGap;
+    const viewport = readViewportMetrics();
+    const belowSpace = viewport.bottom - rect.bottom - viewportGap;
+    const aboveSpace = rect.top - viewport.top - viewportGap;
     const placement: RichSelectPosition["placement"] = belowSpace < 220 && aboveSpace > belowSpace ? "top" : "bottom";
-    const available = placement === "top" ? aboveSpace : belowSpace;
-    const maxHeight = Math.max(156, Math.min(320, available - gap));
-    const top = placement === "top"
-      ? Math.max(viewportGap, rect.top - maxHeight - gap)
-      : Math.min(window.innerHeight - viewportGap - maxHeight, rect.bottom + gap);
+    const available = Math.max(1, placement === "top" ? aboveSpace : belowSpace);
+    const maxHeight = Math.max(1, Math.min(320, available - gap));
+    const top = placement === "bottom" ? Math.min(viewport.bottom - viewportGap - maxHeight, rect.bottom + gap) : undefined;
+    const bottom = placement === "top" ? Math.max(viewportGap, viewport.bottom - rect.top + gap) : undefined;
     const left = Math.min(
-      Math.max(viewportGap, rect.left),
-      Math.max(viewportGap, window.innerWidth - width - viewportGap),
+      Math.max(viewport.left + viewportGap, rect.left),
+      Math.max(viewport.left + viewportGap, viewport.right - width - viewportGap),
     );
 
-    setPosition({ top, left, width, maxHeight, placement });
+    setPosition({ top, bottom, left, width, maxHeight, placement });
   }, [variant]);
 
   useEffect(() => setMounted(true), []);
@@ -114,12 +120,10 @@ export function RichSelect<T extends string>({
     }
 
     document.addEventListener("pointerdown", handlePointerDown);
-    window.addEventListener("resize", handleViewportChange);
-    window.addEventListener("scroll", handleViewportChange, true);
+    const unsubscribeViewport = subscribeToViewportChanges(handleViewportChange);
     return () => {
       document.removeEventListener("pointerdown", handlePointerDown);
-      window.removeEventListener("resize", handleViewportChange);
-      window.removeEventListener("scroll", handleViewportChange, true);
+      unsubscribeViewport();
     };
   }, [isOpen, updatePosition]);
 
@@ -129,7 +133,21 @@ export function RichSelect<T extends string>({
     } else if (!enabledIndexes.includes(activeIndex)) {
       setActiveIndex(enabledIndexes[0] ?? -1);
     }
-  }, [activeIndex, enabledIndexes, selectedIndex]);
+  }, [enabledIndexes, selectedIndex]);
+
+  useLayoutEffect(() => {
+    if (!isOpen || activeIndex < 0) return;
+    const option = document.getElementById(`${id}-option-${activeIndex}`);
+    const viewport = option?.closest<HTMLElement>(".glass-selection-viewport");
+    if (!option || !viewport) return;
+    const viewportRect = viewport.getBoundingClientRect();
+    const optionRect = option.getBoundingClientRect();
+    if (optionRect.top < viewportRect.top) {
+      viewport.scrollTop -= viewportRect.top - optionRect.top;
+    } else if (optionRect.bottom > viewportRect.bottom) {
+      viewport.scrollTop += optionRect.bottom - viewportRect.bottom;
+    }
+  }, [activeIndex, id, isOpen]);
 
   const openListbox = useCallback(() => {
     if (disabled || enabledIndexes.length === 0) return;
@@ -193,6 +211,7 @@ export function RichSelect<T extends string>({
     if (event.key === "Escape") {
       if (!isOpen) return;
       event.preventDefault();
+      event.stopPropagation();
       setIsOpen(false);
       return;
     }
@@ -238,14 +257,19 @@ export function RichSelect<T extends string>({
       </button>
 
       {mounted && isOpen && createPortal(
-        <div
+        <GlassSelectionGroup
           ref={listboxRef}
           id={listboxId}
           className={`rich-select-popover is-${variant} is-${position.placement}`}
           role="listbox"
-          aria-label={ariaLabel}
+          ariaLabel={ariaLabel}
+          selectedKey={value}
+          scrollAxis="y"
+          viewportClassName="rich-select-viewport selection-scroll-region"
+          viewportStyle={{ maxHeight: Math.max(0, position.maxHeight - 14) }}
           style={{
             top: position.top,
+            bottom: position.bottom,
             left: position.left,
             width: position.width,
             maxHeight: position.maxHeight,
@@ -263,6 +287,8 @@ export function RichSelect<T extends string>({
                 className={`rich-select-option${isActive ? " is-active" : ""}`}
                 role="option"
                 aria-selected={isSelected}
+                data-glass-selected={isSelected}
+                data-glass-active={isActive}
                 data-help-key={helpKey}
                 data-help-title={typeof option.label === "string" ? option.label : helpTitle}
                 data-help={typeof option.description === "string" ? option.description : helpText}
@@ -278,8 +304,8 @@ export function RichSelect<T extends string>({
               </button>
             );
           })}
-        </div>,
-        document.body,
+        </GlassSelectionGroup>,
+        portalContainer ?? document.body,
       )}
     </span>
   );

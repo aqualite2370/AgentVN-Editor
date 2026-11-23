@@ -5,12 +5,33 @@ import type { ProjectSettings } from "../types/project";
 import { DEFAULT_SPRITE_SCALE, nullableSpriteScale, sanitizeSpriteScale } from "../../../shared/cartridge/spriteScale";
 import { sanitizeSpeakerFocus } from "../../../shared/cartridge/speakerFocus";
 import { runtimeScriptSchemaVersion } from "../../../shared/cartridge/runtimeCapabilities";
+import { normalizeBgmCommandFields } from "../../../shared/cartridge/bgmTransition";
+import { normalizeCameraCommandFields } from "../../../shared/camera/cameraMotion";
 import { choiceRuntimeText } from "./choiceText";
 import { conditionToRuntimeCondition, isBuilderCondition } from "./conditions";
 import { validateDefaultHandleFanOut, validateScript, type ValidationIssue, type ValidationRuntimeScript } from "./validation";
+import { normalizeOpeningAudioTracks } from "./openingAudio";
+import { isDialogPresentationMode } from "../../../shared/cartridge/dialogPresentation";
+import { openingPresentationErrors } from "../../../shared/cartridge/openingPresentation";
+import { resolveSpriteAnimation, validateSpriteAnimationDefaults } from "./spriteAnimationDefaults";
 
 function normalizeRuntimeCommands(commands: GameCommand[]): GameCommand[] {
   return commands.map((command) => {
+    if (command.type === "gallery_anchor") {
+      return {
+        ...command,
+        anchor_id: command.anchor_id?.trim() || `gallery_anchor_${Math.random().toString(36).slice(2, 10)}`,
+        title: command.title?.trim() ?? "",
+        asset_id: command.asset_id?.trim() ?? "",
+        description: command.description?.trim() || undefined,
+      };
+    }
+    if (command.type === "bgm") {
+      return { ...command, ...normalizeBgmCommandFields(command as unknown as { action?: unknown; fade_ms?: unknown }) };
+    }
+    if (command.type === "camera") {
+      return normalizeCameraCommandFields(command);
+    }
     if (command.type !== "sprite") return command;
     const scale = nullableSpriteScale(command.scale);
     if (scale === null) {
@@ -166,14 +187,18 @@ function collectCharacterProfiles(scenes: RuntimeScene[]): RuntimeScript["charac
 
 function normalizeLoadingAnimation(config: LoadingAnimationConfig | undefined): LoadingAnimationConfig | undefined {
   if (!config || config.kind === "default") return undefined;
+  const errors = openingPresentationErrors(config.presentation);
+  if (errors.length) throw new Error(errors.join("\n"));
+  const presentation = config.presentation ? { ...config.presentation } : undefined;
   if (config.kind === "video") {
     const videoAssetId = config.video_asset_id.trim();
-    return videoAssetId ? { kind: "video", video_asset_id: videoAssetId } : undefined;
+    return videoAssetId ? { kind: "video", video_asset_id: videoAssetId, ...(presentation ? { presentation } : {}) } : undefined;
   }
   const imageAssetIds = Array.from(new Set(config.image_asset_ids.map((assetId) => assetId.trim()).filter(Boolean)));
   if (imageAssetIds.length === 0) return undefined;
   const frameDurationMs = Math.max(100, Math.round(config.frame_duration_ms ?? 1000));
-  return { kind: "image_sequence", image_asset_ids: imageAssetIds, frame_duration_ms: frameDurationMs };
+  return { kind: "image_sequence", image_asset_ids: imageAssetIds, frame_duration_ms: frameDurationMs,
+    ...(presentation ? { presentation } : {}) };
 }
 
 function defaultTargetSceneId(node: EditorNode, nodes: EditorNode[], edges: EditorEdge[]): string | undefined {
@@ -277,9 +302,7 @@ function patchTargets(scene: RuntimeScene, node: EditorNode, nodes: EditorNode[]
 export function exportScript(nodes: EditorNode[], edges: EditorEdge[]): RuntimeScript {
   const start = nodes.find((node) => node.data.nodeKind === "start");
   const reachable = start ? reachableNodeIdsForExport(start.id, nodes, edges) : new Set<string>();
-  const startEdge = start ? edges.find((edge) => edge.source === start.id) : undefined;
-  const entryNode = startEdge ? nodes.find((node) => node.id === startEdge.target) : nodes.find((node) => node.data.nodeKind === "scene");
-  const entrySceneId = entryNode ? sceneIdForNode(entryNode) ?? "" : "";
+  const entrySceneId = resolveEntrySceneId(nodes, edges);
   const scenes = nodes
     .filter((node) => reachable.has(node.id) && node.data.nodeKind !== "start")
     .map((node) => {
@@ -288,10 +311,12 @@ export function exportScript(nodes: EditorNode[], edges: EditorEdge[]): RuntimeS
     })
     .filter((scene): scene is RuntimeScene => Boolean(scene));
 
+  const openingAudio = normalizeOpeningAudioTracks(start?.data.openingAudio);
   const script: RuntimeScript = {
     schema_version: "1.1.0",
     entry_scene_id: entrySceneId,
     loading_animation: normalizeLoadingAnimation(start?.data.loadingAnimation),
+    opening_audio: openingAudio.length > 0 ? openingAudio : undefined,
     characters: collectCharacterProfiles(scenes),
     scenes,
   };
@@ -301,15 +326,40 @@ export function exportScript(nodes: EditorNode[], edges: EditorEdge[]): RuntimeS
   };
 }
 
+export function resolveEntrySceneId(nodes: EditorNode[], edges: EditorEdge[]): string {
+  const start = nodes.find((node) => node.data.nodeKind === "start");
+  if (!start) return "";
+  const startEdges = edges.filter((edge) => (
+    edge.source === start.id
+    && (!edge.sourceHandle || edge.sourceHandle === "default")
+  ));
+  if (startEdges.length !== 1) return "";
+  const entryNode = nodes.find((node) => node.id === startEdges[0].target);
+  return entryNode ? sceneIdForNode(entryNode) ?? "" : "";
+}
+
 export function applyProjectRuntimeSettingsToScript<T extends RuntimeScript>(script: T, settings: ProjectSettings): T {
+  const spriteDefaults = validateSpriteAnimationDefaults(settings.spriteAnimationDefaults);
   const displayNames = settings.characterDisplayNames ?? {};
+  const rollback = settings.rollback;
+  const usesDefaultRollback = rollback.enabled
+    && rollback.hard_limit === 100
+    && rollback.log_length === 128
+    && !rollback.pause_as_checkpoint
+    && rollback.fixed_choice_mode === "selected_marked";
   return {
     ...script,
+    scenes: script.scenes.map(scene => ({...scene, commands: scene.commands.map(command =>
+      command.type === "sprite" ? resolveSpriteAnimation(command, spriteDefaults) : command)})),
     default_sprite_scale: sanitizeSpriteScale(settings.defaultSpriteScale, DEFAULT_SPRITE_SCALE),
+    default_dialog_presentation: isDialogPresentationMode(settings.defaultDialogPresentation)
+      ? settings.defaultDialogPresentation : undefined,
     speaker_focus: sanitizeSpeakerFocus(settings.speakerFocus),
+    rollback: usesDefaultRollback ? undefined : rollback,
     characters: script.characters?.map((character) => ({
       ...character,
       name: displayNames[character.character_id]?.trim() || character.name,
+      dialog_presentation: settings.characterDialogPresentations?.[character.character_id],
     })),
   } as T;
 }

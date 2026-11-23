@@ -67,30 +67,17 @@ QQ群：**135397938**
 
 ## 本地开发
 
-需要 Node.js 20+、Python 3.10+；构建桌面版本还需要 Rust 与 Tauri 环境。
+Windows 开发环境需要 Node.js 20+ 和 Python 3.10+；构建原生桌面壳还需要 Rust 与 Tauri 环境。
+在仓库根目录运行：
 
 ```powershell
-npm install
-npm --prefix GameCli_framework install
-npm --prefix editor install
+.\start-dev.bat
 ```
 
-启动后端：
+入口会准备根目录、Editor、GameCLI 预览和后端依赖，启动本地后端（8278）与 Editor（6767）。
+需要独立的 Runtime 服务时加 `-WithRuntime`，默认端口 5174。已有依赖可加 `-NoInstall`；仅准备依赖、不启动服务时用 `-PrepareOnly`。端口已被占用时脚本会报错，不会接管现有服务。
 
-```powershell
-cd backend
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -e ".[dev]"
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8278
-```
-
-启动编辑器：
-
-```powershell
-cd editor
-npm run dev
-```
+本机已有 `AgentVN Dev.exe` 时，可先用 `-PrepareOnly` 补齐依赖，再正常打开该 EXE，让原生壳自行启动服务。源码发布见 [Git 发布说明](docs/git-publishing.md)。
 
 ## 许可证
 

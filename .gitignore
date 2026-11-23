@@ -97,11 +97,9 @@ editor/public/agentvn-qq-qrcode.jpg
 /GameCli_framework/src-tauri/resources/embedded-cartridge/*
 !/GameCli_framework/src-tauri/resources/embedded-cartridge/.gitkeep
 
-# Local launch and packaging helpers
-start-dev.bat
-start-dev.ps1
-package-installers.bat
+# Generated local launcher; its source and BAT entry are versioned.
 AgentVN Dev.exe
+/package-installers.bat
 manual-five-character.vnproj
 
 # Internal planning and agent-oriented documents
@@ -139,6 +137,13 @@ GameCli_framework/docs/BUILD_WINDOWS.md
 
 # Logs and temporary files
 *.log
+*.log.*
+*.trace
+*.trace.*
+logs/
+.logs/
+debug_logs/
+dev-logs/
 *.tmp
 *.bak
 errorlog/
@@ -148,6 +153,14 @@ error_log/
 .env
 .env.*
 !**/.env.example
+.npmrc
+.pypirc
+.netrc
+_netrc
+credentials.json
+secrets.json
+id_rsa
+id_ed25519
 *.jks
 *.keystore
 *.p12

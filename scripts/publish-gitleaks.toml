@@ -1,0 +1,9 @@
+title = "AgentVN source publication"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "agentvn-private-workspace-reference"
+description = "Local profile, QA evidence, chat link or messaging data path"
+regex = '''(?i)([a-z]:[/\\]{1,2}users[/\\]{1,2}[^/\\\s"'<>]+[/\\]{1,2}(appdata|documents|downloads|desktop|\.codex)\b|[a-z]:[/\\]{1,2}agentvn[/\\]{1,2}(qa|mobile-qa|checkpoints)[/\\]{1,2}[a-z0-9_.-]+|codex://threads/[a-f0-9-]{24,}|nt_qq[/\\]{1,2}nt_data)'''

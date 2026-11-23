@@ -2,13 +2,14 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 
 const workspace = path.resolve(__dirname, '..');
-const qaRoot = 'F:\\AgentVN\\QA\\Gitpush-Ignore-20261020-01';
+const qaRoot = process.env.AGENTVN_QA_ROOT || os.tmpdir();
 fs.mkdirSync(qaRoot, { recursive: true });
-const runRoot = fs.mkdtempSync(path.join(qaRoot, 'run-'));
+const runRoot = fs.mkdtempSync(path.join(qaRoot, 'gitpush-'));
 const results = [];
 
 function command(exe, args, cwd) {
@@ -31,7 +32,7 @@ function fixture(name) {
   fs.mkdirSync(path.join(repo, 'scripts'), { recursive: true });
   for (const relative of [
     '.gitignore', 'scripts/push-agentvn-editor.ps1',
-    'scripts/push-agentvn-editor.bat',
+    'scripts/push-agentvn-editor.bat', 'scripts/publish-gitleaks.toml',
   ]) {
     const source = path.join(workspace, relative);
     if (fs.existsSync(source)) fs.copyFileSync(source, path.join(repo, relative));
@@ -51,6 +52,22 @@ function write(repo, relative, content = 'fixture\n') {
   const target = path.join(repo, relative);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, content);
+}
+
+function writePinnedSyntheticProject(repo, relative) {
+  const original = Buffer.from('synthetic project bytes for the publish guard test\n');
+  const digest = crypto.createHash('sha256').update(original).digest('hex');
+  const scriptFile = path.join(repo, 'scripts/push-agentvn-editor.ps1');
+  const script = fs.readFileSync(scriptFile, 'utf8');
+  const prefix = `  "${relative}" = "`;
+  const lines = script.split('\n');
+  const index = lines.findIndex((line) => line.startsWith(prefix));
+  assert.notEqual(index, -1, `Expected a pinned fixture entry: ${relative}`);
+  assert.match(lines[index].slice(prefix.length).trim(), /^[a-f0-9]{64}"$/);
+  lines[index] = `${prefix}${digest}"`;
+  fs.writeFileSync(scriptFile, lines.join('\n'));
+  write(repo, relative, original);
+  return original;
 }
 
 function snapshot(repo) {
@@ -90,6 +107,71 @@ function test(name, body) {
 }
 
 try {
+  const syntheticCredential = 'gh' + 'p_' + 'AJ91brnmQ0v6c2MM4gRPX3T5YsDKweN8ukFZ';
+  const syntheticThread = 'codex://' + 'threads/' + 'a8359562-6c91-4e5d-9566-1da06c6fbe85';
+  test('staged credential stays blocked after working tree cleanup and ignore directives', () => {
+    const repo = fixture('staged-credential');
+    const relative = 'scripts/config.json';
+    write(repo, relative, JSON.stringify({ github_token: syntheticCredential }));
+    git(repo, 'add', '--', relative);
+    write(repo, relative, '{}\n');
+    write(repo, '.gitleaks.toml', 'title = "Disabled"\n');
+    write(repo, 'scripts/example.txt', `token = ${syntheticCredential} # gitleaks:allow\n`);
+    git(repo, 'add', '--', 'scripts/example.txt');
+    const before = snapshot(repo);
+    const result = check(repo, '-CheckOnly');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stdout + result.stderr, /blocked: staged changes/);
+    assert.ok(!(result.stdout + result.stderr).includes(syntheticCredential));
+    assert.deepEqual(snapshot(repo), before);
+  });
+  test('StageAll does not commit a private reference in a previously untracked document', () => {
+    const repo = fixture('stageall-private');
+    const remote = attachLocalRemote(repo);
+    const head = git(remote, 'rev-parse', 'main');
+    write(repo, 'docs/notes.md', `${syntheticThread}\n`);
+    const result = check(repo, '-StageAll');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stdout + result.stderr, /blocked: staged changes before commit/);
+    assert.ok(!(result.stdout + result.stderr).includes(syntheticThread));
+    assert.equal(git(repo, 'rev-parse', 'HEAD'), head);
+    assert.equal(git(remote, 'rev-parse', 'main'), head);
+  });
+  for (const [kind, relative, body, reason] of [
+    ['credential', 'docs/settings.txt', `github_token = "${syntheticCredential}"\n`, /blocked: outgoing commit patches/],
+    ['private path', 'plans/session.md', 'Private session notes\n', /contains a blocked path/],
+  ]) {
+    test(`outgoing ${kind} is blocked even if removed in a later commit`, () => {
+      const repo = fixture(`history-${kind.replace(' ', '-')}`);
+      const remote = attachLocalRemote(repo);
+      const head = git(remote, 'rev-parse', 'main');
+      write(repo, relative, body);
+      git(repo, 'add', '-f', '--', relative);
+      git(repo, 'commit', '-m', 'Add fixture');
+      git(repo, 'rm', '--', relative);
+      git(repo, 'commit', '-m', 'Remove fixture');
+      const before = snapshot(repo);
+      const result = check(repo);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stdout + result.stderr, reason);
+      assert.ok(!(result.stdout + result.stderr).includes(syntheticCredential));
+      assert.equal(git(remote, 'rev-parse', 'main'), head);
+      assert.equal(snapshot(repo).head, before.head);
+      assert.equal(snapshot(repo).index, before.index);
+    });
+  }
+  test('commit messages are screened before a new commit can be created', () => {
+    const repo = fixture('secret-message');
+    const remote = attachLocalRemote(repo);
+    const head = git(remote, 'rev-parse', 'main');
+    write(repo, 'docs/example.txt', 'Public example\n');
+    git(repo, 'add', '--', 'docs/example.txt');
+    const result = check(repo, '-Message', `Reference ${syntheticThread}`);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stdout + result.stderr, /blocked: proposed commit message/);
+    assert.equal(git(repo, 'rev-parse', 'HEAD'), head);
+    assert.equal(git(remote, 'rev-parse', 'main'), head);
+  });
   test('CheckOnly works offline and leaves HEAD, index and remote state untouched', () => {
     const repo = fixture('readonly');
     write(repo, 'scripts/发布脚本.cjs');
@@ -128,9 +210,12 @@ try {
       'GameCli_framework/src-tauri/resources/embedded-cartridge/cartridge.v1.json',
       '.env', '.env.local', 'release.jks', 'release.keystore', 'private.p12',
       'private.pfx', 'private.key', 'private.pem', 'payload.dll', 'payload.so',
-      'output/report.json', 'release.avnenv',
+      'output/report.json', 'release.avnenv', 'editor/dev-server.log',
+      'backend/service.log.1', 'editor/startup.trace.json', 'editor/startup.trace.gz',
+      'nested/dev-logs/capture.txt', 'backend/.npmrc', 'editor/credentials.json',
     ];
     const allowed = [
+      'start-dev.bat', 'start-dev.ps1', 'scripts/start-backend.ps1',
       'scripts/build-release.ps1', 'scripts/中文测试.cjs', 'backend/source.py',
       'editor/.env.example', 'GameCli_framework/src-tauri/.cargo/config.toml',
       'GameCli_framework/src-tauri/resources/embedded-cartridge/.gitkeep',
@@ -157,10 +242,7 @@ try {
       'scripts/fixtures/installed-preview-isolated.vnproj',
     ];
     for (const relative of approved) {
-      const source = path.join(workspace, relative);
-      const target = path.join(repo, relative);
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.copyFileSync(source, target);
+      writePinnedSyntheticProject(repo, relative);
       assert.equal(command('git', ['check-ignore', '-q', '--', relative], repo).status, 1,
         `Reviewed fixture must be visible to Git: ${relative}`);
     }
@@ -253,7 +335,7 @@ try {
   test('approved fixture working bytes cannot conceal different staged project data', () => {
     const repo = fixture('staged-project-substitution');
     const relative = 'scripts/fixtures/editor-isolated-small.vnproj';
-    const original = fs.readFileSync(path.join(workspace, relative));
+    const original = writePinnedSyntheticProject(repo, relative);
     write(repo, relative, 'SYNTHETIC_PRIVATE_PROJECT_NOT_FOR_PUBLICATION\n');
     git(repo, 'add', '--', relative);
     write(repo, relative, original);
@@ -277,6 +359,19 @@ try {
     assert.notEqual(result.status, 0);
     assert.match(result.stdout, /BLOCKED release\.keystore/);
     assert.doesNotMatch(result.stdout + result.stderr, /FAKE_SIGNING_BYTES_DO_NOT_PRINT/);
+    assert.deepEqual(snapshot(repo), before);
+  });
+  test('forced development logs are blocked with or without ignore rules', () => {
+    const repo = fixture('forced-dev-logs');
+    const paths = ['editor/run.log', 'backend/service.log.1', 'editor/start.trace.json', 'dev-logs/debug.txt'];
+    for (const relative of paths) write(repo, relative, 'SYNTHETIC_PRIVATE_DEV_LOG\n');
+    git(repo, 'add', '-f', '--', ...paths);
+    write(repo, '.gitignore', '');
+    const before = snapshot(repo);
+    const result = check(repo, '-CheckOnly');
+    assert.notEqual(result.status, 0);
+    for (const relative of paths) assert.ok(result.stdout.includes(`BLOCKED ${relative} [`), relative);
+    assert.doesNotMatch(result.stdout + result.stderr, /SYNTHETIC_PRIVATE_DEV_LOG/);
     assert.deepEqual(snapshot(repo), before);
   });
   test('oversize staged bytes cannot be hidden by replacing or deleting the working file', () => {
@@ -315,7 +410,11 @@ try {
   test('default publishing sends only selected staged changes to an isolated local remote', () => {
     const repo = fixture('selected');
     const remote = attachLocalRemote(repo);
-    write(repo, 'scripts/selected.cjs', 'selected\n');
+    git(repo, 'config', 'push.followTags', 'true');
+    git(repo, 'config', 'remote.origin.mirror', 'true');
+    git(repo, 'tag', '-a', 'local-only', '-m', 'Local annotated tag');
+    git(repo, 'branch', 'local-only-branch');
+    write(repo, 'scripts/selected.cjs', 'selected\r\n');
     write(repo, 'scripts/unselected.cjs', 'not selected\n');
     git(repo, 'add', '--', 'scripts/selected.cjs');
     const result = check(repo, '-Message', 'Selected fixture only');
@@ -323,7 +422,21 @@ try {
     const published = git(remote, 'ls-tree', '-r', '--name-only', 'main');
     assert.match(published, /scripts\/selected\.cjs/);
     assert.doesNotMatch(published, /scripts\/unselected\.cjs/);
+    assert.equal(git(remote, 'for-each-ref', '--format=%(refname)'), 'refs/heads/main');
     assert.equal(git(repo, 'rev-parse', 'HEAD'), git(remote, 'rev-parse', 'main'));
+  });
+  test('a CRLF file with real trailing whitespace is still rejected', () => {
+    const repo = fixture('whitespace-check');
+    const remote = attachLocalRemote(repo);
+    write(repo, 'scripts/source.cjs', '// trailing whitespace \r\n');
+    git(repo, 'add', '--', 'scripts/source.cjs');
+    const before = snapshot(repo);
+    const result = check(repo);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stdout + result.stderr, /trailing whitespace|diff --cached --check/);
+    assert.equal(git(repo, 'rev-parse', 'HEAD'), before.head);
+    assert.equal(snapshot(repo).index, before.index);
+    assert.equal(git(remote, 'rev-parse', 'main'), before.head);
   });
   test('explicit StageAll includes ordinary scripts and NSIS tools but not ignored payloads', () => {
     const repo = fixture('explicit-all');

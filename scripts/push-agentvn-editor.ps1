@@ -48,7 +48,7 @@ function Get-FileSha256Hex {
 }
 
 function Get-ForbiddenReason {
-  param([string]$Relative)
+  param([string]$Relative, [switch]$FromCommit)
   # These local author-project helpers embed literary material or depend on it.
   # Keep this boundary even if ignore rules are removed or files force-staged.
   if ($Relative -match '^scripts/(?:[^/]*(?:angle-owl|night-king)[^/]*|fixtures/night-king-opening\.json)$' -or
@@ -67,12 +67,13 @@ function Get-ForbiddenReason {
       )) {
     return "local author-project content or dependent workflow"
   }
-  if ($Relative -match '(^|/)(\.agents|\.claude|\.codex|\.playwright-cli|\.tmp|\.venv|venv|env|virtualenv|node_modules|data|output|releases|releases_test_contract|test_AgentVN|dist|target|gitpush)(/|$)' -or
+  if ($Relative -match '(^|/)(\.agents|\.claude|\.codex|\.playwright-cli|\.tmp|\.venv|venv|env|virtualenv|node_modules|data|output|releases|releases_test_contract|test_AgentVN|dist|target|gitpush|logs|\.logs|debug_logs|dev-logs|errorlog|error_log)(/|$)' -or
       $Relative -match '^(\$out|--help|artifacts|plans)/' -or
       $Relative -eq 'AGENTS.md' -or
       $Relative -match '^(--help|--apk)\.inspection\.json$' -or
       $Relative -match '^backend/(build|temp|tempbuild|tempdist)/' -or
       $Relative -eq 'backend/creator-backend.spec' -or
+      $Relative -eq 'editor/public/agentvn-qq-qrcode.jpg' -or
       $Relative -match '^editor/src-tauri/(binaries|bundle-workspace|gen|android-offline-pack)/' -or
       $Relative -match '^GameCli_framework/src-tauri/gen/' -or
       $Relative -eq 'GameCli_framework/public/release-package.json' -or
@@ -81,14 +82,17 @@ function Get-ForbiddenReason {
     return "local or generated payload"
   }
   if (($Relative -match '(^|/)\.env($|\.)' -and $Relative -notmatch '(^|/)\.env\.example$') -or
+      $Relative -match '(^|/)(\.npmrc|\.pypirc|\.netrc|_netrc|id_rsa|id_ed25519|credentials\.json|secrets\.json)$' -or
       $Relative -match '\.(jks|keystore|p12|pfx|key|pem)$') {
     return "credential or signing file"
   }
   $offlineTool = $Relative -match '^windows-offline-tools/NSIS/.+\.(exe|dll)$'
+  if ($Relative -match '\.(log|trace)(\.|$)') { return "development log or trace" }
   if ($Relative -match '\.vnproj$') {
     if (-not $approvedTestProjectFixtures.ContainsKey($Relative)) {
       return "unreviewed project archive"
     }
+    if ($FromCommit) { return $null }
     $fixturePath = Join-Path $workspaceRoot $Relative
     if (-not (Test-Path -LiteralPath $fixturePath -PathType Leaf)) {
       return "approved regression fixture is missing"
@@ -103,6 +107,85 @@ function Get-ForbiddenReason {
     return "binary, project, database or archive payload"
   }
   return $null
+}
+
+function Invoke-PrivacyScan {
+  param([string]$Scope, [string[]]$ScanArguments, [string]$InputText)
+  $config = Join-Path $PSScriptRoot "publish-gitleaks.toml"
+  if (-not (Test-Path -LiteralPath $config -PathType Leaf)) {
+    throw "Publish privacy configuration is missing."
+  }
+  if ($env:AGENTVN_GITLEAKS) {
+    $scanner = $env:AGENTVN_GITLEAKS
+    if (-not [IO.Path]::IsPathRooted($scanner) -or -not (Test-Path -LiteralPath $scanner -PathType Leaf)) {
+      throw "AGENTVN_GITLEAKS must point to an installed gitleaks executable."
+    }
+  } else {
+    $scanner = (Get-Command gitleaks -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+    if (-not $scanner -and $env:LOCALAPPDATA) {
+      $localScanner = Join-Path $env:LOCALAPPDATA "AgentVN\publish-tools\gitleaks.exe"
+      if (Test-Path -LiteralPath $localScanner -PathType Leaf) { $scanner = $localScanner }
+    }
+    if (-not $scanner) { throw "Publish preflight requires gitleaks 8.30 or later on PATH or in AGENTVN_GITLEAKS." }
+  }
+  # No repository ignore file or inline bypass. Do not echo scanner output, even
+  # with redaction, since it can include raw context or a sensitive file name.
+  $options = @("--config", $config, "--gitleaks-ignore-path", $config,
+    "--ignore-gitleaks-allow", "--redact=100", "--no-banner", "--exit-code", "19",
+    "--max-decode-depth", "2", "--max-archive-depth", "1")
+  $ErrorActionPreference = "Continue"
+  if ($PSBoundParameters.ContainsKey("InputText")) {
+    $InputText | & $scanner @ScanArguments @options 2>&1 | Out-Null
+  } else {
+    & $scanner @ScanArguments @options 2>&1 | Out-Null
+  }
+  if ($LASTEXITCODE -eq 19) { throw "Publish privacy scan blocked: $Scope. No push was performed." }
+  if ($LASTEXITCODE -ne 0) { throw "Publish privacy scanner failed: $Scope (exit $LASTEXITCODE). No push was performed." }
+  Write-Host "[AgentVN] Privacy scan passed: $Scope."
+}
+
+function Assert-OutgoingHistory {
+  param([string]$Base, [string]$Tip)
+  if ($Base -eq $Tip) { return }
+  $range = "$Base..$Tip"
+  foreach ($commit in @((Invoke-GitText @("rev-list", $range)) -split "`n" | Where-Object { $_ })) {
+    $paths = @(Get-GitPaths @("diff-tree", "--root", "-m", "-r", "--no-commit-id", "--name-only",
+      "--no-renames", "--diff-filter=AMT", "-z", $commit) | Sort-Object -Unique)
+    if ($paths.Count -eq 0) { continue }
+    $tree = @{}
+    foreach ($entry in @(Get-GitPaths @("ls-tree", "-r", "-z", $commit))) {
+      if ($entry -notmatch '^(\d{6}) (\w+) ([0-9a-f]{40,64})\t([\s\S]+)$') {
+        throw "Unable to parse outgoing Git tree."
+      }
+      $tree[$Matches[4]] = @{ Mode = $Matches[1]; Type = $Matches[2]; Object = $Matches[3] }
+    }
+    $objects = @(
+    foreach ($relative in $paths) {
+      $reason = Get-ForbiddenReason -Relative $relative -FromCommit
+      if ($reason) { throw "Outgoing commit $commit contains a blocked path [$reason]. No push was performed." }
+      $entry = $tree[$relative]
+      if (-not $entry -or $entry.Mode -notin @("100644", "100755") -or $entry.Type -ne "blob") {
+        throw "Outgoing commit $commit contains a non-regular file. No push was performed."
+      }
+      $object = $entry.Object
+      if ($approvedTestProjectFixtures.ContainsKey($relative) -and
+          (Get-IndexedBlobSha256Hex -ObjectId $object) -ne $approvedTestProjectFixtures[$relative]) {
+        throw "Outgoing commit $commit contains unreviewed project fixture bytes. No push was performed."
+      }
+      $object
+    })
+    $ids = @($objects | Sort-Object -Unique)
+    $objectInfo = @(Get-GitObjectInfo $ids)
+    if ($objectInfo.Count -ne $ids.Count) { throw "Unable to inspect outgoing Git blob sizes." }
+    foreach ($line in $objectInfo) {
+      if ($line -notmatch '^([0-9a-f]+) blob (\d+)$' -or [long]$Matches[2] -gt ($MaxFileMiB * 1MB)) {
+        throw "Outgoing commit $commit contains an invalid or oversized blob. No push was performed."
+      }
+    }
+  }
+  Invoke-PrivacyScan -Scope "outgoing commit patches" -ScanArguments @("git", $workspaceRoot, "--log-opts=--full-history -m $range")
+  $messages = Invoke-GitText @("log", "--format=%B", $range)
+  Invoke-PrivacyScan -Scope "outgoing commit messages" -ScanArguments @("stdin") -InputText $messages
 }
 
 function Get-GitObjectInfo {
@@ -238,7 +321,9 @@ try {
     throw "The script must be inside its own repository root."
   }
   Assert-PublishableFiles
+  Invoke-PrivacyScan -Scope "staged changes" -ScanArguments @("git", $workspaceRoot, "--pre-commit", "--staged")
   if ($CheckOnly) {
+    if ($StageAll) { Write-Host "[AgentVN] Unstaged contents were not scanned; StageAll scans after staging and before committing." }
     # Deliberately before fetch/add/commit: works offline, preserves index bytes.
     Write-Host "[AgentVN] CHECK_ONLY_PASS - no fetch, staging, commit or push."
     exit 0
@@ -250,27 +335,34 @@ try {
   }
 
   # Staged-only by default. Bulk staging requires the user's explicit -StageAll.
-  Invoke-GitText @("fetch", "origin", "main") | Write-Host
+  Invoke-GitText @("fetch", "--no-tags", "origin", "refs/heads/main") | Write-Host
   $localHead = (Invoke-GitText @("rev-parse", "HEAD")).Trim()
-  $remoteHead = (Invoke-GitText @("rev-parse", "refs/remotes/origin/main")).Trim()
-  $mergeBase = (Invoke-GitText @("merge-base", "HEAD", "refs/remotes/origin/main")).Trim()
-  if ($localHead -ne $remoteHead -and $mergeBase -ne $remoteHead) {
-    throw "origin/main is newer or diverged. Sync it explicitly before publishing."
+  $remoteHead = (Invoke-GitText @("rev-parse", "FETCH_HEAD^{commit}")).Trim()
+  & git merge-base --is-ancestor $remoteHead $localHead
+  if ($LASTEXITCODE -eq 1) {
+    throw "origin/main is newer or diverged. Publish from an up-to-date checkout after reviewing the selected files; no merge or rebase was attempted."
   }
+  if ($LASTEXITCODE -ne 0) { throw "Unable to verify origin/main ancestry." }
+  Assert-OutgoingHistory -Base $remoteHead -Tip $localHead
   if ($StageAll) {
     Invoke-GitText @("add", "--all", "--", ".") | Write-Host
+    Assert-PublishableFiles
+    Invoke-PrivacyScan -Scope "staged changes before commit" -ScanArguments @("git", $workspaceRoot, "--pre-commit", "--staged")
   }
-  Assert-PublishableFiles
   $staged = @(Get-GitPaths @("diff", "--cached", "--name-only", "-z"))
   if ($staged.Count -gt 0) {
+    Invoke-PrivacyScan -Scope "proposed commit message" -ScanArguments @("stdin") -InputText $Message
     Write-Host "[AgentVN] Committing $($staged.Count) explicitly staged changes."
-    Invoke-GitText @("diff", "--cached", "--check") | Write-Host
+    Invoke-GitText @("-c", "core.whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol",
+      "diff", "--cached", "--check") | Write-Host
     Invoke-GitText @("commit", "-m", $Message) | Write-Host
   } else {
     Write-Host "[AgentVN] No staged changes. Use git add for selected files, or explicitly pass -StageAll."
   }
-  if ([int](Invoke-GitText @("rev-list", "--count", "origin/main..HEAD")).Trim() -gt 0) {
-    Invoke-GitText @("push", "origin", "HEAD:refs/heads/main") | Write-Host
+  $finalHead = (Invoke-GitText @("rev-parse", "HEAD")).Trim()
+  if ($finalHead -ne $remoteHead) {
+    if ($finalHead -ne $localHead) { Assert-OutgoingHistory -Base $localHead -Tip $finalHead }
+    Invoke-GitText @("-c", "remote.origin.mirror=false", "push", "--no-follow-tags", "origin", "${finalHead}:refs/heads/main") | Write-Host
   }
   Write-Host "[AgentVN] Publish finished."
 }
